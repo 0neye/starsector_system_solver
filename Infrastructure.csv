@@ -1,0 +1,6 @@
+system_name,infrastructure_type,is_domain,is_damaged
+Mia Bravos,CommRelay,false,false
+Mia Bravos,NavBouy,false,false
+Mia Bravos,Gate,false,false
+Epsilon Gamma,CommRelay,false,false
+Epsilon Gamma,SensorArray,false,false

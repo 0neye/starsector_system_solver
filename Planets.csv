@@ -1,0 +1,6 @@
+Planet Name,System Name,Ruins,Farmland,Rare Ores,Ores,Volatiles,Organics,Accessibility Percent,Hazard Percent,No Atmosphere,Very Hot,Gas Giant,Habitable,Extreme Activity,Water
+Terran 1,Mia Bravos,-1,1,-1,0,,2,70,150,FALSE,FALSE,FALSE,TRUE,FALSE,FALSE
+Barren 1,Mia Bravos,,,2,3,,,70,200,TRUE,TRUE,FALSE,FALSE,FALSE,FALSE
+GasGiant 1,Mia Bravos,1,,,,2,,60,175,FALSE,FALSE,TRUE,FALSE,FALSE,FALSE
+Terran 2,Epsilon Gamma,1,3,,2,,3,80,125,FALSE,FALSE,FALSE,TRUE,FALSE,FALSE
+Barren 2,Epsilon Gamma,3,,2,3,,,90,150,TRUE,FALSE,FALSE,FALSE,FALSE,FALSE
