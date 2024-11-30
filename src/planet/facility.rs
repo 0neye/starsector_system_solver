@@ -18,6 +18,7 @@ pub struct Facility {
     production: HashMap<Resource, String>,  // resource -> formula
     demands: HashMap<Resource, String>,     // resource -> formula
     is_structure: bool,
+    remaining_build_days: u32,
 }
 
 impl Hash for Facility {
@@ -28,6 +29,7 @@ impl Hash for Facility {
         self.colony_item.hash(state);
         self.stability_bonus.hash(state);
         self.is_structure.hash(state);
+        self.remaining_build_days.hash(state);
         
         // Hash f32 values by converting them to bits
         self.base_upkeep.to_bits().hash(state);
@@ -79,6 +81,7 @@ impl Facility {
             production,
             demands,
             is_structure: data.is_structure,
+            remaining_build_days: data.build_time,
         })
     }
 
@@ -113,6 +116,13 @@ impl Facility {
             true
         } else {
             false
+        }
+    }
+
+    /// Won't handle income/expenses over wait time
+    pub fn progress_build_days(&mut self, days: u32) {
+        if self.remaining_build_days > 0 {
+            self.remaining_build_days = self.remaining_build_days.saturating_sub(days);
         }
     }
 
@@ -193,6 +203,7 @@ impl Facility {
     }
 
     pub fn calculate_upkeep(&self, hazard_rating: f32) -> f32 {
+        // Upkeep costs are active while building
         let mut upkeep = self.base_upkeep;
         if self.alpha_core {
             upkeep *= 0.75; // 25% reduction for alpha core
@@ -201,6 +212,10 @@ impl Facility {
     }
 
     pub fn accessibility_bonus(&self) -> f32 {
+        if self.remaining_build_days > 0 {
+            return 0.0;
+        }
+
         let mut bonus = self.accessibility_bonus;
         
         // Add improvement bonus
@@ -228,6 +243,10 @@ impl Facility {
     }
 
     pub fn stability_bonus(&self) -> i32 {
+        if self.remaining_build_days > 0 {
+            return 0;
+        }
+
         let mut bonus = self.stability_bonus;
         
         // Add improvement bonus
@@ -241,6 +260,10 @@ impl Facility {
     }
 
     pub fn defense_multiplier(&self) -> f32 {
+        if self.remaining_build_days > 0 {
+            return 0.0;
+        }
+
         let mut multiplier = self.defense_multiplier;
         
         // Add improvement bonus
@@ -268,6 +291,10 @@ impl Facility {
     }
 
     pub fn income_multiplier(&self) -> f32 {
+        if self.remaining_build_days > 0 {
+            return 0.0;
+        }
+
         let mut multiplier = self.income_multiplier;
         
         // Add improvement bonus
@@ -303,6 +330,10 @@ impl Facility {
     }
     
     pub fn calculate_resource_production(&self, resource: Resource, size: u32, bonus: f32, is_free_port: bool) -> f32 {
+        if self.remaining_build_days > 0 {
+            return 0.0;
+        }
+
         // Special case: Recreational Drugs are only produced if colony is a Free Port
         if resource == Resource::Drugs && self.name == "light industry" && !is_free_port {
             return 0.0;
@@ -347,13 +378,22 @@ impl Facility {
     }
 
     pub fn calculate_resource_demand(&self, resource: Resource, size: u32) -> f32 {
+        if self.remaining_build_days > 0 {
+            return 0.0;
+        }
+
         match self.demands.get(&resource) {
             Some(formula) => calculate_formula(formula, size),
             None => 0.0,
         }
     }
 
+    /// Per month
     pub fn calculate_gross_income(&self, size: u32, planet: &dyn PlanetConditionChecker) -> f32 {
+        if self.remaining_build_days > 0 {
+            return 0.0;
+        }
+
         let mut gross_income = 0.0;
 
         for resource in self.production.keys() {
@@ -368,6 +408,7 @@ impl Facility {
     }
 
     //TODO: upkeep needs to take into account same-faction supply of demanded resources
+    /// Per month
     pub fn calculate_net_income(&self, size: u32, planet: &dyn PlanetConditionChecker) -> f32 {
         let gross = self.calculate_gross_income(size, planet);
         let upkeep = self.calculate_upkeep(planet.get_property("hazard percent"));
@@ -375,6 +416,11 @@ impl Facility {
     }
 
     pub fn get_possible_actions(&self, planet: &dyn PlanetConditionChecker, balance: &Balance) -> Vec<Action> {
+        if self.remaining_build_days > 0 {
+            let wait = Action::Wait((self.remaining_build_days as f32 / 30.0).ceil() as u32);
+            return vec![wait];
+        }
+
         let mut actions = Vec::new();
         let facility_name = self.name().to_string();
         let planet_name = planet.name().to_string();

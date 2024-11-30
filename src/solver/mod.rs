@@ -236,16 +236,16 @@ impl State {
                 true
             }
             Action::Wait(months) => {
-                let days = months * 30;
                 for planet in self.system.planets_mut().values_mut() {
-                    planet.update_growth(days, None);
-                    // TODO: add colony income to balance here
+                    let net_income = planet.wait(months);
+                    self.balance.add_credits(net_income);
                 }
                 true
-            },
+            }
         }
-    }
+    }    
 
+    /// Will apply the action without checking if it is valid
     pub fn apply_action_raw(&mut self, action: Action) {
         match action {
             Action::AddFacility(planet_name, facility_name) => {
@@ -279,9 +279,9 @@ impl State {
                 self.system.get_planet_mut(&planet_name).unwrap().set_has_colony(true);
             }
             Action::Wait(months) => {
-                let days = months * 30;
                 for planet in self.system.planets_mut().values_mut() {
-                    planet.update_growth(days, None);
+                    let net_income = planet.wait(months);
+                    self.balance.add_credits(net_income);
                 }
             }
         }

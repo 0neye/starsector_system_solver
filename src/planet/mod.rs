@@ -411,6 +411,7 @@ impl Planet {
         production
     }
 
+    /// Per month
     pub fn get_gross_income(&self) -> f32 {
         let mut gross_income = 0.0;
         let mut highest_income_mult = 1.0;
@@ -423,10 +424,24 @@ impl Planet {
         gross_income * highest_income_mult
     }
 
+    /// Per month
     pub fn get_net_income(&self) -> f32 {
         let mut net_income = self.get_gross_income();
         let total_upkeep = self.total_upkeep();
         net_income -= total_upkeep;
+        net_income
+    }
+
+    /// Will progress buildings and growth, and return net income
+    pub fn wait(&mut self, months: u32) -> f32 {
+        let mut net_income = 0.0;
+        for _ in 0..months {
+            self.update_growth(30, None);
+            for facility in self.facilities.values_mut() {
+                facility.progress_build_days(30);
+            }
+            net_income += self.get_net_income();
+        }
         net_income
     }
 
