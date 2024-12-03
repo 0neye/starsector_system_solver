@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use crate::constants::{ColonyItem, Resource, ResourceAmount, ResourceGetter, COLONY_ITEM_DATA, FACILITY_ALPHA_CORES, FACILITY_DATA, FACILITY_IMPROVEMENTS, POSSIBLE_COLONY_ITEMS};
+use crate::constants::{ColonyItem, FacilityData, Resource, ResourceAmount, ResourceGetter, COLONY_ITEM_DATA, FACILITY_ALPHA_CORES, FACILITY_DATA, FACILITY_IMPROVEMENTS, POSSIBLE_COLONY_ITEMS};
 use crate::solver::{Action, Balance};
 use crate::utils::calculate_formula;
 
@@ -10,7 +10,7 @@ pub struct Facility {
     improvements: bool,
     alpha_core: bool,
     colony_item: Option<ColonyItem>,
-    base_upkeep: f32,
+    upkeep_formula: String,
     accessibility_bonus: f32,
     stability_bonus: i32,
     defense_multiplier: f32,
@@ -18,7 +18,7 @@ pub struct Facility {
     production: HashMap<Resource, String>,  // resource -> formula
     demands: HashMap<Resource, String>,     // resource -> formula
     is_structure: bool,
-    remaining_build_days: u32,
+    remaining_build_days: i32,
 }
 
 impl Hash for Facility {
@@ -30,9 +30,9 @@ impl Hash for Facility {
         self.stability_bonus.hash(state);
         self.is_structure.hash(state);
         self.remaining_build_days.hash(state);
+        self.upkeep_formula.hash(state);
         
         // Hash f32 values by converting them to bits
-        self.base_upkeep.to_bits().hash(state);
         self.accessibility_bonus.to_bits().hash(state);
         self.defense_multiplier.to_bits().hash(state);
         self.income_multiplier.to_bits().hash(state);
@@ -73,7 +73,7 @@ impl Facility {
             improvements: false,
             alpha_core: false,
             colony_item: None,
-            base_upkeep: data.base_upkeep_formula.parse().unwrap_or(0.0),
+            upkeep_formula: data.base_upkeep_formula.to_string(),
             accessibility_bonus: data.accessibility_bonus,
             stability_bonus: data.stability_bonus,
             defense_multiplier: data.defense_multiplier,
@@ -81,7 +81,7 @@ impl Facility {
             production,
             demands,
             is_structure: data.is_structure,
-            remaining_build_days: data.build_time,
+            remaining_build_days: data.build_time as i32,
         })
     }
 
@@ -99,6 +99,10 @@ impl Facility {
 
     pub fn has_alpha_core(&self) -> bool {
         self.alpha_core
+    }
+
+    pub fn get_data(&self) -> Option<FacilityData> {
+        crate::constants::FACILITY_DATA.get(self.name.as_str()).cloned()
     }
 
     pub fn add_improvements(&mut self) -> bool {
@@ -119,11 +123,31 @@ impl Facility {
         }
     }
 
-    /// Won't handle income/expenses over wait time
-    pub fn progress_build_days(&mut self, days: u32) {
-        if self.remaining_build_days > 0 {
-            self.remaining_build_days = self.remaining_build_days.saturating_sub(days);
+    pub fn remove_improvements(&mut self) -> bool {
+        if self.improvements {
+            self.improvements = false;
+            true
+        } else {
+            false
         }
+    }
+
+    pub fn remove_alpha_core(&mut self) -> bool {
+        if self.alpha_core {
+            self.alpha_core = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn remaining_build_days(&self) -> i32 {
+        self.remaining_build_days
+    }
+
+    /// Won't handle income/expenses over wait time
+    pub fn progress_build_days(&mut self, days: i32) {
+        self.remaining_build_days = self.remaining_build_days.saturating_sub(days);
     }
 
     pub fn can_install_colony_item(&self, item: &ColonyItem, planet: &dyn PlanetConditionChecker) -> bool {
@@ -165,8 +189,15 @@ impl Facility {
         POSSIBLE_COLONY_ITEMS.iter()
             .filter_map(|item_str| {
                 if let Some(item) = ColonyItem::from_str(item_str) {
-                    if self.can_install_colony_item(&item, planet) {
-                        Some(item)
+                    if let Some(data) = COLONY_ITEM_DATA.get(&item) {
+                        if !data.compatible_facilities.contains(&self.name.as_str()) {
+                            return None;
+                        }
+                        if self.can_install_colony_item(&item, planet) {
+                            Some(item)
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
@@ -202,13 +233,18 @@ impl Facility {
         self.colony_item
     }
 
-    pub fn calculate_upkeep(&self, hazard_rating: f32) -> f32 {
+    pub fn calculate_upkeep(&self, hazard_rating: f32, size: u32) -> f32 {
         // Upkeep costs are active while building
-        let mut upkeep = self.base_upkeep;
+        let mut upkeep = calculate_formula(&self.upkeep_formula, size);
+        // println!("Upkeep: {} - {} - {}", upkeep, self.upkeep_formula, self.name);
         if self.alpha_core {
             upkeep *= 0.75; // 25% reduction for alpha core
         }
-        upkeep * (hazard_rating / 100.0)
+        upkeep *= hazard_rating / 100.0;
+        if upkeep < 0.0 {
+            panic!("Upkeep is negative for {}: {}", self.name, upkeep);
+        }
+        upkeep
     }
 
     pub fn accessibility_bonus(&self) -> f32 {
@@ -261,7 +297,7 @@ impl Facility {
 
     pub fn defense_multiplier(&self) -> f32 {
         if self.remaining_build_days > 0 {
-            return 0.0;
+            return 1.0;
         }
 
         let mut multiplier = self.defense_multiplier;
@@ -292,7 +328,7 @@ impl Facility {
 
     pub fn income_multiplier(&self) -> f32 {
         if self.remaining_build_days > 0 {
-            return 0.0;
+            return 1.0;
         }
 
         let mut multiplier = self.income_multiplier;
@@ -335,11 +371,11 @@ impl Facility {
         }
 
         // Special case: Recreational Drugs are only produced if colony is a Free Port
-        if resource == Resource::Drugs && self.name == "light industry" && !is_free_port {
+        if resource == Resource::Drugs && !is_free_port {
             return 0.0;
         }
         // Same with harvested organs and population
-        if resource == Resource::HarvestedOrgans && self.name == "population" && !is_free_port {
+        if resource == Resource::HarvestedOrgans && !is_free_port {
             return 0.0;
         }
 
@@ -347,6 +383,10 @@ impl Facility {
 
         if let Some(formula) = self.production.get(&resource) {
             amount = calculate_formula(formula, size);
+        }
+
+        if amount <= 0.0 {
+            return 0.0;
         }
 
         // Apply bonuses from improvements
@@ -377,6 +417,17 @@ impl Facility {
         amount + total_bonus
     }
 
+    pub fn get_resource_production(&self, size: u32, bonus: f32, is_free_port: bool) -> HashMap<Resource, f32> {
+        let mut production = HashMap::new();
+        for (resource, _) in &self.production {
+            let amount = self.calculate_resource_production(*resource, size, bonus, is_free_port);
+            if amount > 0.0 {
+                production.insert(*resource, amount);
+            }
+        }
+        production
+    }
+
     pub fn calculate_resource_demand(&self, resource: Resource, size: u32) -> f32 {
         if self.remaining_build_days > 0 {
             return 0.0;
@@ -396,12 +447,22 @@ impl Facility {
 
         let mut gross_income = 0.0;
 
+        if self.name == "population" {
+            let population_bonus = 10000.0 * (planet.size() as f32 - 2.0);
+            gross_income += population_bonus;
+        }
+
         for resource in self.production.keys() {
             let production = self.calculate_resource_production(*resource, size, 0.0, planet.is_free_port());
-            let accessability = planet.accessability();
-            let total_market_value = resource.market_value();
-            let market_share_percent = (production * accessability / 100.0) / total_market_value as f32;
-            gross_income += market_share_percent * total_market_value as f32;
+            let accessibility = planet.accessability();
+            let market_value = resource.market_value() as f32;
+            let sector_supply = resource.sector_supply() as f32;
+            // Skip resources with no market value (Crew and Marines)
+            if market_value == 0.0 {
+                continue;
+            }
+            let market_share = (production * accessibility) / sector_supply;
+            gross_income += market_share / market_value;
         }
         
         gross_income
@@ -411,7 +472,7 @@ impl Facility {
     /// Per month
     pub fn calculate_net_income(&self, size: u32, planet: &dyn PlanetConditionChecker) -> f32 {
         let gross = self.calculate_gross_income(size, planet);
-        let upkeep = self.calculate_upkeep(planet.get_property("hazard percent"));
+        let upkeep = self.calculate_upkeep(planet.get_property("hazard percent"), planet.size());
         gross - upkeep
     }
 
@@ -456,6 +517,7 @@ impl Facility {
 
 pub trait PlanetConditionChecker {
     fn name(&self) -> &str;
+    fn size(&self) -> u32;
     fn has_property(&self, property: &str) -> bool;
     fn get_property(&self, property: &str) -> f32;
     fn accessability(&self) -> f32;
@@ -466,6 +528,10 @@ pub trait PlanetConditionChecker {
 impl PlanetConditionChecker for super::Planet {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn size(&self) -> u32 {
+        self.size
     }
 
     fn has_property(&self, property: &str) -> bool {

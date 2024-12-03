@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::hash::Hash;
 
+use crate::constants::FacilityData;
 use crate::constants::{AdminType, Resource};
 use crate::solver::Action;
 use crate::solver::Balance;
@@ -140,29 +141,73 @@ impl Planet {
     fn can_add_industry(&self) -> bool {
         self.facilities.iter()
             .filter(|(_, f)| !f.is_structure())
-            .count() < (self.size - 2) as usize
+            .count() <= (self.size.saturating_sub(2)) as usize
     }
 
     pub fn add_facility(&mut self, name: String) -> bool {
-        if self.facilities.contains_key(&name) {
-            return false;
-        }
-        if let Some(facility) = Facility::new(name.clone()) {
-            if !self.can_add_industry() {
-                return false;
-            }
+        // Create the new facility
+        let new_facility = match Facility::new(name.clone()) {
+            Some(f) => f,
+            None => return false,
+        };
 
-            self.facilities.insert(name, facility);
-            true
-        } else {
-            false
+        // Check if this is an upgrade by looking at requirements
+        if let Some(data) = crate::constants::FACILITY_DATA.get(name.as_str()) {
+            for req in &data.requirements {
+                // If requirement matches an existing facility, this is an upgrade
+                if let Some(old_facility) = self.facilities.remove(*req) {
+                    // Transfer metadata from old facility to new one
+                    let mut upgraded = new_facility;
+                    if old_facility.has_improvements() { 
+                        upgraded.add_improvements(); 
+                    }
+                    if old_facility.has_alpha_core() {
+                        upgraded.add_alpha_core();
+                    }
+                    if let Some(item) = old_facility.get_colony_item() {
+                        upgraded.add_colony_item_raw(item);
+                    }
+                    
+                    // Add the upgraded facility
+                    self.facilities.insert(name, upgraded);
+                    return true;
+                }
+            }
         }
+
+        // If not an upgrade, just add as a new facility
+        self.facilities.insert(name, new_facility);
+        true
     }
 
     pub fn remove_facility(&mut self, name: &str) -> bool {
         if name == "population" || name == "spaceport" {
             return false; // Can't remove core facilities
         }
+        
+        if let Some(facility_data) = crate::constants::FACILITY_DATA.get(name) {
+            if let Some(downgrade) = facility_data.requirements.first() {
+                if let Some(mut downgraded_facility) = Facility::new(downgrade.to_string()) {
+                    if let Some(old_facility) = self.facilities.remove(name) {
+                        // Transfer metadata from old facility to downgraded one
+                        if old_facility.has_improvements() {
+                            downgraded_facility.add_improvements();
+                        }
+                        if old_facility.has_alpha_core() {
+                            downgraded_facility.add_alpha_core();
+                        }
+                        if let Some(item) = old_facility.get_colony_item() {
+                            downgraded_facility.add_colony_item_raw(item);
+                        }
+                        
+                        // Add the downgraded facility
+                        self.facilities.insert(downgrade.to_string(), downgraded_facility);
+                        return true;
+                    }
+                }
+            }
+        }
+        
         self.facilities.remove(name).is_some()
     }
 
@@ -171,9 +216,19 @@ impl Planet {
     }
 
     pub fn total_upkeep(&self) -> f32 {
-        self.facilities.values()
-            .map(|facility| facility.calculate_upkeep(self.hazard_rating))
-            .sum()
+        if !self.has_colony() {
+            return 0.0;
+        }
+
+        let upkeep = self.facilities.values()
+            .map(|facility| facility.calculate_upkeep(self.hazard_rating, self.size))
+            .sum();
+
+        if upkeep < 0.0 {
+            panic!("Upkeep is negative for {}: {}", self.name, upkeep);
+        } else {
+            upkeep
+        }
     }
 
     pub fn admin(&self) -> AdminType {
@@ -215,6 +270,10 @@ impl Planet {
         self.size
     }
 
+    pub fn has_hazard_pay(&self) -> bool {
+        self.has_hazard_pay
+    }
+
     pub fn set_hazard_pay(&mut self, enabled: bool) {
         self.has_hazard_pay = enabled;
     }
@@ -254,6 +313,13 @@ impl Planet {
 
     pub fn set_has_colony(&mut self, has_colony: bool) {
         self.has_colony = has_colony;
+        if has_colony {
+            self.size = 3;
+            self.growth_progress = 0.0;
+        } else {
+            self.size = 0;
+            self.growth_progress = 0.0;
+        }
     }
 
     pub fn has_colony(&self) -> bool {
@@ -264,52 +330,94 @@ impl Planet {
         self.facilities.iter().filter(|(_, f)| f.has_improvements()).count() as u32
     }
 
-    pub fn update_growth(&mut self, days: u32, larger_friendly_colonies: Option<&[(String, u32)]>) {
-        // Don't grow if already at max size
-        if self.size >= 10 {
+    pub fn update_growth(&mut self, days: i32, larger_friendly_colonies: Option<&[(String, u32)]>) {
+        const MAX_SIZE: u32 = 6;
+        const MIN_SIZE: u32 = 3;
+
+        // TODO: look into how colony size changes growth rate
+        
+        // Don't grow past limits
+        if (self.size >= MAX_SIZE && days > 0) || (self.size <= MIN_SIZE && days < 0 && self.growth_progress <= 0.0) {
             return;
         }
 
-        // Update free port days
+        let is_undoing = days < 0;
+        let mut remaining_days = days.abs() as u32;
+
+        // Update free port days if applicable
         if self.is_free_port {
-            self.free_port_days = self.free_port_days.saturating_add(days);
-        } else {
-            self.free_port_days = 0;
+            self.free_port_days = if is_undoing {
+                self.free_port_days.saturating_sub(remaining_days)
+            } else {
+                self.free_port_days.saturating_add(remaining_days)
+            };
         }
 
-        // Calculate growth points and change
-        let growth_points = self.calculate_growth_points(larger_friendly_colonies);
-        let growth_change = (growth_points as f32 * days as f32) / (100.0 * self.size as f32);
-        self.growth_progress += growth_change;
+        // Process growth day by day
+        let mut growth_points = self.calculate_growth_points(larger_friendly_colonies);
+        while remaining_days > 0 {
+            // println!("Growth points (% of size per month): {}", growth_points);
+            if growth_points <= 0 {
+                break;
+            }
 
-        // Handle size changes
-        if self.growth_progress >= 1.0 {
-            self.size += 1;
-            self.growth_progress = 0.0;
-        } else if self.growth_progress <= -1.0 && self.size > 3 {
-            self.size -= 1;
-            self.growth_progress = 0.0;
+            // Calculate daily growth
+            let growth_per_day = growth_points as f32 / 30.0 / 100.0;
+            // println!("Growth per day (% of size per day): {}", growth_per_day);
+
+            // Handle forward or reverse growth
+            let growth_change = if is_undoing { -growth_per_day } else { growth_per_day };
+
+            self.growth_progress += growth_change;
+
+            // Update size if necessary
+            if !is_undoing && self.growth_progress >= 1.0 && self.size < MAX_SIZE {
+                self.size += 1;
+                self.growth_progress -= 1.0;
+                growth_points = self.calculate_growth_points(larger_friendly_colonies);
+            } else if is_undoing && self.growth_progress < 0.0 && self.size > MIN_SIZE {
+                self.size -= 1;
+                self.growth_progress += 1.0;
+                growth_points = self.calculate_growth_points(larger_friendly_colonies);
+            }
+
+            // Ensure growth_progress stays within [0, 1) range
+            self.growth_progress = self.growth_progress.clamp(0.0, 0.99999);
+            if self.growth_progress < 0.00001 {
+                self.growth_progress = 0.0;
+            }
+
+            // println!(" Growth Progress: {}", self.growth_progress);
+
+            remaining_days -= 1;
         }
     }
 
-
-    pub fn days_till_next_size(&self, larger_friendly_colonies: Option<&[(String, u32)]>) -> Option<u32> {
-        if self.size >= 10 {
+    pub fn days_till_next_size(&self, growth_points: Option<i32>, larger_friendly_colonies: Option<&[(String, u32)]>) -> Option<u32> {
+        if !self.has_colony() || self.size >= 6 || self.size <= 2 {
             return None;
         }
 
-        let growth_points = self.calculate_growth_points(larger_friendly_colonies);
+        let growth_points = growth_points.unwrap_or_else(|| self.calculate_growth_points(larger_friendly_colonies));
         if growth_points <= 0 {
             return None;
         }
 
         let remaining_growth = 1.0 - self.growth_progress;
-        let days = (remaining_growth * 100.0 * self.size as f32 / growth_points as f32).ceil() as u32;
+        // println!(" Growth Progress: {}", self.growth_progress);
+        // println!(" Remaining growth: {}", remaining_growth);
+
+        let growth_per_month = growth_points as f32 / 100.0;
+        let days = (remaining_growth / growth_per_month * 30.0).ceil() as u32;
+
         Some(days)
     }
 
-
     pub fn calculate_growth_points(&self, larger_friendly_colonies: Option<&[(String, u32)]>) -> i32 {
+        if !self.has_colony() {
+            return 0;
+        }
+
         let mut points = 0;
 
         // Base points from stability
@@ -373,6 +481,10 @@ impl Planet {
 
     /// Calculate the total production of a specific resource from all facilities
     pub fn calculate_resource_production(&self, resource: Resource) -> f32 {
+        if !self.has_colony() {
+            return 0.0;
+        }
+
         let mut total_production = 0.0;
         let production_bonus = 0.0; // Can be modified later to account for global bonuses
 
@@ -390,6 +502,10 @@ impl Planet {
 
     /// Get a map of all resources produced by this planet and their amounts
     pub fn get_resource_production(&self) -> HashMap<Resource, f32> {
+        if !self.has_colony() {
+            return HashMap::new();
+        }
+
         let mut production = HashMap::new();
         let mut seen_resources = HashSet::new();
 
@@ -413,12 +529,17 @@ impl Planet {
 
     /// Per month
     pub fn get_gross_income(&self) -> f32 {
-        let mut gross_income = 0.0;
-        let mut highest_income_mult = 1.0;
+        if !self.has_colony() {
+            return 0.0;
+        }
+
+        let mut gross_income: f32 = 0.0;
+        let mut highest_income_mult: f32 = 1.0;
         for facility in self.facilities.values() {
-            gross_income += facility.calculate_gross_income(self.size, self);
+            let facility_income = facility.calculate_gross_income(self.size, self);
+            gross_income += facility_income;
             let income_mult = facility.income_multiplier();
-            highest_income_mult = if income_mult > highest_income_mult { income_mult } else { highest_income_mult };
+            highest_income_mult = highest_income_mult.max(income_mult);
         }
 
         gross_income * highest_income_mult
@@ -426,32 +547,107 @@ impl Planet {
 
     /// Per month
     pub fn get_net_income(&self) -> f32 {
+        if !self.has_colony() {
+            return 0.0;
+        }
+
         let mut net_income = self.get_gross_income();
         let total_upkeep = self.total_upkeep();
         net_income -= total_upkeep;
         net_income
     }
 
-    /// Will progress buildings and growth, and return net income
-    pub fn wait(&mut self, months: u32) -> f32 {
+    /// Will progress buildings and growth, and return incomes
+    pub fn wait(&mut self, months: u32) -> (f32, f32) {
+        if !self.has_colony() {
+            return (0.0, 0.0);
+        }
+
+        let mut gross_income = 0.0;
         let mut net_income = 0.0;
+
+        // Iterate through each month
         for _ in 0..months {
+            // Update planet growth
             self.update_growth(30, None);
+
+            // Progress build days for all facilities
             for facility in self.facilities.values_mut() {
                 facility.progress_build_days(30);
             }
-            net_income += self.get_net_income();
+
+            // Calculate monthly income
+            let monthly_gross = self.get_gross_income();
+            let monthly_net = monthly_gross - self.total_upkeep();
+            // println!("WAIT - Gross: {}, Net: {}, Growth: {}, Size: {}", monthly_gross, monthly_net, self.growth_progress, self.size);
+            
+            // Accumulate income
+            gross_income += monthly_gross;
+            net_income += monthly_net;
         }
-        net_income
+
+        // Return total income
+        (gross_income, net_income)
+    }
+
+    /// Will undo the effects of wait and return negative incomes
+    pub fn undo_wait(&mut self, months: u32) -> (f32, f32) {
+        if !self.has_colony() {
+            return (0.0, 0.0);
+        }
+
+        let mut gross_income = 0.0;
+        let mut net_income = 0.0;
+        
+        // For each month, we need to:
+        // 1. Calculate income for that month (before undoing changes)
+        // 2. Undo growth progress
+        // 3. Undo facility build progress
+        for _ in 0..months {
+            // First calculate income for this month before undoing changes
+            let monthly_gross = self.get_gross_income();
+            let monthly_net = monthly_gross - self.total_upkeep();
+            // println!("UNDO WAIT - Gross: {}, Net: {}, Growth: {}, Size: {}", monthly_gross, monthly_net, self.growth_progress, self.size);
+
+            gross_income += monthly_gross;
+            net_income += monthly_net;
+
+            // Undo growth progress - now uses negative days
+            self.update_growth(-30, None);
+
+            // Undo facility build progress
+            for facility in self.facilities.values_mut() {
+                facility.progress_build_days(-30);
+            }
+        }
+
+        (gross_income, net_income)
+    }
+
+    fn meets_facility_requirements(&self, requirements: &[&str]) -> bool {
+        for req in requirements {
+            // First check if it's a property requirement
+            if let Some(value) = self.properties.get(*req) {
+                if *value <= 0.0 {
+                    return false;
+                }
+                continue;
+            }
+
+            // If not a property, check if it's a required facility
+            if !self.facilities.contains_key(*req) {
+                return false;
+            }
+        }
+        true
     }
 
     pub fn get_possible_actions(&self, balance: &Balance) -> Vec<Action> {
         let mut actions = Vec::new();
         let planet_name = self.name.clone();
         
-        // If this planet is not colonized, the only possible action is to do so
+        // If this planet is not colonized, return empty list since colonization is handled by System
         if !self.has_colony() {
-            actions.push(Action::Colonize(planet_name.clone()));
             return actions;
         }
 
@@ -475,21 +671,56 @@ impl Planet {
         // Add new facilities
         for (name, facility) in crate::constants::FACILITY_DATA.iter() {
             if !self.facilities().contains_key(*name) {
-                if facility.is_structure || self.can_add_industry() {
-                    if balance.credits() < facility.build_cost as f32 {
-                        continue;
+                // Check if we meet the requirements for this facility
+                if !self.meets_facility_requirements(&facility.requirements) {
+                    continue;
+                }
+
+                // Check if this is an upgrade (any requirement matches an existing facility)
+                let upgrade_from = facility.requirements.iter()
+                    .find(|req| self.facilities().contains_key(**req))
+                    .and_then(|name| self.facilities().get(*name));
+                
+                // Check if we already have an upgrade of this facility
+                let has_upgrade = self.facilities().values().any(|f| 
+                    if let Some(data) = f.get_data() {
+                        data.requirements.contains(name)
+                    } else {
+                        false
                     }
+                );
+
+                if has_upgrade {
+                    continue;
+                }
+
+                // Determine if we can add this facility
+                let can_add = match upgrade_from {
+                    // If it's an upgrade, check if we need a new industry slot
+                    Some(old_facility) => {
+                        // Need industry slot if upgrading from structure to industry
+                        !old_facility.is_structure() || facility.is_structure || self.can_add_industry()
+                    },
+                    // Not an upgrade - normal structure/industry check
+                    None => facility.is_structure || self.can_add_industry()
+                };
+
+                if can_add && balance.credits() >= facility.build_cost as f32 {
                     actions.push(Action::AddFacility(planet_name.clone(), name.to_string()));
                 }
-                else {
+                else if !facility.is_structure && !self.can_add_industry() {
                     // Add a Wait action; need to calculate how long we need to grow
                     // to next colony size
-                    let days = self.days_till_next_size(None);
-                    if days.is_none() {
-                        continue;
+                    let days = self.days_till_next_size(None, None);
+                    if let Some(days) = days {
+                        let months = (days as f32 / 30.0).ceil() as u32;
+                        if months > 0 {
+                            let action = Action::Wait(months);
+                            if !actions.contains(&action) {
+                                actions.push(action);
+                            }
+                        }
                     }
-                    let months = (days.unwrap() as f32 / 30.0).ceil() as u32;
-                    actions.push(Action::Wait(months));
                 }
             }
         }
@@ -498,6 +729,16 @@ impl Planet {
         for (_, facility) in self.facilities() {
             actions.extend(facility.get_possible_actions(self, balance));
         }
+
+        // Deduplicate Wait actions
+        let mut seen_waits = std::collections::HashSet::new();
+        actions.retain(|action| {
+            if let Action::Wait(months) = action {
+                seen_waits.insert(*months)
+            } else {
+                true
+            }
+        });
 
         actions
     }
