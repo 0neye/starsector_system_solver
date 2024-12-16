@@ -79,13 +79,13 @@ impl PartialEq for Action {
 #[derive(Debug, Clone)]
 pub struct Balance {
     // Current balances
-    credits: f32,
+    credits: f64,
     story_points: u32,
     alpha_cores: u32,
     
     // Income tracking
-    gross_income: f32,
-    net_income: f32,
+    gross_income: f64,
+    net_income: f64,
     
     // Available colony items and their counts
     colony_items: HashMap<ColonyItem, u32>,
@@ -93,7 +93,7 @@ pub struct Balance {
 
 impl Hash for Balance {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // Hash f32 values by converting them to bits
+        // Hash f64 values by converting them to bits
         self.credits.to_bits().hash(state);
         self.story_points.hash(state);
         self.alpha_cores.hash(state);
@@ -111,7 +111,7 @@ impl Hash for Balance {
 }
 
 impl Balance {
-    pub fn new(initial_credits: f32, initial_sp: u32, initial_cores: u32) -> Self {
+    pub fn new(initial_credits: f64, initial_sp: u32, initial_cores: u32) -> Self {
         Self {
             credits: initial_credits,
             story_points: initial_sp,
@@ -123,20 +123,20 @@ impl Balance {
     }
 
     // Getters
-    pub fn credits(&self) -> f32 { self.credits }
+    pub fn credits(&self) -> f64 { self.credits }
     pub fn story_points(&self) -> u32 { self.story_points }
     pub fn alpha_cores(&self) -> u32 { self.alpha_cores }
-    pub fn gross_income(&self) -> f32 { self.gross_income }
-    pub fn net_income(&self) -> f32 { self.net_income }
+    pub fn gross_income(&self) -> f64 { self.gross_income }
+    pub fn net_income(&self) -> f64 { self.net_income }
     pub fn colony_items(&self) -> &HashMap<ColonyItem, u32> { &self.colony_items }
 
     // Mutators
-    pub fn add_credits(&mut self, amount: f32) {
-        self.credits += amount;
+    pub fn add_credits(&mut self, amount: f64) {
+        self.credits += amount.ceil();
     }
 
-    pub fn spend_credits(&mut self, amount: f32) {
-        self.credits -= amount;
+    pub fn spend_credits(&mut self, amount: f64) {
+        self.credits -= amount.ceil();
     }
 
     pub fn add_story_points(&mut self, amount: u32) {
@@ -182,7 +182,7 @@ impl Balance {
         false
     }
 
-    pub fn update_income(&mut self, gross: f32, net: f32) {
+    pub fn update_income(&mut self, gross: f64, net: f64) {
         self.gross_income = gross;
         self.net_income = net;
     }
@@ -197,41 +197,36 @@ pub struct State {
 
 impl Hash for State {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // Much simpler and faster than hashing systems!
-        // The action log is all we need to hash
-        
-        // First split the action log into sequences of wait and non-wait actions
-        // So [Wait(2), Wait(1), AddFacility(_,_), AddImprovement(_,_), Wait(1)] 
-        // becomes [[Wait(2), Wait(1)], [AddFacility(_,_), AddImprovement(_,_)], [Wait(1)]]
-        let mut sequences = Vec::new();
-        let mut current_sequence = Vec::new();
-        let mut is_wait_sequence = self.action_log.first().map_or(false, |a| matches!(a, Action::Wait(_)));
+        // Initialize a vector to store hashes of action sequences
+        let mut num_sequence = Vec::new();
+        let mut current_hash = 0u64;
+        let mut is_wait_sequence = false;
 
+        // Iterate through each action in the action log
         for action in &self.action_log {
+            // Check if the current action is a Wait action
             let is_wait = matches!(action, Action::Wait(_));
-            if is_wait != is_wait_sequence && !current_sequence.is_empty() {
-                sequences.push(std::mem::take(&mut current_sequence));
-                is_wait_sequence = is_wait;
+            
+            // If we transition between Wait and non-Wait actions, push the current hash
+            if is_wait != is_wait_sequence && current_hash != 0 {
+                num_sequence.push(current_hash);
+                current_hash = 0;
             }
-            current_sequence.push(action);
+            
+            // Update the wait sequence flag
+            is_wait_sequence = is_wait;
+            
+            // Add the hash of the current action to the running hash
+            // Using wrapping_add to handle potential overflow
+            current_hash = current_hash.wrapping_add(action.get_hash());
         }
 
-        if !current_sequence.is_empty() {
-            sequences.push(current_sequence);
+        // Push the final hash if there's any remaining
+        if current_hash != 0 {
+            num_sequence.push(current_hash);
         }
 
-
-        // Now we can simply add the hash values of all items in each sequence
-        // since the order of the items in these sub-sequences doesn't matter
-        let mut num_sequence = vec![];
-        for sequence in sequences {
-            let mut hash = 0u64;
-            for item in sequence {
-                hash = hash.wrapping_add(item.get_hash());
-            }
-            num_sequence.push(hash);
-        }
-
+        // Hash the entire sequence of hashes
         num_sequence.hash(state);
     }
 }
@@ -265,11 +260,11 @@ impl State {
         &mut self.action_log
     }
 
-    pub fn get_possible_actions(&self) -> Vec<Action> {
-        self.system.get_possible_actions(&self.balance)
+    pub fn get_possible_actions(&self, slim: bool) -> Vec<Action> {
+        self.system.get_possible_actions(&self.balance, slim)
     }
 
-    pub fn apply_action_raw(&mut self, action: &Action) {
+    pub fn apply_action_raw(&mut self, action: &Action, debug: bool) {
         self.action_log.push(action.clone());
         match action {
             Action::AddFacility(planet_name, facility_name) => {
@@ -279,7 +274,7 @@ impl State {
                 let planet = self.system_mut().get_planet_mut(planet_name).unwrap();
                 if planet.add_facility(facility_name.clone()) {
                     if let Some(facility_data) = FACILITY_DATA.get(facility_name.as_str()) {
-                        self.balance_mut().spend_credits(facility_data.build_cost as f32);
+                        self.balance_mut().spend_credits(facility_data.build_cost as f64);
                     }
                 }
             },
@@ -287,17 +282,22 @@ impl State {
                 let improvement_cost = 2_u32.pow(self.system().get_planet(planet_name).unwrap().get_num_facility_improvements());
                 self.balance_mut().spend_story_points(improvement_cost);
                 let planet = self.system_mut().get_planet_mut(planet_name).unwrap();
-                let facility = planet.get_facility_mut(facility_name).unwrap();
-                facility.add_improvements();
+                let fac = planet.get_facility_mut(facility_name).unwrap();
+                fac.add_improvements();
+                // fac.update_accessibility_bonus();
             },
             Action::AddAlphaCore(planet_name, facility_name) => {
                 self.balance_mut().spend_alpha_cores(1);
-                self.system_mut().get_planet_mut(planet_name).unwrap()
-                    .get_facility_mut(facility_name).unwrap().add_alpha_core();
+                let fac = self.system_mut().get_planet_mut(planet_name).unwrap()
+                    .get_facility_mut(facility_name).unwrap();
+                fac.add_alpha_core();
+                // fac.update_accessibility_bonus();
             },
             Action::InstallItem(planet_name, facility_name, item) => {
                 self.balance_mut().remove_colony_item(item);
-                self.system_mut().get_planet_mut(planet_name).unwrap().get_facility_mut(facility_name).unwrap().add_colony_item_raw(item.clone());
+                let fac = self.system_mut().get_planet_mut(planet_name).unwrap().get_facility_mut(facility_name).unwrap();
+                fac.add_colony_item_raw(item.clone());
+                // fac.update_accessibility_bonus();
             },
             Action::SetFreePort(planet_name, is_free_port) => {
                 self.system_mut().get_planet_mut(planet_name).unwrap().set_free_port(*is_free_port);
@@ -318,7 +318,7 @@ impl State {
                     if !planet.has_colony() {
                         continue;
                     }
-                    let (_, net_from_wait) = planet.wait(*months);
+                    let (_, net_from_wait) = planet.wait(*months, debug);
                     self.balance.add_credits(net_from_wait);
                     // println!("Net income from waiting for planet {} is {}", planet.name(), net_from_wait);
                 }
@@ -330,8 +330,12 @@ impl State {
         self.balance.update_income(gross_income, net_income);
     }
 
-    pub fn undo_last_action(&mut self) {
-        let action = self.action_log.pop().unwrap();
+    pub fn undo_last_action(&mut self, debug: bool) {
+        let action = self.action_log.pop();
+        if action.is_none() {
+            return;
+        }
+        let action = action.unwrap();
         match action {
             Action::AddFacility(planet_name, facility_name) => {
                 // if facility_name == "spaceport" || facility_name == "population" {
@@ -339,7 +343,7 @@ impl State {
                 // }
                 self.system_mut().get_planet_mut(&planet_name).unwrap().remove_facility(&facility_name);
                 if let Some(facility_data) = FACILITY_DATA.get(facility_name.as_str()) {
-                    self.balance_mut().add_credits(facility_data.build_cost as f32);
+                    self.balance_mut().add_credits(facility_data.build_cost as f64);
                 }
             },
             Action::AddImprovement(planet_name, facility_name) => {
@@ -374,7 +378,7 @@ impl State {
                     if !planet.has_colony() {
                         continue;
                     }
-                    let (_, net_from_wait) = planet.undo_wait(months);
+                    let (_, net_from_wait) = planet.undo_wait(months, debug);
                     self.balance.spend_credits(net_from_wait);
                     // println!("Undo net income from waiting for planet {} is {}", planet.name(), net_from_wait);
                 }
@@ -387,33 +391,33 @@ impl State {
         
     }
 
-    pub fn score(&self) -> f32 {
+    pub fn score(&self) -> f64 {
         let mut score = 0.0;
         
         // Base score is current credits plus projected income
         score += self.balance.credits;
-        score += self.balance.net_income * 2.0; // Project income a little into the future
+        score += self.balance.net_income * 12.0; // Project income a little into the future
         
         // Add value for each colonized planet
         for planet in self.system.planets().values() {
             if planet.has_colony() {    
 
-                // Value for facilities
-                for (name, _) in planet.facilities() {
-                    match name.as_str() {
-                        "waystation" => score += 10_000.0,
-                        "Patrol HQ" => score += 15_000.0,
-                        "planetary shield" => score += 20_000.0,
-                        "megaport" => score += 15_000.0,
-                        "ground defenses" => score += 10_000.0,
-                        "star fortress" => score += 30_000.0,
-                        "heavy batteries" => score += 15_000.0,
-                        "orbital station" => score += 10_000.0,
-                        "cryorevival facility" => score += 15_000.0,
-                        "battle station" => score += 20_000.0,
-                        _ => score += 50_000.0,
-                    }
-                }
+                // // Value for facilities
+                // for (name, _) in planet.facilities() {
+                //     match name.as_str() {
+                //         "waystation" => score += 10_000.0,
+                //         "Patrol HQ" => score += 15_000.0,
+                //         "planetary shield" => score += 20_000.0,
+                //         "megaport" => score += 15_000.0,
+                //         "ground defenses" => score += 10_000.0,
+                //         "star fortress" => score += 30_000.0,
+                //         "heavy batteries" => score += 15_000.0,
+                //         "orbital station" => score += 10_000.0,
+                //         "cryorevival facility" => score += 15_000.0,
+                //         "battle station" => score += 20_000.0,
+                //         _ => score += 50_000.0,
+                //     }
+                // }
                 
                 // Value for admin type
                 match planet.admin() {
@@ -421,15 +425,15 @@ impl State {
                     AdminType::AlphaCore => score += 50_000.0,
                 }
                 
-                // Value for improvements
-                for facility in planet.facilities().values() {
-                    if facility.has_improvements() {
-                        score += 5_000.0;
-                    }
-                    if facility.has_alpha_core() {
-                        score += 7_500.0;
-                    }
-                }
+                // // Value for improvements
+                // for facility in planet.facilities().values() {
+                //     if facility.has_improvements() {
+                //         score += 5_000.0;
+                //     }
+                //     if facility.has_alpha_core() {
+                //         score += 7_500.0;
+                //     }
+                // }
                 
                 // Penalties for not having hazard pay on high hazard worlds
                 let avg_hazard = 150.0;
@@ -448,46 +452,46 @@ impl State {
         hasher.finish()
     }
 
-    pub fn get_ordered_possible_actions(&self) -> Vec<Action> {
+    pub fn get_ordered_possible_actions(&self, slim: bool) -> Vec<Action> {
         // println!("Starting get_ordered_possible_actions");
         // println!(" Getting possible actions");
-        let mut actions = self.get_possible_actions();
+        let mut actions = self.get_possible_actions(slim);
         // println!(" Got {} possible actions", actions.len());
         
         // println!(" Sorting actions");
         actions.sort();
         // println!(" Actions sorted");
         
-        let top_n = actions.len().min(5);
-        // println!(" Will simulate top {} moves", top_n);
+        // let top_n = actions.len().min(5);
+        // // println!(" Will simulate top {} moves", top_n);
         
-        if top_n > 0 {
-            // println!(" Simulating and scoring top actions");
-            let mut scores: Vec<(f32, usize)> = actions[..top_n]
-                .iter()
-                .enumerate()
-                .map(|(i, action)| {
-                    // println!(" Simulating action: {:?}", action);
-                    let mut new_state = self.clone();
-                    new_state.apply_action_raw(action);
-                    let score = new_state.score();
-                    // println!(" Action score: {}", score);
-                    (score, i)
-                })
-                .collect();
+        // if top_n > 0 {
+        //     // println!(" Simulating and scoring top actions");
+        //     let mut scores: Vec<(f64, usize)> = actions[..top_n]
+        //         .iter()
+        //         .enumerate()
+        //         .map(|(i, action)| {
+        //             // println!(" Simulating action: {:?}", action);
+        //             let mut new_state = self.clone();
+        //             new_state.apply_action_raw(action);
+        //             let score = new_state.score();
+        //             // println!(" Action score: {}", score);
+        //             (score, i)
+        //         })
+        //         .collect();
             
-            // println!(" Sorting scores");
-            scores.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-            // println!(" Scores sorted");
+        //     // println!(" Sorting scores");
+        //     scores.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        //     // println!(" Scores sorted");
             
-            // println!(" Reordering actions based on scores");
-            let mut reordered: Vec<Action> = scores.into_iter()
-                .map(|(_, i)| actions[i].clone())
-                .collect();
-            // println!(" Extending reordered actions with remaining actions");
-            reordered.extend(actions[top_n..].iter().cloned());
-            actions = reordered;
-        }
+        //     // println!(" Reordering actions based on scores");
+        //     let mut reordered: Vec<Action> = scores.into_iter()
+        //         .map(|(_, i)| actions[i].clone())
+        //         .collect();
+        //     // println!(" Extending reordered actions with remaining actions");
+        //     reordered.extend(actions[top_n..].iter().cloned());
+        //     actions = reordered;
+        // }
         
         // println!(" Returning {} ordered actions", actions.len());
         actions
@@ -525,7 +529,7 @@ impl SearchInfo {
 
 #[derive(Debug, Clone)]
 pub struct SearchResult {
-    pub score: f32,
+    pub score: f64,
     pub nodes_explored: u32,
     pub action_log: Vec<Action>,
 }
@@ -544,17 +548,21 @@ pub fn search(initial_state: &State, time_limit: u32) -> SearchResult {
     println!("Initial state score: {}", initial_state.score());
 
     let mut best_actions = Vec::new();
-    let mut best_score = f32::NEG_INFINITY;
+    let mut best_score = f64::NEG_INFINITY;
     let mut nodes_explored = 0;
 
     for depth in 0..=MAX_DEPTH {
+        // TODO: make useful between depths
+        let mut tt = HashMap::new();
+
         if info.is_time_up() {
             println!("Time limit reached at depth {}", depth);
             break;
         }
 
+        let depth_start_time = std::time::Instant::now();
         println!("\nSearching at depth {}", depth);
-        let result = dfs(&mut info, depth, best_score);
+        let result = dfs(&mut info, depth, best_score, &mut tt);
         if result.is_none() {
             println!("Search interrupted at depth {}", depth);
             break;
@@ -562,7 +570,8 @@ pub fn search(initial_state: &State, time_limit: u32) -> SearchResult {
 
         let result = result.unwrap();
         let score = result.score;
-        println!("Depth {} completed. Score: {}, Nodes explored: {}", depth, score, result.nodes_explored);
+        let depth_duration = depth_start_time.elapsed();
+        println!("Depth {} completed in {:?}. Score: {}, Nodes explored: {}, Unique positions explored: {}", depth, depth_duration, score, result.nodes_explored, tt.len());
         if score > best_score {
             best_score = score;
             best_actions = result.action_log;
@@ -572,7 +581,7 @@ pub fn search(initial_state: &State, time_limit: u32) -> SearchResult {
     }
     
     println!("Search completed. Best score: {}, Total nodes explored: {}", best_score, nodes_explored);
-    println!("Ending State: {:#?}", info.state);
+    println!("Ending State: {:#?}\n{:#?}", info.state.balance, info.state.action_log);
     SearchResult {
         score: best_score,
         nodes_explored,
@@ -582,13 +591,19 @@ pub fn search(initial_state: &State, time_limit: u32) -> SearchResult {
 
 
 
-fn dfs(info: &mut SearchInfo, depth: u32, alpha: f32) -> Option<SearchResult> {
-    let indent = " ".repeat((MAX_DEPTH - depth + 1) as usize);
+fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashMap<u64, SearchResult>) -> Option<SearchResult> {
+    // let indent = " ".repeat((MAX_DEPTH - depth + 1) as usize);
     // println!("{}Entering dfs: depth={}, alpha={}", indent, depth, alpha);
     
     if info.is_time_up() {
         // println!("{}Time up, exiting dfs", indent);
         return None;
+    }
+
+    let hash = info.state.get_hash();
+    if let Some(result) = tt.get(&hash) {
+        // println!("{}Found in transposition table: {}", indent, result.score);
+        return Some(result.clone());
     }
 
     let mut result = SearchResult {
@@ -605,18 +620,21 @@ fn dfs(info: &mut SearchInfo, depth: u32, alpha: f32) -> Option<SearchResult> {
     }
 
     // println!("{}Getting possible actions", indent);
-    let actions = info.state.get_ordered_possible_actions();
+    let actions = info.state.get_ordered_possible_actions(true);
+    // _test_action_undo_consistency(&mut info.state, Some(actions.clone()));
     // println!("{}Number of possible actions: {}", indent, actions.len());
     // println!("{}Actions: {:#?}", indent, actions);
     let mut best_action_log = info.state.action_log.clone();
     let mut best_score = alpha;
 
     for (i, action) in actions.iter().enumerate() {
+        // let pre_action_credits = info.state.balance().credits();
         // println!("{}Applying action {} of {}: {:?}", indent, i + 1, actions.len(), action);
-        info.state.apply_action_raw(action);
+
+        info.state.apply_action_raw(action, false);
 
         // println!("{}Recursive call: depth={}, best_score={}", indent, depth - 1, best_score);
-        let sub_result = dfs(info, depth - 1, best_score);
+        let sub_result = dfs(info, depth - 1, best_score, tt);
 
         if let Some(sub_result) = sub_result {
             result.nodes_explored += sub_result.nodes_explored;
@@ -628,18 +646,81 @@ fn dfs(info: &mut SearchInfo, depth: u32, alpha: f32) -> Option<SearchResult> {
             }
         } else {
             // println!("{}Time up during recursive call, exiting", indent);
+            info.state.undo_last_action(false);
             return None;
         }
 
         // println!("{}Undoing action", indent);
-        info.state.undo_last_action();
+        info.state.undo_last_action(false);
+        // if (pre_action_credits - info.state.balance().credits()).abs() > 1e-6 && depth == 1 {
+        //     println!("Inconsistency found! Action: {:?}, Pre-action credits: {}, Post-undo credits: {}", action, pre_action_credits, info.state.balance().credits());
+        //     println!("{:#?}", info.state.action_log());
+        //     // info.state.apply_action_raw(action);
+        //     // let actions = info.state.get_ordered_possible_actions();
+        //     // _test_action_undo_consistency(&mut info.state, Some(actions.clone()));
+        //     // println!("Further testing showed no depth+1 inconsistency.");
+        //     panic!("Action undo inconsistency detected");
+        // }
     }
 
     result.score = best_score;
     result.action_log = best_action_log;
+
+    tt.insert(hash, result.clone());
     // println!("{}Exiting dfs: best_score={}", indent, best_score);
     Some(result)
 }
+
+
+fn _test_action_undo_consistency(state: &mut State, actions: Option<Vec<Action>>) {
+    // println!("\nTesting action undo consistency...");
+    let actions = actions.unwrap_or_else(|| state.get_possible_actions(true));
+    let mut orig_state = state.clone();
+
+
+    fn fac_inconsistency(state1: &State, state2: &State) -> bool {
+        for planet_name in state1.system().planets().keys() {
+            let facilities1 = &state1.system().planets()[planet_name].facilities();
+            let facilities2 = &state2.system().planets()[planet_name].facilities();
+
+            if facilities1.len() != facilities2.len() {
+                return true;
+            }
+
+            for (fac_name, _) in facilities1.iter() {
+                if !facilities2.contains_key(fac_name) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+
+    for action in actions {
+        let pre_action_credits = state.balance().credits();
+        state.apply_action_raw(&action, false);
+        state.undo_last_action(false);
+
+        if (pre_action_credits - state.balance().credits()).abs() > 1e-6 || fac_inconsistency(state, &orig_state) {
+            // resimulate so we can get full debug info
+            println!("\n{:#?}", orig_state);
+            orig_state.apply_action_raw(&action, true);
+            orig_state.undo_last_action(true);
+
+            println!("Inconsistency found! Action: {:?}, Pre-action credits: {}, Post-undo credits: {}", action, pre_action_credits, state.balance().credits());
+            // println!("Full state after inconsistency:\n{:#?}", state);
+            println!("\n{:#?}", orig_state);
+            panic!("Action undo inconsistency detected");
+        }
+    }
+
+    // println!("All actions and undos were consistent.");
+    // println!("Original credits: {}", original_credits);
+    // println!("Final credits: {}", state.balance().credits());
+}
+
+
 
 pub fn simulate_linear(initial_state: &State, num_turns: u32) -> SearchInfo {
     let mut info = SearchInfo {
@@ -657,20 +738,20 @@ pub fn simulate_linear(initial_state: &State, num_turns: u32) -> SearchInfo {
         println!("Credits: {}", info.state.balance.credits as i32);
         
         // Get all possible actions
-        let actions = info.state.get_ordered_possible_actions();
+        let actions = info.state.get_ordered_possible_actions(true);
         if actions.is_empty() {
             println!("No valid actions available!");
             break;
         }
         
         // Try each action and pick the one that leads to highest immediate score
-        let mut best_score = f32::NEG_INFINITY;
+        let mut best_score = f64::NEG_INFINITY;
         let mut best_action = None;
         let mut best_next_state = None;
         
         for action in actions {
             let mut next_state = info.state.clone();
-            next_state.apply_action_raw(&action);
+            next_state.apply_action_raw(&action, false);
             let score = next_state.score();
             
             println!("  Action: {:?} -> Score: {}", action, score as i32);
@@ -703,15 +784,19 @@ pub fn simulate_linear(initial_state: &State, num_turns: u32) -> SearchInfo {
             }
         }
     }
-    
-    println!("\nSimulation complete!");
-    println!("Final score: {}", info.state.score());
-    println!("Final credits: {}", info.state.balance.credits);
 
     println!("\nAction sequence:");
     for action in info.action_log() {
         println!("  - {:?}", action);
     }
+
+    for _ in 0..num_turns {
+        info.state.undo_last_action(false);
+    }
+    
+    println!("\nSimulation complete!");
+    println!("Final score: {}", info.state.score());
+    println!("Final credits: {}", info.state.balance.credits);
     
     info
 }

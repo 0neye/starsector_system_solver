@@ -24,7 +24,7 @@ pub enum Resource {
 }
 
 impl Resource {
-    pub fn base_price(&self) -> f32 {
+    pub fn base_price(&self) -> f64 {
         match self {
             Resource::Supplies => 250.0,
             Resource::Fuel => 750.0,
@@ -116,7 +116,7 @@ impl Resource {
         }
     }
 
-    pub fn price_per_unit(&self) -> f32 {
+    pub fn price_per_unit(&self) -> f64 {
         match self {
             Resource::Supplies => 1335.0,
             Resource::Fuel => 6900.0,
@@ -140,10 +140,10 @@ impl Resource {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceAmount {
     pub resource: Resource,
-    pub amount_formula: String, // e.g. "size - 2", "size + 1", or just "3"
+    pub amount_formula: fn(u32) -> f64,
 }
 
 pub trait ResourceGetter {
@@ -161,11 +161,11 @@ pub struct FacilityData {
     pub name: &'static str,
     pub build_cost: u32,
     pub build_time: u32,
-    pub base_upkeep_formula: &'static str,
-    pub accessibility_bonus: f32,
+    pub base_upkeep_formula: fn(u32) -> f64,
+    pub accessibility_bonus: f64,
     pub stability_bonus: i32,
-    pub defense_multiplier: f32,
-    pub income_multiplier: f32,
+    pub defense_multiplier: f64,
+    pub income_multiplier: f64,
     pub production: Vec<ResourceAmount>,
     pub demands: Vec<ResourceAmount>,
     pub special_effects: Vec<&'static str>,
@@ -213,44 +213,21 @@ impl ColonyItem {
 pub struct ColonyItemEffect {
     pub compatible_facilities: Vec<&'static str>,
     pub production_bonuses: Vec<ResourceAmount>,
-    pub defense_multiplier: f32,
-    pub accessibility_bonus: f32,
-    pub income_multiplier: f32,
+    pub defense_multiplier: f64,
+    pub accessibility_bonus: f64,
+    pub income_multiplier: f64,
 }
 
 lazy_static! {
     pub static ref COLONY_ITEM_DATA: HashMap<ColonyItem, ColonyItemEffect> = {
         let mut map = HashMap::new();
-        
-        // Helper function to create production bonus maps
-        let create_bonus_map = |items: &[(&'static str, f32)]| -> Vec<ResourceAmount> {
-            items.iter().copied().map(|(name, bonus)| ResourceAmount {
-                resource: match name {
-                    "supplies" => Resource::Supplies,
-                    "fuel" => Resource::Fuel,
-                    "food" => Resource::Food,
-                    "ore" => Resource::Ore,
-                    "metals" => Resource::Metals,
-                    "rare_ore" => Resource::TransplutonicOre,
-                    "rare_metals" => Resource::Transplutonics,
-                    "organics" => Resource::Organics,
-                    "volatiles" => Resource::Volatiles,
-                    "domestic_goods" => Resource::DomesticGoods,
-                    "luxury_goods" => Resource::LuxuryGoods,
-                    "heavy_machinery" => Resource::HeavyMachinery,
-                    "supplies_military" => Resource::HeavyArmaments,
-                    "drugs" => Resource::Drugs,
-                    "organs" => Resource::HarvestedOrgans,
-                    "ships" => Resource::ShipHullsAndWeapons,
-                    _ => unreachable!(),
-                },
-                amount_formula: bonus.to_string(),
-            }).collect()
-        };
 
         map.insert(ColonyItem::SoilNanites, ColonyItemEffect {
             compatible_facilities: vec!["farming"],
-            production_bonuses: create_bonus_map(&[("food", 2.0)]),
+            production_bonuses: vec![ResourceAmount {
+                resource: Resource::Food,
+                amount_formula: |_| 2.0,
+            }],
             defense_multiplier: 1.0,
             accessibility_bonus: 0.0,
             income_multiplier: 1.0,
@@ -258,11 +235,20 @@ lazy_static! {
 
         map.insert(ColonyItem::MantleBore, ColonyItemEffect {
             compatible_facilities: vec!["mining"],
-            production_bonuses: create_bonus_map(&[
-                ("ore", 3.0),
-                ("rare_ore", 3.0),
-                ("organics", 3.0),
-            ]),
+            production_bonuses: vec![
+                ResourceAmount {
+                    resource: Resource::Ore,
+                    amount_formula: |_| 3.0,
+                },
+                ResourceAmount {
+                    resource: Resource::TransplutonicOre,
+                    amount_formula: |_| 3.0,
+                },
+                ResourceAmount {
+                    resource: Resource::Organics,
+                    amount_formula: |_| 3.0,
+                },
+            ],
             defense_multiplier: 1.0,
             accessibility_bonus: 0.0,
             income_multiplier: 1.0,
@@ -270,11 +256,20 @@ lazy_static! {
 
         map.insert(ColonyItem::BiofactoryEmbryo, ColonyItemEffect {
             compatible_facilities: vec!["light industry"],
-            production_bonuses: create_bonus_map(&[
-                ("domestic_goods", 2.0),
-                ("luxury_goods", 2.0),
-                ("drugs", 2.0),
-            ]),
+            production_bonuses: vec![
+                ResourceAmount {
+                    resource: Resource::DomesticGoods,
+                    amount_formula: |_| 2.0,
+                },
+                ResourceAmount {
+                    resource: Resource::LuxuryGoods,
+                    amount_formula: |_| 2.0,
+                },
+                ResourceAmount {
+                    resource: Resource::Drugs,
+                    amount_formula: |_| 2.0,
+                },
+            ],
             defense_multiplier: 1.0,
             accessibility_bonus: 0.0,
             income_multiplier: 1.0,
@@ -282,10 +277,16 @@ lazy_static! {
 
         map.insert(ColonyItem::CatalyticCore, ColonyItemEffect {
             compatible_facilities: vec!["refining"],
-            production_bonuses: create_bonus_map(&[
-                ("metals", 3.0),
-                ("rare_metals", 3.0),
-            ]),
+            production_bonuses: vec![
+                ResourceAmount {
+                    resource: Resource::Metals,
+                    amount_formula: |_| 3.0,
+                },
+                ResourceAmount {
+                    resource: Resource::Transplutonics,
+                    amount_formula: |_| 3.0,
+                },
+            ],
             defense_multiplier: 1.0,
             accessibility_bonus: 0.0,
             income_multiplier: 1.0,
@@ -301,12 +302,24 @@ lazy_static! {
 
         map.insert(ColonyItem::CorruptedNanoforge, ColonyItemEffect {
             compatible_facilities: vec!["heavy industry"],
-            production_bonuses: create_bonus_map(&[
-                ("heavy_machinery", 1.0),
-                ("supplies", 1.0),
-                ("supplies_military", 1.0),
-                ("ships", 1.0),
-            ]),
+            production_bonuses: vec![
+                ResourceAmount {
+                    resource: Resource::HeavyMachinery,
+                    amount_formula: |_| 1.0,
+                },
+                ResourceAmount {
+                    resource: Resource::Supplies,
+                    amount_formula: |_| 1.0,
+                },
+                ResourceAmount {
+                    resource: Resource::HeavyArmaments,
+                    amount_formula: |_| 1.0,
+                },
+                ResourceAmount {
+                    resource: Resource::ShipHullsAndWeapons,
+                    amount_formula: |_| 1.0,
+                },
+            ],
             defense_multiplier: 1.0,
             accessibility_bonus: 0.0,
             income_multiplier: 1.0,
@@ -314,12 +327,24 @@ lazy_static! {
 
         map.insert(ColonyItem::PristineNanoforge, ColonyItemEffect {
             compatible_facilities: vec!["heavy industry"],
-            production_bonuses: create_bonus_map(&[
-                ("heavy_machinery", 3.0),
-                ("supplies", 3.0),
-                ("supplies_military", 3.0),
-                ("ships", 3.0),
-            ]),
+            production_bonuses: vec![
+                ResourceAmount {
+                    resource: Resource::HeavyMachinery,
+                    amount_formula: |_| 3.0,
+                },
+                ResourceAmount {
+                    resource: Resource::Supplies,
+                    amount_formula: |_| 3.0,
+                },
+                ResourceAmount {
+                    resource: Resource::HeavyArmaments,
+                    amount_formula: |_| 3.0,
+                },
+                ResourceAmount {
+                    resource: Resource::ShipHullsAndWeapons,
+                    amount_formula: |_| 3.0,
+                },
+            ],
             defense_multiplier: 1.0,
             accessibility_bonus: 0.0,
             income_multiplier: 1.0,
@@ -351,7 +376,10 @@ lazy_static! {
 
         map.insert(ColonyItem::PlasmaDynamo, ColonyItemEffect {
             compatible_facilities: vec!["mining"],
-            production_bonuses: create_bonus_map(&[("volatiles", 3.0)]),
+            production_bonuses: vec![ResourceAmount {
+                resource: Resource::Volatiles,
+                amount_formula: |_| 3.0,
+            }],
             defense_multiplier: 1.0,
             accessibility_bonus: 0.0,
             income_multiplier: 1.0,
@@ -359,7 +387,10 @@ lazy_static! {
 
         map.insert(ColonyItem::SynchrotronCore, ColonyItemEffect {
             compatible_facilities: vec!["fuel production"],
-            production_bonuses: create_bonus_map(&[("fuel", 3.0)]),
+            production_bonuses: vec![ResourceAmount {
+                resource: Resource::Fuel,
+                amount_formula: |_| 3.0,
+            }],
             defense_multiplier: 1.0,
             accessibility_bonus: 0.0,
             income_multiplier: 1.0,
@@ -378,23 +409,23 @@ lazy_static! {
             name: "population",
             build_cost: 0,
             build_time: 0,
-            base_upkeep_formula: "(size - 2) * 1500",
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 1500.0,
             accessibility_bonus: 0.0,
             stability_bonus: 0,
             defense_multiplier: 1.0,
             income_multiplier: 1.0,
             production: vec![
-                ResourceAmount { resource: Resource::Crew, amount_formula: "size - 3".to_string() },
-                ResourceAmount { resource: Resource::Drugs, amount_formula: "size - 4".to_string() },
-                ResourceAmount { resource: Resource::HarvestedOrgans, amount_formula: "size - 5".to_string() },
+                ResourceAmount { resource: Resource::Crew, amount_formula: |size| (size as f64 - 3.0) },
+                ResourceAmount { resource: Resource::Drugs, amount_formula: |size| (size as f64 - 4.0) },
+                ResourceAmount { resource: Resource::HarvestedOrgans, amount_formula: |size| (size as f64 - 5.0) },
             ],
             demands: vec![
-                ResourceAmount { resource: Resource::Food, amount_formula: "size".to_string() },
-                ResourceAmount { resource: Resource::DomesticGoods, amount_formula: "size - 1".to_string() },
-                ResourceAmount { resource: Resource::LuxuryGoods, amount_formula: "size - 3".to_string() },
-                ResourceAmount { resource: Resource::Drugs, amount_formula: "size - 2".to_string() },
-                ResourceAmount { resource: Resource::HarvestedOrgans, amount_formula: "size - 3".to_string() },
-                ResourceAmount { resource: Resource::Organics, amount_formula: "size - 1".to_string() },
+                ResourceAmount { resource: Resource::Food, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::DomesticGoods, amount_formula: |size| (size as f64 - 1.0) },
+                ResourceAmount { resource: Resource::LuxuryGoods, amount_formula: |size| (size as f64 - 3.0) },
+                ResourceAmount { resource: Resource::Drugs, amount_formula: |size| (size as f64 - 2.0) },
+                ResourceAmount { resource: Resource::HarvestedOrgans, amount_formula: |size| (size as f64 - 3.0) },
+                ResourceAmount { resource: Resource::Organics, amount_formula: |size| (size as f64 - 1.0) },
             ],
             special_effects: vec![],
             requirements: vec![],
@@ -406,18 +437,18 @@ lazy_static! {
             name: "spaceport",
             build_cost: 50000,
             build_time: 15,
-            base_upkeep_formula: "(size - 2) * 1500",
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 1500.0,
             accessibility_bonus: 0.5,
             stability_bonus: 0,
             defense_multiplier: 1.0,
             income_multiplier: 1.0,
             production: vec![
-                ResourceAmount { resource: Resource::Crew, amount_formula: "size - 1".to_string() },
+                ResourceAmount { resource: Resource::Crew, amount_formula: |size| (size as f64 - 1.0) },
             ],
             demands: vec![
-                ResourceAmount { resource: Resource::Fuel, amount_formula: "size - 2".to_string() },
-                ResourceAmount { resource: Resource::Supplies, amount_formula: "size - 2".to_string() },
-                ResourceAmount { resource: Resource::ShipHullsAndWeapons, amount_formula: "size - 2".to_string() },
+                ResourceAmount { resource: Resource::Fuel, amount_formula: |size| (size as f64 - 2.0) },
+                ResourceAmount { resource: Resource::Supplies, amount_formula: |size| (size as f64 - 2.0) },
+                ResourceAmount { resource: Resource::ShipHullsAndWeapons, amount_formula: |size| (size as f64 - 2.0) },
             ],
             special_effects: vec!["Population growth +2"],
             requirements: vec![],
@@ -429,18 +460,18 @@ lazy_static! {
             name: "megaport",
             build_cost: 300000,
             build_time: 150,
-            base_upkeep_formula: "(size - 2) * 2000",
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 2000.0,
             accessibility_bonus: 0.8,
             stability_bonus: 0,
             defense_multiplier: 1.0,
             income_multiplier: 1.0,
             production: vec![
-                ResourceAmount { resource: Resource::Crew, amount_formula: "size + 2".to_string() },
+                ResourceAmount { resource: Resource::Crew, amount_formula: |size| (size as f64 + 2.0) },
             ],
             demands: vec![
-                ResourceAmount { resource: Resource::Fuel, amount_formula: "size".to_string() },
-                ResourceAmount { resource: Resource::Supplies, amount_formula: "size".to_string() },
-                ResourceAmount { resource: Resource::ShipHullsAndWeapons, amount_formula: "size".to_string() },
+                ResourceAmount { resource: Resource::Fuel, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::Supplies, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::ShipHullsAndWeapons, amount_formula: |size| size as f64 },
             ],
             special_effects: vec!["Population growth +(colony size)"],
             requirements: vec!["spaceport"],
@@ -452,16 +483,16 @@ lazy_static! {
             name: "farming",
             build_cost: 75000,
             build_time: 60,
-            base_upkeep_formula: "(size - 2) * 500",
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 500.0,
             accessibility_bonus: 0.0,
             stability_bonus: 0,
             defense_multiplier: 1.0,
             income_multiplier: 1.0,
             production: vec![
-                ResourceAmount { resource: Resource::Food, amount_formula: "size".to_string() },
+                ResourceAmount { resource: Resource::Food, amount_formula: |size| size as f64 },
             ],
             demands: vec![
-                ResourceAmount { resource: Resource::HeavyMachinery, amount_formula: "size - 3".to_string() },
+                ResourceAmount { resource: Resource::HeavyMachinery, amount_formula: |size| (size as f64 - 3.0) },
             ],
             special_effects: vec![],
             requirements: vec!["farmland"],
@@ -473,20 +504,20 @@ lazy_static! {
             name: "mining",
             build_cost: 100000,
             build_time: 60,
-            base_upkeep_formula: "(size - 2) * 1000",
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 1000.0,
             accessibility_bonus: 0.0,
             stability_bonus: 0,
             defense_multiplier: 1.0,
             income_multiplier: 1.0,
             production: vec![
-                ResourceAmount { resource: Resource::Organics, amount_formula: "size".to_string() },
-                ResourceAmount { resource: Resource::Ore, amount_formula: "size".to_string() },
-                ResourceAmount { resource: Resource::TransplutonicOre, amount_formula: "size - 2".to_string() },
-                ResourceAmount { resource: Resource::Volatiles, amount_formula: "size - 2".to_string() },
+                ResourceAmount { resource: Resource::Organics, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::Ore, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::TransplutonicOre, amount_formula: |size| (size as f64 - 2.0) },
+                ResourceAmount { resource: Resource::Volatiles, amount_formula: |size| (size as f64 - 2.0) },
             ],
             demands: vec![
-                ResourceAmount { resource: Resource::HeavyMachinery, amount_formula: "size - 3".to_string() },
-                ResourceAmount { resource: Resource::Drugs, amount_formula: "size".to_string() },
+                ResourceAmount { resource: Resource::HeavyMachinery, amount_formula: |size| (size as f64 - 3.0) },
+                ResourceAmount { resource: Resource::Drugs, amount_formula: |size| size as f64 },
             ],
             special_effects: vec!["Resources only produced if present on planet"],
             requirements: vec!["ores", "rare ores", "volatiles", "organics"],
@@ -498,19 +529,19 @@ lazy_static! {
             name: "refining",
             build_cost: 225000,
             build_time: 90,
-            base_upkeep_formula: "(size - 2) * 1500",
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 1500.0,
             accessibility_bonus: 0.0,
             stability_bonus: 0,
             defense_multiplier: 1.0,
             income_multiplier: 1.0,
             production: vec![
-                ResourceAmount { resource: Resource::Metals, amount_formula: "size".to_string() },
-                ResourceAmount { resource: Resource::Transplutonics, amount_formula: "size - 2".to_string() },
+                ResourceAmount { resource: Resource::Metals, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::Transplutonics, amount_formula: |size| (size as f64 - 2.0) },
             ],
             demands: vec![
-                ResourceAmount { resource: Resource::HeavyMachinery, amount_formula: "size - 2".to_string() },
-                ResourceAmount { resource: Resource::Ore, amount_formula: "size + 2".to_string() },
-                ResourceAmount { resource: Resource::TransplutonicOre, amount_formula: "size".to_string() },
+                ResourceAmount { resource: Resource::HeavyMachinery, amount_formula: |size| (size as f64 - 2.0) },
+                ResourceAmount { resource: Resource::Ore, amount_formula: |size| (size as f64 + 2.0) },
+                ResourceAmount { resource: Resource::TransplutonicOre, amount_formula: |size| size as f64 },
             ],
             special_effects: vec![],
             requirements: vec![],
@@ -522,18 +553,18 @@ lazy_static! {
             name: "light industry",
             build_cost: 225000,
             build_time: 90,
-            base_upkeep_formula: "(size - 2) * 4000",
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 4000.0,
             accessibility_bonus: 0.0,
             stability_bonus: 0,
             defense_multiplier: 1.0,
             income_multiplier: 1.0,
             production: vec![
-                ResourceAmount { resource: Resource::DomesticGoods, amount_formula: "size".to_string() },
-                ResourceAmount { resource: Resource::LuxuryGoods, amount_formula: "size - 2".to_string() },
-                ResourceAmount { resource: Resource::Drugs, amount_formula: "size - 2".to_string() },
+                ResourceAmount { resource: Resource::DomesticGoods, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::LuxuryGoods, amount_formula: |size| (size as f64 - 2.0) },
+                ResourceAmount { resource: Resource::Drugs, amount_formula: |size| (size as f64 - 2.0) },
             ],
             demands: vec![
-                ResourceAmount { resource: Resource::Organics, amount_formula: "size".to_string() },
+                ResourceAmount { resource: Resource::Organics, amount_formula: |size| size as f64 },
             ],
             special_effects: vec!["Recreational Drugs only produced if colony is a Free Port"],
             requirements: vec![],
@@ -545,20 +576,20 @@ lazy_static! {
             name: "heavy industry",
             build_cost: 500000,
             build_time: 120,
-            base_upkeep_formula: "(size - 2) * 6000",
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 6000.0,
             accessibility_bonus: 0.0,
             stability_bonus: 0,
             defense_multiplier: 1.0,
             income_multiplier: 1.0,
             production: vec![
-                ResourceAmount { resource: Resource::HeavyMachinery, amount_formula: "size - 2".to_string() },
-                ResourceAmount { resource: Resource::Supplies, amount_formula: "size - 2".to_string() },
-                ResourceAmount { resource: Resource::HeavyArmaments, amount_formula: "size - 2".to_string() },
-                ResourceAmount { resource: Resource::ShipHullsAndWeapons, amount_formula: "size - 2".to_string() },
+                ResourceAmount { resource: Resource::HeavyMachinery, amount_formula: |size| (size as f64 - 2.0) },
+                ResourceAmount { resource: Resource::Supplies, amount_formula: |size| (size as f64 - 2.0) },
+                ResourceAmount { resource: Resource::HeavyArmaments, amount_formula: |size| (size as f64 - 2.0) },
+                ResourceAmount { resource: Resource::ShipHullsAndWeapons, amount_formula: |size| (size as f64 - 2.0) },
             ],
             demands: vec![
-                ResourceAmount { resource: Resource::Metals, amount_formula: "size".to_string() },
-                ResourceAmount { resource: Resource::Transplutonics, amount_formula: "size - 2".to_string() },
+                ResourceAmount { resource: Resource::Metals, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::Transplutonics, amount_formula: |size| (size as f64 - 2.0) },
             ],
             special_effects: vec!["Allow usage of Doctrine Fleet", "Removes Cross-faction imports debuff (-25% ship quality)"],
             requirements: vec![],
@@ -570,16 +601,16 @@ lazy_static! {
             name: "aquaculture",
             build_cost: 250000,
             build_time: 60,
-            base_upkeep_formula: "(size - 2) * 1500",
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 1500.0,
             accessibility_bonus: 0.0,
             stability_bonus: 0,
             defense_multiplier: 1.0,
             income_multiplier: 1.0,
             production: vec![
-                ResourceAmount { resource: Resource::Food, amount_formula: "size".to_string() },
+                ResourceAmount { resource: Resource::Food, amount_formula: |size| size as f64 },
             ],
             demands: vec![
-                ResourceAmount { resource: Resource::HeavyMachinery, amount_formula: "size".to_string() },
+                ResourceAmount { resource: Resource::HeavyMachinery, amount_formula: |size| size as f64 },
             ],
             special_effects: vec!["Exclusive to Water planets"],
             requirements: vec!["water"],
@@ -591,14 +622,14 @@ lazy_static! {
             name: "commerce",
             build_cost: 450000,
             build_time: 90,
-            base_upkeep_formula: "(size - 2) * 1500",
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 1500.0,
             accessibility_bonus: 0.0,
             stability_bonus: -3,
             defense_multiplier: 1.0,
             income_multiplier: 1.25,
             production: vec![],
             demands: vec![],
-            special_effects: vec!["+25% Colony Income", "Allow buying/selling In-colony"],
+            special_effects: vec![ "+25% Colony Income", "Allow buying/selling In-colony"],
             requirements: vec![],
             is_structure: false,
         });
@@ -607,18 +638,18 @@ lazy_static! {
             name: "patrol hq",
             build_cost: 300000,
             build_time: 60,
-            base_upkeep_formula: "4000",
+            base_upkeep_formula: |size| 4000.0,
             accessibility_bonus: 0.0,
             stability_bonus: 1,
             defense_multiplier: 1.1,
             income_multiplier: 1.0,
             production: vec![
-                ResourceAmount { resource: Resource::Crew, amount_formula: "size".to_string() },
+                ResourceAmount { resource: Resource::Crew, amount_formula: |size| size as f64 },
             ],
             demands: vec![
-                ResourceAmount { resource: Resource::Supplies, amount_formula: "size - 1".to_string() },
-                ResourceAmount { resource: Resource::Fuel, amount_formula: "size - 1".to_string() },
-                ResourceAmount { resource: Resource::ShipHullsAndWeapons, amount_formula: "size - 1".to_string() },
+                ResourceAmount { resource: Resource::Supplies, amount_formula: |size| (size as f64 - 1.0) },
+                ResourceAmount { resource: Resource::Fuel, amount_formula: |size| (size as f64 - 1.0) },
+                ResourceAmount { resource: Resource::ShipHullsAndWeapons, amount_formula: |size| (size as f64 - 1.0) },
             ],
             special_effects: vec![],
             requirements: vec![],
@@ -631,19 +662,19 @@ lazy_static! {
             name: "military base",
             build_cost: 450000,
             build_time: 120,
-            base_upkeep_formula: "(size - 2) * 5000",
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 5000.0,
             accessibility_bonus: 0.0,
             stability_bonus: 2,
             defense_multiplier: 1.2,
             income_multiplier: 1.0,
             production: vec![
-                ResourceAmount { resource: Resource::Crew, amount_formula: "size".to_string() },
-                ResourceAmount { resource: Resource::Marines, amount_formula: "size".to_string() },
+                ResourceAmount { resource: Resource::Crew, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::Marines, amount_formula: |size| size as f64 },
             ],
             demands: vec![
-                ResourceAmount { resource: Resource::Fuel, amount_formula: "size + 1".to_string() },
-                ResourceAmount { resource: Resource::Supplies, amount_formula: "size + 1".to_string() },
-                ResourceAmount { resource: Resource::ShipHullsAndWeapons, amount_formula: "size + 1".to_string() },
+                ResourceAmount { resource: Resource::Fuel, amount_formula: |size| (size as f64 + 1.0) },
+                ResourceAmount { resource: Resource::Supplies, amount_formula: |size| (size as f64 + 1.0) },
+                ResourceAmount { resource: Resource::ShipHullsAndWeapons, amount_formula: |size| (size as f64 + 1.0) },
             ],
             special_effects: vec![],
             requirements: vec!["patrol hq"],
@@ -655,19 +686,19 @@ lazy_static! {
             name: "high command",
             build_cost: 150000,
             build_time: 120,
-            base_upkeep_formula: "(size - 2) * 7000",
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 7000.0,
             accessibility_bonus: 0.0,
             stability_bonus: 2,
             defense_multiplier: 1.3,
             income_multiplier: 1.0,
             production: vec![
-                ResourceAmount { resource: Resource::Crew, amount_formula: "size".to_string() },
-                ResourceAmount { resource: Resource::Marines, amount_formula: "size".to_string() },
+                ResourceAmount { resource: Resource::Crew, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::Marines, amount_formula: |size| size as f64 },
             ],
             demands: vec![
-                ResourceAmount { resource: Resource::Fuel, amount_formula: "size + 2".to_string() },
-                ResourceAmount { resource: Resource::Supplies, amount_formula: "size + 2".to_string() },
-                ResourceAmount { resource: Resource::ShipHullsAndWeapons, amount_formula: "size + 2".to_string() },
+                ResourceAmount { resource: Resource::Fuel, amount_formula: |size| (size as f64 + 2.0) },
+                ResourceAmount { resource: Resource::Supplies, amount_formula: |size| (size as f64 + 2.0) },
+                ResourceAmount { resource: Resource::ShipHullsAndWeapons, amount_formula: |size| (size as f64 + 2.0) },
             ],
             special_effects: vec![],
             requirements: vec!["military base"],
@@ -679,16 +710,16 @@ lazy_static! {
             name: "waystation",
             build_cost: 100000,
             build_time: 60,
-            base_upkeep_formula: "(size - 2) * 1000",
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 1000.0,
             accessibility_bonus: 0.1,
             stability_bonus: 0,
             defense_multiplier: 1.0,
             income_multiplier: 1.0,
             production: vec![],
             demands: vec![
-                ResourceAmount { resource: Resource::Fuel, amount_formula: "size".to_string() },
-                ResourceAmount { resource: Resource::Supplies, amount_formula: "size".to_string() },
-                ResourceAmount { resource: Resource::Crew, amount_formula: "size".to_string() },
+                ResourceAmount { resource: Resource::Fuel, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::Supplies, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::Crew, amount_formula: |size| size as f64 },
             ],
             special_effects: vec!["Supplied demand goes into colony stockpile"],
             requirements: vec![],
@@ -700,16 +731,16 @@ lazy_static! {
             name: "ground defenses",
             build_cost: 150000,
             build_time: 60,
-            base_upkeep_formula: "(size - 2) * 1000",
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 1000.0,
             accessibility_bonus: 0.0,
             stability_bonus: 1,
             defense_multiplier: 2.0,
             income_multiplier: 1.0,
             production: vec![],
             demands: vec![
-                ResourceAmount { resource: Resource::Supplies, amount_formula: "size".to_string() },
-                ResourceAmount { resource: Resource::Marines, amount_formula: "size".to_string() },
-                ResourceAmount { resource: Resource::HeavyArmaments, amount_formula: "size - 2".to_string() },
+                ResourceAmount { resource: Resource::Supplies, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::Marines, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::HeavyArmaments, amount_formula: |size| (size as f64 - 2.0) },
             ],
             special_effects: vec![],
             requirements: vec![],
@@ -721,16 +752,16 @@ lazy_static! {
             name: "heavy batteries",
             build_cost: 300000,
             build_time: 90,
-            base_upkeep_formula: "(size - 2) * 1500",
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 1500.0,
             accessibility_bonus: 0.0,
             stability_bonus: 1,
             defense_multiplier: 3.0,
             income_multiplier: 1.0,
             production: vec![],
             demands: vec![
-                ResourceAmount { resource: Resource::Supplies, amount_formula: "size".to_string() },
-                ResourceAmount { resource: Resource::Marines, amount_formula: "size".to_string() },
-                ResourceAmount { resource: Resource::HeavyArmaments, amount_formula: "size - 2".to_string() },
+                ResourceAmount { resource: Resource::Supplies, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::Marines, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::HeavyArmaments, amount_formula: |size| (size as f64 - 2.0) },
             ],
             special_effects: vec![],
             requirements: vec!["ground defenses"],
@@ -742,15 +773,15 @@ lazy_static! {
             name: "orbital station",
             build_cost: 150000,
             build_time: 90,
-            base_upkeep_formula: "1500",
+            base_upkeep_formula: |size| 1500.0,
             accessibility_bonus: 0.0,
             stability_bonus: 1,
             defense_multiplier: 1.5,
             income_multiplier: 1.0,
             production: vec![],
             demands: vec![
-                ResourceAmount { resource: Resource::Supplies, amount_formula: "3".to_string() },
-                ResourceAmount { resource: Resource::Crew, amount_formula: "3".to_string() },
+                ResourceAmount { resource: Resource::Supplies, amount_formula: |size| 3.0 },
+                ResourceAmount { resource: Resource::Crew, amount_formula: |size| 3.0 },
             ],
             special_effects: vec!["50% Station CR", "Choices between: Low Tech, Midline, and High Tech"],
             requirements: vec![],
@@ -762,15 +793,15 @@ lazy_static! {
             name: "battle station",
             build_cost: 500000,
             build_time: 120,
-            base_upkeep_formula: "6000",
+            base_upkeep_formula: |size| 6000.0,
             accessibility_bonus: 0.0,
             stability_bonus: 2,
             defense_multiplier: 2.0,
             income_multiplier: 1.0,
             production: vec![],
             demands: vec![
-                ResourceAmount { resource: Resource::Supplies, amount_formula: "5".to_string() },
-                ResourceAmount { resource: Resource::Crew, amount_formula: "5".to_string() },
+                ResourceAmount { resource: Resource::Supplies, amount_formula: |size| 5.0 },
+                ResourceAmount { resource: Resource::Crew, amount_formula: |size| 5.0 },
             ],
             special_effects: vec!["75% Station CR"],
             requirements: vec!["Upgraded from Orbital Station"],
@@ -782,56 +813,56 @@ lazy_static! {
             name: "star fortress",
             build_cost: 1000000,
             build_time: 180,
-            base_upkeep_formula: "12500",
+            base_upkeep_formula: |size| 12500.0,
             accessibility_bonus: 0.0,
             stability_bonus: 3,
             defense_multiplier: 3.0,
             income_multiplier: 1.0,
             production: vec![],
             demands: vec![
-                ResourceAmount { resource: Resource::Supplies, amount_formula: "7".to_string() },
-                ResourceAmount { resource: Resource::Crew, amount_formula: "7".to_string() },
+                ResourceAmount { resource: Resource::Supplies, amount_formula: |size| 7.0 },
+                ResourceAmount { resource: Resource::Crew, amount_formula: |size| 7.0 },
             ],
             special_effects: vec!["100% Station CR"],
             requirements: vec!["Upgraded from Battlestation"],
             is_structure: true,
         });
 
-        // Cryorevival Facility
-        map.insert("cryorevival facility", FacilityData {
-            name: "cryorevival facility",
-            build_cost: 300000,
-            build_time: 60,
-            base_upkeep_formula: "(size - 2) * 2500",
-            accessibility_bonus: 0.0,
-            stability_bonus: 0,
-            defense_multiplier: 1.0,
-            income_multiplier: 1.0,
-            production: vec![],
-            demands: vec![
-                ResourceAmount { resource: Resource::Organics, amount_formula: "10".to_string() },
-            ],
-            special_effects: vec!["Increase population growth by (colony size * 10)"],
-            requirements: vec!["Needs to be within 10ly of a Domain-era Cryosleeper"],
-            is_structure: true,
-        });
+        // // Cryorevival Facility
+        // map.insert("cryorevival facility", FacilityData {
+        //     name: "cryorevival facility",
+        //     build_cost: 300000,
+        //     build_time: 60,
+        //     base_upkeep_formula: |size| (size as f64 - 2.0) * 2500.0,
+        //     accessibility_bonus: 0.0,
+        //     stability_bonus: 0,
+        //     defense_multiplier: 1.0,
+        //     income_multiplier: 1.0,
+        //     production: vec![],
+        //     demands: vec![
+        //         ResourceAmount { resource: Resource::Organics, amount_formula: |size| 10.0 },
+        //     ],
+        //     special_effects: vec!["Increase population growth by (colony size * 10)"],
+        //     requirements: vec!["Needs to be within 10ly of a Domain-era Cryosleeper"],
+        //     is_structure: true,
+        // });
 
-        // Planetary Shield
-        map.insert("planetary shield", FacilityData {
-            name: "planetary shield",
-            build_cost: 750000,
-            build_time: 90,
-            base_upkeep_formula: "4500",
-            accessibility_bonus: 0.0,
-            stability_bonus: 0,
-            defense_multiplier: 3.0,
-            income_multiplier: 1.0,
-            production: vec![],
-            demands: vec![],
-            special_effects: vec![],
-            requirements: vec!["Blueprint gained from Story Mission"],
-            is_structure: true,
-        });
+        // // Planetary Shield
+        // map.insert("planetary shield", FacilityData {
+        //     name: "planetary shield",
+        //     build_cost: 750000,
+        //     build_time: 90,
+        //     base_upkeep_formula: |size| 4500.0,
+        //     accessibility_bonus: 0.0,
+        //     stability_bonus: 0,
+        //     defense_multiplier: 3.0,
+        //     income_multiplier: 1.0,
+        //     production: vec![],
+        //     demands: vec![],
+        //     special_effects: vec![],
+        //     requirements: vec!["Blueprint gained from Story Mission"],
+        //     is_structure: true,
+        // });
 
         map
     };
@@ -970,9 +1001,9 @@ lazy_static! {
 
 #[derive(Debug, Clone, Copy)]
 pub struct AdminBonuses {
-    pub accessibility: f32,  // +10%
-    pub fleet_size: f32,    // +20%
-    pub defense: f32,       // +50%
+    pub accessibility: f64,  // +10%
+    pub fleet_size: f64,    // +20%
+    pub defense: f64,       // +50%
     pub stability: i32,     // +1
     pub production: i32,    // +1 unit
 }
@@ -1047,12 +1078,12 @@ pub const SYSTEMS_PATH: &str = "systems.csv";
 
 #[derive(Debug, Clone)]
 pub struct FacilityEffects {
-    pub accessibility_bonus: f32,
+    pub accessibility_bonus: f64,
     pub stability_bonus: i32,
-    pub defense_multiplier: f32,
-    pub income_bonus: f32,
-    pub production_bonus: f32,
-    pub fleet_size_multiplier: f32,
+    pub defense_multiplier: f64,
+    pub income_bonus: f64,
+    pub production_bonus: f64,
+    pub fleet_size_multiplier: f64,
 }
 
 impl Default for FacilityEffects {

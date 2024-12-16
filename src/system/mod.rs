@@ -108,19 +108,19 @@ impl System {
         &self.infrastructure
     }
 
-    pub fn get_gross_income(&self) -> f32 {
+    pub fn get_gross_income(&self) -> f64 {
         self.planets.values().map(|planet| planet.get_gross_income()).sum()
     }
 
-    pub fn get_net_income(&self) -> f32 {
+    pub fn get_net_income(&self) -> f64 {
         self.planets.values().map(|planet| planet.get_net_income()).sum()
     }
 
-    pub fn total_upkeep(&self) -> f32 {
+    pub fn total_upkeep(&self) -> f64 {
         self.planets.values().map(|planet| planet.total_upkeep()).sum()
     }
 
-    pub fn get_possible_actions(&self, balance: &Balance) -> Vec<Action> {
+    pub fn get_possible_actions(&self, balance: &Balance, slim: bool) -> Vec<Action> {
         let mut actions = Vec::new();
         
         // First, check for uncolonized planets that we can colonize
@@ -133,7 +133,7 @@ impl System {
         // Then get actions from each colonized planet
         for planet in self.planets.values() {
             if planet.has_colony() {
-                actions.extend(planet.get_possible_actions(balance));
+                actions.extend(planet.get_possible_actions(balance, slim));
             }
         }
         

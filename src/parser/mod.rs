@@ -69,7 +69,7 @@ pub fn parse_planets_csv<P: AsRef<Path>>(path: P) -> Result<(HashMap<String, Pla
                 }
                 
                 // Try parsing as float first
-                if let Ok(float_val) = value.parse::<f32>() {
+                if let Ok(float_val) = value.parse::<f64>() {
                     properties.insert(header.to_lowercase(), float_val);
                     continue;
                 }
