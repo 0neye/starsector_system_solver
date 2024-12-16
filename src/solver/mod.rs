@@ -704,13 +704,11 @@ fn _test_action_undo_consistency(state: &mut State, actions: Option<Vec<Action>>
 
         if (pre_action_credits - state.balance().credits()).abs() > 1e-6 || fac_inconsistency(state, &orig_state) {
             // resimulate so we can get full debug info
-            println!("\n{:#?}", orig_state);
+            println!("Before:\n{:#?}", orig_state.system().planets().get("Terran 1").unwrap().facilities().keys().collect::<Vec<_>>());
             orig_state.apply_action_raw(&action, true);
             orig_state.undo_last_action(true);
-
+            println!("After:\n{:#?}", state.system().planets().get("Terran 1").unwrap().facilities().keys().collect::<Vec<_>>());
             println!("Inconsistency found! Action: {:?}, Pre-action credits: {}, Post-undo credits: {}", action, pre_action_credits, state.balance().credits());
-            // println!("Full state after inconsistency:\n{:#?}", state);
-            println!("\n{:#?}", orig_state);
             panic!("Action undo inconsistency detected");
         }
     }

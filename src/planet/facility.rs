@@ -179,6 +179,34 @@ impl Facility {
         // self.remaining_build_days = self.remaining_build_days.max(0);
     }
 
+    /// Upgrades/downgrades a facility in-place, doesn't check if it's possible
+    pub fn swap_raw_w_data(&mut self, new_name: String, data: &FacilityData, downgrade: bool) -> Option<&Self> {
+        self.name = new_name;
+        self.remaining_build_days = if downgrade { self.remaining_build_days } else { data.build_time as i32 };
+
+        self.base_production.clear();
+        self.base_production.extend(data.production.iter().cloned());
+        self.base_demands.clear();
+        self.base_demands.extend(data.demands.iter().cloned());
+        self.upkeep_formula = data.base_upkeep_formula;
+        self.base_accessibility_bonus = data.accessibility_bonus;
+        self.base_stability_bonus = data.stability_bonus;
+        self.base_defense_multiplier = data.defense_multiplier;
+        self.base_income_multiplier = data.income_multiplier;
+
+        Some(self)
+    }
+
+    /// Upgrades/downgrades a facility in-place, doesn't check if it's possible
+    pub fn swap_raw(&mut self, new_name: String, downgrade: bool) -> Option<&Self> {
+        let data = FACILITY_DATA.get(new_name.as_str())?;
+
+        self.swap_raw_w_data(new_name, data, downgrade)
+    }
+
+
+
+
     pub fn can_install_colony_item(
         &self,
         item: &ColonyItem,

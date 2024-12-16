@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // // Apply test action
     // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "orbital station".to_string()), true);
     // println!("\nState after applying test action:");
-    // println!("{:#?}", state.system().planets().get("Terran 1").unwrap());
+    // println!("{:#?}", state.system().planets().get("Terran 1").unwrap().facilities().keys().collect::<Vec<_>>());
     // println!("Possible actions after test action:");
     // println!("{:#?}", state.get_possible_actions(true));
 
@@ -99,7 +99,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // // Undo the wait action
     // state.undo_last_action(true);
     // println!("\nState after undoing the test action:");
-    // println!("{:#?}", state.system().planets().get("Terran 1").unwrap());
+    // println!("{:#?}", state.system().planets().get("Terran 1").unwrap().facilities().keys().collect::<Vec<_>>());
 
     // // Verify that credits are back to the initial value
     // assert_eq!(state.balance().credits(), initial_credits, "Credits should be back to the initial value after undo");
@@ -128,6 +128,8 @@ TODOS:
 - Get a DFS working - Doneish
 - Redo the upkeep/production formulas to be a function pointer - Done
 
+- Rework facility upgrading/downgrading to do less reallocation
+- Rework lazy static hashmaps in constants file to be match statements
 - Implement system-wide restrictions on commerce facility
 - Fix colony growth and reversability
 - Search in two or more phases, first without any facility improvements, then use those action logs to help the full search

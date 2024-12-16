@@ -6,6 +6,7 @@ use std::fmt;
 use std::hash::Hash;
 
 use crate::constants::FacilityData;
+use crate::constants::FACILITY_DATA;
 use crate::constants::{AdminType, Resource};
 use crate::solver::Action;
 use crate::solver::Balance;
@@ -164,25 +165,11 @@ impl Planet {
         };
 
         // Check if this is an upgrade by looking at requirements
-        if let Some(data) = crate::constants::FACILITY_DATA.get(name.as_str()) {
+        if let Some(data) = FACILITY_DATA.get(name.as_str()) {
             for req in &data.requirements {
                 // If requirement matches an existing facility, this is an upgrade
-                if let Some(old_facility) = self.facilities.remove(*req) {
-                    // Transfer metadata from old facility to new one
-                    let mut upgraded = new_facility;
-                    if old_facility.has_improvements() {
-                        upgraded.add_improvements();
-                    }
-                    if old_facility.has_alpha_core() {
-                        upgraded.add_alpha_core();
-                    }
-                    if let Some(item) = old_facility.get_colony_item() {
-                        upgraded.add_colony_item_raw(item);
-                    }
-                    // upgraded.update_all();
-
-                    // Add the upgraded facility
-                    self.facilities.insert(name, upgraded);
+                if let Some(fac) = self.facilities.get_mut(*req) {
+                    _ = fac.swap_raw_w_data(name.clone(), data, false);
                     return true;
                 }
             }
@@ -199,25 +186,10 @@ impl Planet {
             return false; // Can't remove core facilities
         }
 
-        if let Some(facility_data) = crate::constants::FACILITY_DATA.get(name) {
-            if let Some(downgrade) = facility_data.requirements.first() {
-                if let Some(mut downgraded_facility) = Facility::new(downgrade.to_string()) {
-                    if let Some(old_facility) = self.facilities.remove(name) {
-                        // Transfer metadata from old facility to downgraded one
-                        if old_facility.has_improvements() {
-                            downgraded_facility.add_improvements();
-                        }
-                        if old_facility.has_alpha_core() {
-                            downgraded_facility.add_alpha_core();
-                        }
-                        if let Some(item) = old_facility.get_colony_item() {
-                            downgraded_facility.add_colony_item_raw(item);
-                        }
-                        // downgraded_facility.update_all();
-
-                        // Add the downgraded facility
-                        self.facilities
-                            .insert(downgrade.to_string(), downgraded_facility);
+        if let Some(data) = FACILITY_DATA.get(name) {
+            if let Some(downgrade) = data.requirements.first() {
+                if let Some(fac) = self.facilities.get_mut(name) {
+                    if fac.swap_raw(downgrade.to_string(), true).is_some() {
                         return true;
                     }
                 }
