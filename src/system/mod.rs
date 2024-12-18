@@ -23,11 +23,15 @@ pub struct System {
 impl Hash for System {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state);
-        for (key, value) in &self.planets {
+        let mut sorted_planets: Vec<_> = self.planets.iter().collect();
+        sorted_planets.sort_by(|a, b| a.0.cmp(b.0));
+        for (key, value) in sorted_planets {
             key.hash(state);
             value.hash(state);
         }
-        for (key, value) in &self.infrastructure {
+        let mut sorted_infrastructure: Vec<_> = self.infrastructure.iter().collect();
+        sorted_infrastructure.sort_by(|a, b| a.0.cmp(b.0));
+        for (key, value) in sorted_infrastructure {
             key.hash(state);
             value.hash(state);
         }
@@ -138,5 +142,28 @@ impl System {
         }
         
         actions
+    }
+
+    pub fn _get_differences(&self, other: &System) -> Vec<String> {
+        let mut differences = Vec::new();
+        
+        for (name, other_planet) in &other.planets {
+            if let Some(planet) = self.planets.get(name) {
+                let diffs = planet._get_differences(other_planet);
+                for diff in diffs {
+                    differences.push(format!("Planet {}: {}", name, diff));
+                }
+            } else {
+                differences.push(format!("Planet {} has been removed", name));
+            }
+        }
+        
+        differences
+    }
+
+    pub fn _print_differences(&self, other: &System) {
+        for diff in self._get_differences(other) {
+            println!("{:#?}", diff);
+        }
     }
 }

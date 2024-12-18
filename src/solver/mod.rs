@@ -1,5 +1,6 @@
 use crate::constants::{ColonyItem, AdminType, FACILITY_DATA};
 use crate::system::{System};
+use core::panic;
 use std::collections::{HashMap, hash_map};
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
@@ -452,6 +453,13 @@ impl State {
         hasher.finish()
     }
 
+    pub fn get_deep_hash(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        // self.balance.hash(&mut hasher);
+        self.system.hash(&mut hasher);
+        hasher.finish()
+    }
+
     pub fn get_ordered_possible_actions(&self, slim: bool) -> Vec<Action> {
         // println!("Starting get_ordered_possible_actions");
         // println!(" Getting possible actions");
@@ -616,7 +624,7 @@ fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashMap<u64, Sear
         // println!("{}Reached depth 0, calculating score", indent);
         result.score = info.state.score();
         // println!("{}Leaf node score: {}", indent, result.score);
-        _test_path_undo_consistency(&info.state);
+        // _test_path_undo_consistency(&info.state);
         return Some(result);
     }
 
@@ -630,6 +638,7 @@ fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashMap<u64, Sear
     for (i, action) in actions.iter().enumerate() {
         // let pre_action_credits = info.state.balance().credits();
         // println!("{}Applying action {} of {}: {:?}", indent, i + 1, actions.len(), action);
+        let orig_state = info.state.clone();
 
         info.state.apply_action_raw(action, false);
 
@@ -652,6 +661,12 @@ fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashMap<u64, Sear
 
         // println!("{}Undoing action", indent);
         info.state.undo_last_action(false);
+        
+        let diffs = orig_state.system()._get_differences(&info.state.system());
+        if !diffs.is_empty() {
+            orig_state.system()._print_differences(&info.state.system());
+            panic!("State inconsistency detected");
+        }
         // if (pre_action_credits - info.state.balance().credits()).abs() > 1e-6 && depth == 1 {
         //     println!("Inconsistency found! Action: {:?}, Pre-action credits: {}, Post-undo credits: {}", action, pre_action_credits, info.state.balance().credits());
         //     println!("{:#?}", info.state.action_log());
@@ -690,6 +705,16 @@ fn _fac_inconsistency(state1: &State, state2: &State) -> bool {
 pub fn _test_path_undo_consistency(state: &State) {
     let actions = state.action_log().clone();
     let mut temp_state = state.clone();
+    let fac = temp_state.system().planets().get(&"Terran 1".to_string()).unwrap().facilities().iter().find(|f| f.name() == "spaceport");
+    if let Some(fac) = fac {
+        if fac.remaining_build_days() > 30 {
+            println!("\nInconsistency found at initial state");
+            dbg!(&fac);
+            println!("{:?}", temp_state.action_log());
+            panic!();
+        }
+    }
+
     for _ in 0..=actions.len() {
         temp_state.undo_last_action(false);
     }

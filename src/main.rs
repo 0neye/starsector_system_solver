@@ -19,7 +19,7 @@ fn test_solver(state: State) {
     // Run simulation for 10 turns
     // simulate_linear(&state, 15);
 
-    println!("{:#?}", search(&state, 20000).action_log);
+    println!("{:#?}", search(&state, 5000).action_log);
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     
     // Create initial balance with more resources
     let mut initial_balance = Balance::new(
-        9989250.0,
+        10000000.0,
         5,
         5,
     );
@@ -107,7 +107,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     // assert_eq!(state.balance().credits(), initial_credits, "Credits should be back to the initial value after undo");
     // println!("Credits successfully reverted to initial value: {}", initial_credits);
 
+    // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "megaport".to_string()), false);
+    // state.undo_last_action(false);
+    // for _ in 0..5 {
+    //     state.apply_action_raw(&Action::Wait(5), false);
+    // }
+    // state.apply_action_raw(&Action::Wait(5), true);
 
+    // for _ in 0..5 {
+    //     state.undo_last_action(false);
+    // }
+    // state.undo_last_action(true);
+    // dbg!(&state);
 
 
     Ok(())

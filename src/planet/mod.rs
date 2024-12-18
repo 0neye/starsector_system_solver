@@ -836,11 +836,13 @@ impl Planet {
                 let can_add_industry = self.can_add_industry();
                 let can_add = match upgrade_from {
                     // If it's an upgrade, check if we need a new industry slot
+                    // And whether the old facility is done building
                     Some(old_facility) => {
                         // Need industry slot if upgrading from structure to industry
-                        !old_facility.is_structure()
+                        (!old_facility.is_structure()
                             || facility.is_structure
-                            || can_add_industry
+                            || can_add_industry)
+                            && old_facility.remaining_build_days() <= 0
                     }
                     // Not an upgrade - normal structure/industry check
                     None => facility.is_structure || can_add_industry,
@@ -881,6 +883,58 @@ impl Planet {
         });
 
         actions
+    }
+
+    pub fn _get_differences(&self, other: &Planet) -> Vec<String> {
+        let mut differences = Vec::new();
+        if self.name != other.name {
+            differences.push(format!(" Name changed from {} to {}", self.name, other.name));
+        }
+        
+        for (key, value) in self.properties.iter() {
+            if let Some(other_value) = other.properties.get(key) {
+                if value != other_value {
+                    differences.push(format!(" {} changed from {} to {}", key, value, other_value));
+                }
+            } else {
+                differences.push(format!(" {} was removed", key));
+            }
+        }
+        
+        for (key, value) in other.properties.iter() {
+            if !self.properties.contains_key(key) {
+                differences.push(format!(" {} was added with value {}", key, value));
+            }
+        }
+        
+        if self.admin != other.admin {
+            differences.push(format!(" Admin changed from {:?} to {:?}", self.admin, other.admin));
+        }
+        
+        if self.is_free_port != other.is_free_port {
+            differences.push(format!(" Free port status changed from {} to {}", self.is_free_port, other.is_free_port));
+        }
+        
+        if self.has_hazard_pay != other.has_hazard_pay {
+            differences.push(format!(" Hazard pay status changed from {} to {}", self.has_hazard_pay, other.has_hazard_pay));
+        }
+        
+        if self.has_decivilized != other.has_decivilized {
+            differences.push(format!(" Decivilized status changed from {} to {}", self.has_decivilized, other.has_decivilized));
+        }
+        
+        for (self_facility, other_facility) in self.facilities.iter().zip(other.facilities.iter()) {
+            let facility_differences = self_facility._get_differences(other_facility);
+            for diff in facility_differences {
+                differences.push(format!("  Facility {}: {}", self_facility.name(), diff));
+            }
+        }
+        
+        if self.facilities.len() != other.facilities.len() {
+            differences.push(format!("Number of facilities changed from {} to {}", self.facilities.len(), other.facilities.len()));
+        }
+        
+        differences
     }
 }
 

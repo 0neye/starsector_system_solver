@@ -26,7 +26,8 @@ pub struct Facility {
     base_production: Vec<ResourceAmount>,
     base_demands: Vec<ResourceAmount>,
     is_structure: bool,
-    remaining_build_days: i32,
+    current_build_days: i32,
+    total_build_days: i32,
 }
 
 impl Hash for Facility {
@@ -37,7 +38,8 @@ impl Hash for Facility {
         self.colony_item.hash(state);
         self.base_stability_bonus.hash(state);
         self.is_structure.hash(state);
-        self.remaining_build_days.hash(state);
+        self.current_build_days.hash(state);
+        self.total_build_days.hash(state);
         self.upkeep_formula.hash(state);
 
         // Hash f64 values by converting them to bits
@@ -99,7 +101,8 @@ impl Facility {
             base_production: production,
             base_demands: demands,
             is_structure: data.is_structure,
-            remaining_build_days: data.build_time as i32,
+            current_build_days: data.build_time as i32,
+            total_build_days: data.build_time as i32,
         };
 
         Some(facility)
@@ -168,16 +171,14 @@ impl Facility {
     }
 
     pub fn remaining_build_days(&self) -> i32 {
-        self.remaining_build_days
+        self.current_build_days
     }
 
     /// Won't handle income/expenses over wait time
     pub fn progress_build_days(&mut self, days: i32) {
         // Correct behavior; required to properly undo progress past completion
-        self.remaining_build_days = self.remaining_build_days.saturating_sub(days);
-        if self.name == "spaceport" {
-            println!("Progressing build days for spaceport: {} (-{})", self.remaining_build_days, days);
-        }
+        self.current_build_days = self.current_build_days.saturating_sub(days);
+        self.total_build_days = self.total_build_days.saturating_sub(days);
         // Incorrect behavior; will mess up everything and cause comp time to explode
         // self.remaining_build_days = self.remaining_build_days.max(0);
     }
@@ -185,7 +186,7 @@ impl Facility {
     /// Upgrades/downgrades a facility in-place, doesn't check if it's possible
     pub fn swap_raw_w_data(&mut self, new_name: String, data: &FacilityData, downgrade: bool) -> Option<&Self> {
         self.name = new_name;
-        self.remaining_build_days = if downgrade { 0 } else { data.build_time as i32 };
+        self.current_build_days = if downgrade { self.total_build_days } else { data.build_time as i32 };
 
         self.base_production.clear();
         self.base_production.extend(data.production.iter().cloned());
@@ -336,7 +337,7 @@ impl Facility {
     // }
 
     pub fn calculate_accessibility_bonus(&self) -> f64 {
-        if self.remaining_build_days > 0 {  
+        if self.current_build_days > 0 {  
             return 0.0;
         }
 
@@ -367,7 +368,7 @@ impl Facility {
     }
 
     pub fn calculate_stability_bonus(&self) -> i32 {
-        if self.remaining_build_days > 0 {
+        if self.current_build_days > 0 {
             return 0;
         }
 
@@ -384,7 +385,7 @@ impl Facility {
     }
 
     pub fn calculate_defense_multiplier(&self) -> f64 {
-        if self.remaining_build_days > 0 {
+        if self.current_build_days > 0 {
             return 1.0;
         }
 
@@ -415,7 +416,7 @@ impl Facility {
     }
 
     pub fn calculate_income_multiplier(&self) -> f64 {
-        if self.remaining_build_days > 0 {
+        if self.current_build_days > 0 {
             return 1.0;
         }
 
@@ -460,7 +461,7 @@ impl Facility {
         bonus: f64,
         is_free_port: bool,
     ) -> f64 {
-        if self.remaining_build_days > 0 {
+        if self.current_build_days > 0 {
             return 0.0;
         }
 
@@ -534,7 +535,7 @@ impl Facility {
     }
 
     pub fn calculate_resource_demand(&self, resource: Resource, size: u32) -> f64 {
-        if self.remaining_build_days > 0 {
+        if self.current_build_days > 0 {
             return 0.0;
         }
 
@@ -554,7 +555,7 @@ impl Facility {
 
     /// Per month
     pub fn calculate_gross_income(&self, size: u32, planet: &dyn PlanetConditionChecker) -> f64 {
-        if self.remaining_build_days > 0 {
+        if self.current_build_days > 0 {
             return 0.0;
         }
 
@@ -600,8 +601,8 @@ impl Facility {
         balance: &Balance,
         slim: bool,
     ) -> Vec<Action> {
-        if self.remaining_build_days > 0 {
-            let wait = Action::Wait((self.remaining_build_days as f64 / 30.0).ceil() as u32);
+        if self.current_build_days > 0 {
+            let wait = Action::Wait((self.current_build_days as f64 / 30.0).ceil() as u32);
             return vec![wait];
         }
 
@@ -647,6 +648,49 @@ impl Facility {
         }
 
         actions
+    }
+
+    pub fn _get_differences(&self, other: &Facility) -> Vec<String> {
+        let mut differences = Vec::new();
+
+        if self.name != other.name {
+            differences.push(format!("Name changed from {} to {}", self.name, other.name));
+        }
+        if self.current_build_days != other.current_build_days {
+            differences.push(format!("Remaining build days changed from {} to {}", self.current_build_days, other.current_build_days));
+        }
+        if self.improvements != other.improvements {
+            differences.push(format!("Improvements changed from {} to {}", self.improvements, other.improvements));
+        }
+        if self.alpha_core != other.alpha_core {
+            differences.push(format!("Alpha core changed from {} to {}", self.alpha_core, other.alpha_core));
+        }
+        if self.colony_item != other.colony_item {
+            differences.push(format!("Colony item changed from {:?} to {:?}", self.colony_item, other.colony_item));
+        }
+        if self.base_production != other.base_production {
+            differences.push(format!("Base production changed from {:?} to {:?}", self.base_production, other.base_production));
+        }
+        if self.base_demands != other.base_demands {
+            differences.push(format!("Base demands changed from {:?} to {:?}", self.base_demands, other.base_demands));
+        }
+        if self.upkeep_formula != other.upkeep_formula {
+            differences.push("Upkeep formula changed".to_string());
+        }
+        if self.base_accessibility_bonus != other.base_accessibility_bonus {
+            differences.push(format!("Base accessibility bonus changed from {} to {}", self.base_accessibility_bonus, other.base_accessibility_bonus));
+        }
+        if self.base_stability_bonus != other.base_stability_bonus {
+            differences.push(format!("Base stability bonus changed from {} to {}", self.base_stability_bonus, other.base_stability_bonus));
+        }
+        if self.base_defense_multiplier != other.base_defense_multiplier {
+            differences.push(format!("Base defense multiplier changed from {} to {}", self.base_defense_multiplier, other.base_defense_multiplier));
+        }
+        if self.base_income_multiplier != other.base_income_multiplier {
+            differences.push(format!("Base income multiplier changed from {} to {}", self.base_income_multiplier, other.base_income_multiplier));
+        }
+
+        differences
     }
 
     // pub fn update_accessibility_bonus(&mut self) {
