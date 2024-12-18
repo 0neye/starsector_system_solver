@@ -17,7 +17,7 @@ pub use facility::Facility;
 pub struct Planet {
     name: String,
     properties: HashMap<String, f64>,
-    facilities: HashMap<String, Facility>,
+    facilities: Vec<Facility>,
     hazard_rating: f64,
     is_free_port: bool,
     size: u32,
@@ -56,11 +56,9 @@ impl Hash for Planet {
             v.to_bits().hash(state); // Convert f64 to bits before hashing
         }
 
-        let mut fac_entries: Vec<_> = self.facilities.iter().collect();
-        fac_entries.sort_by(|a, b| a.0.cmp(b.0));
-        for (k, v) in fac_entries {
-            k.hash(state);
-            v.hash(state);
+        // Hash vector of facilities
+        for facility in &self.facilities {
+            facility.hash(state);
         }
     }
 }
@@ -94,14 +92,14 @@ impl Planet {
             .expect("Planet must have a hazard rating");
         let size = properties.get("size").cloned().unwrap_or(0.0) as u32;
 
-        let mut facilities = HashMap::new();
+        let mut facilities = Vec::new();
 
         // Add default facilities: Population and Spaceport
         if let Some(population) = Facility::new("population".to_string()) {
-            facilities.insert("population".to_string(), population);
+            facilities.push(population);
         }
         if let Some(spaceport) = Facility::new("spaceport".to_string()) {
-            facilities.insert("spaceport".to_string(), spaceport);
+            facilities.push(spaceport);
         }
 
         Self {
@@ -133,42 +131,37 @@ impl Planet {
     }
 
     /// Get the facilities of this planet
-    pub fn facilities(&self) -> &HashMap<String, Facility> {
+    pub fn facilities(&self) -> &Vec<Facility> {
         &self.facilities
     }
 
     /// Get a facility by its name
     pub fn get_facility(&self, name: &str) -> Option<&Facility> {
-        self.facilities.get(name)
+        self.facilities.iter().find(|f| f.name() == name)
     }
 
     /// Get a facility by its name, mutable
     pub fn get_facility_mut(&mut self, name: &str) -> Option<&mut Facility> {
-        self.facilities.get_mut(name)
+        self.facilities.iter_mut().find(|f| f.name() == name)
     }
 
     /// Check if we can add an industry to this planet
     fn can_add_industry(&self) -> bool {
         self.facilities
             .iter()
-            .filter(|(_, f)| !f.is_structure())
+            .filter(|f| !f.is_structure())
             .count()
             <= (self.size.saturating_sub(2)) as usize
     }
 
     /// Add a facility to this planet
     pub fn add_facility(&mut self, name: String) -> bool {
-        // Create the new facility
-        let new_facility = match Facility::new(name.clone()) {
-            Some(f) => f,
-            None => return false,
-        };
 
         // Check if this is an upgrade by looking at requirements
         if let Some(data) = FACILITY_DATA.get(name.as_str()) {
-            for req in &data.requirements {
+            for req in data.requirements.iter() {
                 // If requirement matches an existing facility, this is an upgrade
-                if let Some(fac) = self.facilities.get_mut(*req) {
+                if let Some(fac) = self.get_facility_mut(req) {
                     _ = fac.swap_raw_w_data(name.clone(), data, false);
                     return true;
                 }
@@ -176,7 +169,13 @@ impl Planet {
         }
 
         // If not an upgrade, just add as a new facility
-        self.facilities.insert(name, new_facility);
+        // Create the new facility
+        let new_facility = match Facility::new(name.clone()) {
+            Some(f) => f,
+            None => return false,
+        };
+
+        self.facilities.push(new_facility);
         true
     }
 
@@ -187,8 +186,8 @@ impl Planet {
         }
 
         if let Some(data) = FACILITY_DATA.get(name) {
-            if let Some(downgrade) = data.requirements.first() {
-                if let Some(fac) = self.facilities.get_mut(name) {
+            for downgrade in data.requirements.iter() {
+                if let Some(fac) = self.get_facility_mut(name) {
                     if fac.swap_raw(downgrade.to_string(), true).is_some() {
                         return true;
                     }
@@ -196,7 +195,8 @@ impl Planet {
             }
         }
 
-        self.facilities.remove(name).is_some()
+        self.facilities.retain(|f| f.name() != name);
+        true
     }
 
     /// Get the hazard rating of this planet
@@ -212,7 +212,7 @@ impl Planet {
 
         let upkeep = self
             .facilities
-            .values()
+            .iter()
             .map(|facility| facility.calculate_upkeep(self.hazard_rating, self.size))
             .sum();
 
@@ -242,7 +242,7 @@ impl Planet {
             .clone();
 
         // Add accessibility bonuses from all facilities
-        for facility in self.facilities.values() {
+        for facility in &self.facilities {
             accessibility += facility.calculate_accessibility_bonus() * 100.0;
         }
 
@@ -307,7 +307,7 @@ impl Planet {
         let mut total = self.stability; // Base stability
 
         // Add bonuses from facilities
-        for facility in self.facilities.values() {
+        for facility in &self.facilities {
             total += facility.calculate_stability_bonus();
         }
 
@@ -358,7 +358,7 @@ impl Planet {
     pub fn get_num_facility_improvements(&self) -> u32 {
         self.facilities
             .iter()
-            .filter(|(_, f)| f.has_improvements())
+            .filter(|f| f.has_improvements())
             .count() as u32
     }
 
@@ -562,7 +562,7 @@ impl Planet {
         let mut total_production = 0.0;
         let production_bonus = 0.0; // Can be modified later to account for global bonuses
 
-        for facility in self.facilities.values() {
+        for facility in &self.facilities {
             total_production += facility.calculate_resource_production(
                 resource,
                 self.size,
@@ -584,7 +584,7 @@ impl Planet {
         let mut seen_resources = HashSet::new();
 
         // Collect all unique resources from all facilities
-        for facility in self.facilities.values() {
+        for facility in &self.facilities {
             for resource_amount in facility.production() {
                 seen_resources.insert(resource_amount.resource);
             }
@@ -609,7 +609,7 @@ impl Planet {
 
         let mut gross_income: f64 = 0.0;
         let mut highest_income_mult: f64 = 1.0;
-        for facility in self.facilities.values() {
+        for facility in &self.facilities {
             let facility_income = facility.calculate_gross_income(self.size, self);
             gross_income += facility_income;
             let income_mult = facility.calculate_income_multiplier();
@@ -645,7 +645,6 @@ impl Planet {
         let mut gross_income = 0.0;
         let mut net_income = 0.0;
 
-
         if debug {
             println!(
                 "\nWAIT - Growth: {}, Size: {}",
@@ -668,7 +667,7 @@ impl Planet {
             self.update_growth(30, None);
 
             // Progress build days for all facilities
-            for facility in self.facilities.values_mut() {
+            for facility in &mut self.facilities {
                 facility.progress_build_days(30);
             }
 
@@ -729,7 +728,7 @@ impl Planet {
             net_income += monthly_net;
 
             // Undo facility build progress
-            for facility in self.facilities.values_mut() {
+            for facility in &mut self.facilities {
                 facility.progress_build_days(-30);
             }
 
@@ -768,7 +767,7 @@ impl Planet {
             }
 
             // If not a property, check if it's a required facility
-            if !self.facilities.contains_key(*req) {
+            if !self.facilities.iter().any(|f| f.name() == *req) {
                 return false;
             }
         }
@@ -804,7 +803,7 @@ impl Planet {
 
         // Add new facilities
         for (name, facility) in crate::constants::FACILITY_DATA.iter() {
-            if !self.facilities().contains_key(*name) {
+            if !self.facilities.iter().any(|f| f.name() == *name) {
                 // Check if we meet the requirements for this facility
                 if !self.meets_facility_requirements(&facility.requirements) {
                     continue;
@@ -817,11 +816,11 @@ impl Planet {
                 let upgrade_from = facility
                     .requirements
                     .iter()
-                    .find(|req| self.facilities().contains_key(**req))
-                    .and_then(|name| self.facilities().get(*name));
+                    .find(|req| self.facilities.iter().any(|f| f.name() == **req))
+                    .and_then(|name| self.get_facility(*name));
 
                 // Check if we already have an upgrade of this facility
-                let has_upgrade = self.facilities().values().any(|f| {
+                let has_upgrade = self.facilities.iter().any(|f| {
                     if let Some(data) = f.get_data() {
                         data.requirements.contains(name)
                     } else {
@@ -867,7 +866,7 @@ impl Planet {
         }
 
         // Get facility-specific actions
-        for (_, facility) in self.facilities() {
+        for facility in &self.facilities {
             actions.extend(facility.get_possible_actions(self, balance, slim));
         }
 

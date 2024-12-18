@@ -310,7 +310,7 @@ impl State {
                 self.system.get_planet_mut(planet_name).unwrap().set_admin(AdminType::AlphaCore);
             }
             Action::Colonize(planet_name) => {
-                self.balance.spend_credits(75000.0);
+                self.balance.spend_credits(125000.0);
                 self.system.get_planet_mut(planet_name).unwrap().set_has_colony(true);
             }
             Action::Wait(months) => {
@@ -371,7 +371,7 @@ impl State {
             },
             Action::Colonize(planet_name) => {
                 self.system.get_planet_mut(&planet_name).unwrap().set_has_colony(false);
-                self.balance_mut().add_credits(75000.0);
+                self.balance_mut().add_credits(125000.0);
             },
             Action::Wait(months) => {
                 for planet in self.system.planets_mut().values_mut() {
@@ -616,12 +616,12 @@ fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashMap<u64, Sear
         // println!("{}Reached depth 0, calculating score", indent);
         result.score = info.state.score();
         // println!("{}Leaf node score: {}", indent, result.score);
+        _test_path_undo_consistency(&info.state);
         return Some(result);
     }
 
     // println!("{}Getting possible actions", indent);
     let actions = info.state.get_ordered_possible_actions(true);
-    // _test_action_undo_consistency(&mut info.state, Some(actions.clone()));
     // println!("{}Number of possible actions: {}", indent, actions.len());
     // println!("{}Actions: {:#?}", indent, actions);
     let mut best_action_log = info.state.action_log.clone();
@@ -671,51 +671,68 @@ fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashMap<u64, Sear
     Some(result)
 }
 
+fn _fac_inconsistency(state1: &State, state2: &State) -> bool {
+    for planet_name in state1.system().planets().keys() {
+        let facilities1 = &state1.system().planets()[planet_name].facilities();
+        let facilities2 = &state2.system().planets()[planet_name].facilities();
 
-fn _test_action_undo_consistency(state: &mut State, actions: Option<Vec<Action>>) {
-    // println!("\nTesting action undo consistency...");
-    let actions = actions.unwrap_or_else(|| state.get_possible_actions(true));
-    let mut orig_state = state.clone();
-
-
-    fn fac_inconsistency(state1: &State, state2: &State) -> bool {
-        for planet_name in state1.system().planets().keys() {
-            let facilities1 = &state1.system().planets()[planet_name].facilities();
-            let facilities2 = &state2.system().planets()[planet_name].facilities();
-
-            if facilities1.len() != facilities2.len() {
-                return true;
-            }
-
-            for (fac_name, _) in facilities1.iter() {
-                if !facilities2.contains_key(fac_name) {
-                    return true;
-                }
-            }
+        if facilities1.len() != facilities2.len() {
+            return true;
         }
-        false
-    }
 
-
-    for action in actions {
-        let pre_action_credits = state.balance().credits();
-        state.apply_action_raw(&action, false);
-        state.undo_last_action(false);
-
-        if (pre_action_credits - state.balance().credits()).abs() > 1e-6 || fac_inconsistency(state, &orig_state) {
-            // resimulate so we can get full debug info
-            println!("Before:\n{:#?}", orig_state.system().planets().get("Terran 1").unwrap().facilities().keys().collect::<Vec<_>>());
-            orig_state.apply_action_raw(&action, true);
-            orig_state.undo_last_action(true);
-            println!("After:\n{:#?}", state.system().planets().get("Terran 1").unwrap().facilities().keys().collect::<Vec<_>>());
-            println!("Inconsistency found! Action: {:?}, Pre-action credits: {}, Post-undo credits: {}", action, pre_action_credits, state.balance().credits());
-            panic!("Action undo inconsistency detected");
+        if !facilities1.iter().zip(facilities2.iter()).all(|(fac1, fac2)| fac1.name() == fac2.name()) {
+            return true;
         }
     }
+    false
+}
 
-    // println!("All actions and undos were consistent.");
-    // println!("Original credits: {}", original_credits);
-    // println!("Final credits: {}", state.balance().credits());
+pub fn _test_path_undo_consistency(state: &State) {
+    let actions = state.action_log().clone();
+    let mut temp_state = state.clone();
+    for _ in 0..=actions.len() {
+        temp_state.undo_last_action(false);
+    }
+    let blank_state = temp_state.clone();
+
+    let mut state_map = vec![];
+
+    for action in actions.clone() {
+        temp_state.apply_action_raw(&action, false);
+        state_map.push(temp_state.clone());
+    }
+
+    for i in (0..state_map.len()).rev() {
+        let should_be = &state_map[i];
+        let is = &temp_state;
+        let mut issue = false;
+        if _fac_inconsistency(should_be, is) {
+            println!("\nInconsistency found at action {:?}", actions[i]);
+            for planet_name in should_be.system().planets().keys() {
+                println!("Planet: {}", planet_name);
+                println!("Should be: {:#?}", should_be.system().planets().get(planet_name).unwrap().facilities().iter().map(|f| f.name()).collect::<Vec<_>>());
+                println!("Is: {:#?}", is.system().planets().get(planet_name).unwrap().facilities().iter().map(|f| f.name()).collect::<Vec<_>>());
+            }
+            issue = true;
+        }
+        if should_be.balance().credits() != is.balance().credits() {
+            println!("\nInconsistency found at action {:?} - Credits", actions[i]);
+            println!("Should be: {}", should_be.balance().credits());
+            println!("Is: {}", is.balance().credits());
+            issue = true;
+        }
+        if issue {
+            println!("\nBlank State - Credits: {}", blank_state.balance().credits());
+            println!("Blank State - Facilities: {:?}", blank_state.system().planets().values().flat_map(|p| p.facilities().iter().map(|f| (f.name(), f.remaining_build_days()))).collect::<Vec<_>>());
+            println!("Should be State - Credits: {}", should_be.balance().credits());
+            println!("Should be State - Facilities: {:?}", should_be.system().planets().values().flat_map(|p| p.facilities().iter().map(|f| (f.name(), f.remaining_build_days()))).collect::<Vec<_>>());
+            println!("Is State - Credits: {}", is.balance().credits());
+            println!("Is State - Facilities: {:?}", is.system().planets().values().flat_map(|p| p.facilities().iter().map(|f| (f.name(), f.remaining_build_days()))).collect::<Vec<_>>());
+            println!("Action log: {:?}", actions);
+            panic!();
+        }
+        temp_state.undo_last_action(false);
+    }
 }
 
 
@@ -776,7 +793,8 @@ pub fn simulate_linear(initial_state: &State, num_turns: u32) -> SearchInfo {
             if planet.has_colony() {
                 println!("\n  {} - Income: {} - Size: {}", name, planet.get_net_income(), planet.size());
                 println!("    Facility Status:");
-                for (name, facility) in planet.facilities().iter() {
+                for facility in planet.facilities().iter() {
+                    let name = facility.name();
                     println!("    {} - Income: {} - Prod: {:#?}", name, facility.calculate_net_income(planet.size(), planet), facility.get_resource_production(planet.size(), 0.0, planet.is_free_port()));
                 }
             }

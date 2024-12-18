@@ -39,9 +39,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     
     // Create initial balance with more resources
     let mut initial_balance = Balance::new(
-        10_000_000.0,  // 1M credits
-        5,             // 5 story points
-        5,             // 5 alpha cores
+        9989250.0,
+        5,
+        5,
     );
     
     // Add more colony items
@@ -64,15 +64,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     // // Test growth update
     // // Apply actions to set up the initial state
     // state.apply_action_raw(&Action::Colonize("Terran 1".to_string()), true);
-    // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "mining".to_string()), true);
+    // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "commerce".to_string()), true);
     // // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "waystation".to_string()), true);
-    // state.apply_action_raw(&Action::Wait(35), true);
+    // state.apply_action_raw(&Action::Wait(13), true);
     // // state.apply_action_raw(&&Action::SetFreePort("Terran 1".to_string(), true), true);
-    // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "farming".to_string()), true);
-    // state.apply_action_raw(&Action::Wait(35), true);
-    // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "heavy industry".to_string()), true);
-    // state.apply_action_raw(&Action::Wait(35), true);
-    // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "refining".to_string()), true);
+    // // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "farming".to_string()), true);
+    // // state.apply_action_raw(&Action::Wait(35), true);
+    // // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "heavy industry".to_string()), true);
+    // // state.apply_action_raw(&Action::Wait(35), true);
+    // // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "refining".to_string()), true);
 
 
     // // state.apply_action_raw(&Action::SetFreePort("Terran 1".to_string(), true), true);
@@ -85,9 +85,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     // let initial_credits = state.balance().credits();
 
     // // Apply test action
-    // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "orbital station".to_string()), true);
+    // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "farming".to_string()), true);
     // println!("\nState after applying test action:");
-    // println!("{:#?}", state.system().planets().get("Terran 1").unwrap().facilities().keys().collect::<Vec<_>>());
+    // println!("Before:\n{:?}", state.system().planets().values().flat_map(|p| p.facilities().iter().map(|f| (f.name(), f.remaining_build_days()))).collect::<Vec<_>>());
     // println!("Possible actions after test action:");
     // println!("{:#?}", state.get_possible_actions(true));
 
@@ -96,10 +96,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     // let credit_difference = final_credits - initial_credits;
     // println!("\nCredit change from test action: {}", credit_difference);
 
+    // crate::solver::_test_path_undo_consistency(&state);
+
     // // Undo the wait action
     // state.undo_last_action(true);
     // println!("\nState after undoing the test action:");
-    // println!("{:#?}", state.system().planets().get("Terran 1").unwrap().facilities().keys().collect::<Vec<_>>());
+    // println!("After:\n{:?}", state.system().planets().values().flat_map(|p| p.facilities().iter().map(|f| (f.name(), f.remaining_build_days()))).collect::<Vec<_>>());
 
     // // Verify that credits are back to the initial value
     // assert_eq!(state.balance().credits(), initial_credits, "Credits should be back to the initial value after undo");

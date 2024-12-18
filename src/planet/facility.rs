@@ -174,7 +174,10 @@ impl Facility {
     /// Won't handle income/expenses over wait time
     pub fn progress_build_days(&mut self, days: i32) {
         // Correct behavior; required to properly undo progress past completion
-        self.remaining_build_days -= days;
+        self.remaining_build_days = self.remaining_build_days.saturating_sub(days);
+        if self.name == "spaceport" {
+            println!("Progressing build days for spaceport: {} (-{})", self.remaining_build_days, days);
+        }
         // Incorrect behavior; will mess up everything and cause comp time to explode
         // self.remaining_build_days = self.remaining_build_days.max(0);
     }
@@ -182,7 +185,7 @@ impl Facility {
     /// Upgrades/downgrades a facility in-place, doesn't check if it's possible
     pub fn swap_raw_w_data(&mut self, new_name: String, data: &FacilityData, downgrade: bool) -> Option<&Self> {
         self.name = new_name;
-        self.remaining_build_days = if downgrade { self.remaining_build_days } else { data.build_time as i32 };
+        self.remaining_build_days = if downgrade { 0 } else { data.build_time as i32 };
 
         self.base_production.clear();
         self.base_production.extend(data.production.iter().cloned());
