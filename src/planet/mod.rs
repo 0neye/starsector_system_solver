@@ -377,7 +377,7 @@ impl Planet {
         let mut growth_points = self.calculate_growth_points(larger_friendly_colonies);
         // println!("Days: {} - Growth points: {} - Growth progress: {}", days, growth_points, self.growth_progress);
         
-        // First skip to next size change if applicable
+        // First calculate size changes
         loop {
             let days_to_size_change = if is_undoing {
                 self.days_from_last_size_change(Some(growth_points))
@@ -386,7 +386,7 @@ impl Planet {
             };
 
             // break if not applicable
-            if days_to_size_change.is_none() || days_to_size_change.unwrap() > remaining_days || self.size == MAX_SIZE {
+            if days_to_size_change.is_none() || days_to_size_change.unwrap() > remaining_days {
                 break;
             }
 
@@ -394,11 +394,11 @@ impl Planet {
 
             remaining_days = remaining_days.saturating_sub(days_to_size_change);
             
-            if is_undoing {
+            if is_undoing && self.size > MIN_SIZE {
                 self.size = self.size.saturating_sub(1);
                 growth_points = self.calculate_growth_points(larger_friendly_colonies);
                 self.growth_progress = 100.0;
-            } else {
+            } else if self.size < MAX_SIZE {
                 self.size = self.size.saturating_add(1);
                 growth_points = self.calculate_growth_points(larger_friendly_colonies);
                 self.growth_progress = 0.0;
@@ -416,12 +416,13 @@ impl Planet {
         }
 
         // Update size in the off chance we missed a change
+        // TODO: rewrite function to only have to do this once
         if self.growth_progress >= 100.0 && self.size < MAX_SIZE {
             self.size = self.size.saturating_add(1);
-            self.growth_progress = 0.0;
+            self.growth_progress = self.growth_progress - 100.0;
         } else if self.growth_progress < 0.0 && self.size > MIN_SIZE {
             self.size = self.size.saturating_sub(1);
-            self.growth_progress = 100.0;
+            self.growth_progress = 100.0 + self.growth_progress;
         }
 
         // Round growth progress to make reversable
@@ -642,17 +643,17 @@ impl Planet {
             return (0.0, 0.0);
         }
 
-        let mut gross_income = 0.0;
-        let mut net_income = 0.0;
+        let mut gross_income: f64 = 0.0;
+        let mut net_income: f64 = 0.0;
 
         if debug {
             println!(
                 "\nWAIT - Growth: {}, Size: {}",
-                self.growth_progress, self.size
+                self.growth_progress.round(), self.size
             );
             println!(
                 "Accumulated income: Gross: {}, Net: {}",
-                gross_income, net_income
+                gross_income.round(), net_income.round()
             );
         }
 
@@ -681,12 +682,12 @@ impl Planet {
 
             if debug {
                 println!(
-                    "WAIT - Gross: {}, Net: {}, Growth: {}, Growth P: {}, Size: {}",
-                    monthly_gross, monthly_net, self.growth_progress, self.calculate_growth_points(None), self.size
+                    "WAIT - Gross: {:.2}, Net: {:.2}, Growth: {:.2}, Growth P: {}, Size: {}",
+                    monthly_gross.round(), monthly_net.round(), self.growth_progress.round(), self.calculate_growth_points(None), self.size
                 );
                 println!(
-                    "Accumulated income: Gross: {}, Net: {}",
-                    gross_income, net_income
+                    "Accumulated income: Gross: {:.2}, Net: {:.2}",
+                    gross_income.round(), net_income.round()
                 );
             }
         }
@@ -701,17 +702,17 @@ impl Planet {
             return (0.0, 0.0);
         }
 
-        let mut gross_income = 0.0;
-        let mut net_income = 0.0;
+        let mut gross_income: f64 = 0.0;
+        let mut net_income: f64 = 0.0;
 
         if debug {
             println!(
                 "\nUNDO WAIT - Growth: {}, Size: {}",
-                self.growth_progress, self.size
+                self.growth_progress.round(), self.size
             );
             println!(
                 "Accumulated income: Gross: {}, Net: {}",
-                gross_income, net_income
+                gross_income.round(), net_income.round()
             );
         }
 
@@ -742,12 +743,12 @@ impl Planet {
 
             if debug {
                 println!(
-                    "UNDO WAIT - Gross: {}, Net: {}, Growth: {}, Growth P: {}, Size: {}",
-                    monthly_gross, monthly_net, self.growth_progress, self.calculate_growth_points(None), self.size
+                    "UNDO WAIT - Gross: {:.2}, Net: {:.2}, Growth: {:.2}, Growth P: {}, Size: {}",
+                    monthly_gross.round(), monthly_net.round(), self.growth_progress.round(), self.calculate_growth_points(None), self.size
                 );
                 println!(
-                    "Accumulated income: Gross: {}, Net: {}",
-                    gross_income, net_income
+                    "Accumulated income: Gross: {:.2}, Net: {:.2}",
+                    gross_income.round(), net_income.round()
                 );
             }
         }

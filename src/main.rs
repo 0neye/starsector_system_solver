@@ -19,7 +19,7 @@ fn test_solver(state: State) {
     // Run simulation for 10 turns
     // simulate_linear(&state, 15);
 
-    println!("{:#?}", search(&state, 5000).action_log);
+    println!("{:#?}", search(&state, 50000).action_log);
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -60,65 +60,64 @@ fn main() -> Result<(), Box<dyn Error>> {
     
     // Run solver test
     test_solver(state);
+    return Ok(());
 
-    // // Test growth update
-    // // Apply actions to set up the initial state
-    // state.apply_action_raw(&Action::Colonize("Terran 1".to_string()), true);
-    // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "commerce".to_string()), true);
-    // // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "waystation".to_string()), true);
-    // state.apply_action_raw(&Action::Wait(13), true);
-    // // state.apply_action_raw(&&Action::SetFreePort("Terran 1".to_string(), true), true);
-    // // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "farming".to_string()), true);
-    // // state.apply_action_raw(&Action::Wait(35), true);
-    // // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "heavy industry".to_string()), true);
-    // // state.apply_action_raw(&Action::Wait(35), true);
-    // // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "refining".to_string()), true);
+    // Test growth update
+    // Apply actions to set up the initial state
+    let action_sequence = vec![
+        Action::Colonize("Terran 1".to_string()),
+        // Action::AddFacility("Terran 1".to_string(), "commerce".to_string()),
+        // Action::SetHazardPay("Terran 1".to_string(), true),
+        // Action::SetFreePort("Terran 1".to_string(), true),
+        // Action::Wait(9),
+    ];
+
+    let test_action_sequence = vec![
+        Action::AddFacility("Terran 1".to_string(), "commerce".to_string()),
+        Action::SetHazardPay("Terran 1".to_string(), true),
+        Action::SetFreePort("Terran 1".to_string(), true),
+        Action::Wait(9),
+    ];
+
+    println!("\nInitial state:");
+    println!("{:#?}", state.balance());
+
+    // Apply action sequence
+    for action in &action_sequence {
+        state.apply_action_raw(action, true);
+    }
+
+    println!("\nState after applying action sequence:");
+    println!("{:#?}", state.balance());
+
+    let initial_credits = state.balance().credits();
+
+    // Apply test actions
+    for action in &test_action_sequence {
+        state.apply_action_raw(action, true);
+    }
 
 
-    // // state.apply_action_raw(&Action::SetFreePort("Terran 1".to_string(), true), true);
-    // // state.apply_action_raw(&Action::SetHazardPay("Barren 1".to_string(), true), true);
+    // Undo test actions
+    for _ in 0..test_action_sequence.len() {
+        state.undo_last_action(true);
+    }
 
+    println!("\nState after undoing test actions:");
+    println!("{:#?}", state.balance());
 
-    // println!("\nInitial state:");
-    // println!("{:#?}", state.balance());
+    // Check for credit inconsistency
+    let final_credits = state.balance().credits();
+    let credit_difference = final_credits - initial_credits;
+    println!("\nCredit difference: {}", credit_difference);
 
-    // let initial_credits = state.balance().credits();
+    if credit_difference.abs() > 1e-6 {
+        println!("Warning: Credit inconsistency detected!");
+    } else {
+        println!("No credit inconsistency detected.");
+    }
 
-    // // Apply test action
-    // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "farming".to_string()), true);
-    // println!("\nState after applying test action:");
-    // println!("Before:\n{:?}", state.system().planets().values().flat_map(|p| p.facilities().iter().map(|f| (f.name(), f.remaining_build_days()))).collect::<Vec<_>>());
-    // println!("Possible actions after test action:");
-    // println!("{:#?}", state.get_possible_actions(true));
-
-    // // Calculate and print the difference in credits
-    // let final_credits = state.balance().credits();
-    // let credit_difference = final_credits - initial_credits;
-    // println!("\nCredit change from test action: {}", credit_difference);
-
-    // crate::solver::_test_path_undo_consistency(&state);
-
-    // // Undo the wait action
-    // state.undo_last_action(true);
-    // println!("\nState after undoing the test action:");
-    // println!("After:\n{:?}", state.system().planets().values().flat_map(|p| p.facilities().iter().map(|f| (f.name(), f.remaining_build_days()))).collect::<Vec<_>>());
-
-    // // Verify that credits are back to the initial value
-    // assert_eq!(state.balance().credits(), initial_credits, "Credits should be back to the initial value after undo");
-    // println!("Credits successfully reverted to initial value: {}", initial_credits);
-
-    // state.apply_action_raw(&Action::AddFacility("Terran 1".to_string(), "megaport".to_string()), false);
-    // state.undo_last_action(false);
-    // for _ in 0..5 {
-    //     state.apply_action_raw(&Action::Wait(5), false);
-    // }
-    // state.apply_action_raw(&Action::Wait(5), true);
-
-    // for _ in 0..5 {
-    //     state.undo_last_action(false);
-    // }
-    // state.undo_last_action(true);
-    // dbg!(&state);
+    crate::solver::_test_path_undo_consistency(&state);
 
 
     Ok(())
