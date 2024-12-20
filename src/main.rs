@@ -19,7 +19,7 @@ fn test_solver(state: State) {
     // Run simulation for 10 turns
     // simulate_linear(&state, 15);
 
-    println!("{:#?}", search(&state, 50000).action_log);
+    println!("{:#?}", search(&state, 50000, true).action_log);
 }
 
 fn main() -> Result<(), Box<dyn Error>> {

@@ -544,7 +544,7 @@ pub struct SearchResult {
 
 const MAX_DEPTH: u32 = 100;
 
-pub fn search(initial_state: &State, time_limit: u32) -> SearchResult {
+pub fn search(initial_state: &State, time_limit: u32, slim: bool) -> SearchResult {
     println!("Starting search with time limit: {} ms", time_limit);
     
     let mut info = SearchInfo {
@@ -570,7 +570,7 @@ pub fn search(initial_state: &State, time_limit: u32) -> SearchResult {
 
         let depth_start_time = std::time::Instant::now();
         println!("\nSearching at depth {}", depth);
-        let result = dfs(&mut info, depth, best_score, &mut tt);
+        let result = dfs(&mut info, depth, best_score, &mut tt, slim);
         if result.is_none() {
             println!("Search interrupted at depth {}", depth);
             break;
@@ -599,7 +599,7 @@ pub fn search(initial_state: &State, time_limit: u32) -> SearchResult {
 
 
 
-fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashMap<u64, SearchResult>) -> Option<SearchResult> {
+fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashMap<u64, SearchResult>, slim: bool) -> Option<SearchResult> {
     // let indent = " ".repeat((MAX_DEPTH - depth + 1) as usize);
     // println!("{}Entering dfs: depth={}, alpha={}", indent, depth, alpha);
     
@@ -629,7 +629,7 @@ fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashMap<u64, Sear
     }
 
     // println!("{}Getting possible actions", indent);
-    let actions = info.state.get_ordered_possible_actions(true);
+    let actions = info.state.get_ordered_possible_actions(slim);
     // println!("{}Number of possible actions: {}", indent, actions.len());
     // println!("{}Actions: {:#?}", indent, actions);
     let mut best_action_log = info.state.action_log.clone();
@@ -643,7 +643,7 @@ fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashMap<u64, Sear
         info.state.apply_action_raw(action, false);
 
         // println!("{}Recursive call: depth={}, best_score={}", indent, depth - 1, best_score);
-        let sub_result = dfs(info, depth - 1, best_score, tt);
+        let sub_result = dfs(info, depth - 1, best_score, tt, slim);
 
         if let Some(sub_result) = sub_result {
             result.nodes_explored += sub_result.nodes_explored;
