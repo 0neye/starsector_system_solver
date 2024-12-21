@@ -397,7 +397,7 @@ impl State {
         
         // Base score is current credits plus projected income
         score += self.balance.credits;
-        score += self.balance.net_income * 12.0; // Project income a little into the future
+        score += self.balance.net_income * 24.0; // Project income into the future
         
         // Add value for each colonized planet
         for planet in self.system.planets().values() {
@@ -559,7 +559,7 @@ pub fn search(initial_state: &State, time_limit: u32, slim: bool) -> SearchResul
     let mut best_score = f64::NEG_INFINITY;
     let mut nodes_explored = 0;
 
-    for depth in 0..=MAX_DEPTH {
+    for depth in 2..=MAX_DEPTH {
         // TODO: make useful between depths
         let mut tt = HashMap::new();
 

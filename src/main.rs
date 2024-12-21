@@ -66,17 +66,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Apply actions to set up the initial state
     let action_sequence = vec![
         Action::Colonize("Terran 1".to_string()),
-        // Action::AddFacility("Terran 1".to_string(), "commerce".to_string()),
-        // Action::SetHazardPay("Terran 1".to_string(), true),
-        // Action::SetFreePort("Terran 1".to_string(), true),
-        // Action::Wait(9),
+        Action::AddFacility("Terran 1".to_string(), "commerce".to_string()),
+        Action::Wait(13),
+        Action::AddFacility("Terran 1".to_string(), "refining".to_string()),
+        Action::Wait(11),
     ];
 
     let test_action_sequence = vec![
-        Action::AddFacility("Terran 1".to_string(), "commerce".to_string()),
-        Action::SetHazardPay("Terran 1".to_string(), true),
-        Action::SetFreePort("Terran 1".to_string(), true),
-        Action::Wait(9),
+        Action::AddFacility("Terran 1".to_string(), "light industry".to_string()),
+        Action::Wait(10),
+        Action::AddFacility("Terran 1".to_string(), "heavy industry".to_string()),
+        Action::Wait(10),
     ];
 
     println!("\nInitial state:");

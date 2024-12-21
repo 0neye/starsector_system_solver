@@ -435,7 +435,7 @@ impl Planet {
         growth_points: Option<i32>,
         larger_friendly_colonies: Option<&[(String, u32)]>,
     ) -> Option<u32> {
-        if !self.has_colony() || self.size > 6 || self.size <= 2 {
+        if !self.has_colony() || self.size >= 6 || self.size <= 2 {
             return None;
         }
 
