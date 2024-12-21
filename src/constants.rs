@@ -1053,7 +1053,7 @@ pub const POSSIBLE_COLONY_ITEMS: [&str; 13] = [
 ];
 
 // Possible facilities
-pub const POSSIBLE_FACILITIES: [&str; 16] = [
+pub const POSSIBLE_FACILITIES: [&str; 22] = [
     "farming",
     "aquaculture",
     "mining",
@@ -1065,12 +1065,24 @@ pub const POSSIBLE_FACILITIES: [&str; 16] = [
     "military base",
     "high command",
     "population",
+    "spaceport",
     "megaport",
     "waystation",
     "patrol hq",
     "ground defenses",
     "heavy batteries",
+    "orbital station",
+    "battle station",
+    "star fortress",
+    "planetary shield",
+    "cryorevival facility",
 ];
+
+// pop + industries + structures
+pub const MAX_FACILITIES: usize = 1 + 4 + 7;
+pub const MAX_PRODUCTION: usize = 4;
+pub const MAX_DEMANDS: usize = 6;
+
 
 // File paths for example files
 pub const PLANETS_PATH: &str = "planets.csv";

@@ -57,8 +57,8 @@ impl System {
     pub fn new(name: String) -> Self {
         Self {
             name,
-            planets: HashMap::new(),
-            infrastructure: HashMap::new(),
+            planets: HashMap::with_capacity(5), // usually never more than 5
+            infrastructure: HashMap::with_capacity(5),
         }
     }
 

@@ -1,6 +1,6 @@
 use crate::constants::{
     ColonyItem, FacilityData, Resource, ResourceAmount, ResourceGetter, COLONY_ITEM_DATA,
-    FACILITY_ALPHA_CORES, FACILITY_DATA, FACILITY_IMPROVEMENTS, POSSIBLE_COLONY_ITEMS,
+    FACILITY_ALPHA_CORES, FACILITY_DATA, FACILITY_IMPROVEMENTS, POSSIBLE_COLONY_ITEMS, MAX_PRODUCTION, MAX_DEMANDS
 };
 use crate::solver::{Action, Balance};
 use std::collections::HashMap;
@@ -68,7 +68,7 @@ impl Facility {
     pub fn new(name: String) -> Option<Self> {
         let data = FACILITY_DATA.get(name.as_str())?;
 
-        let mut production = Vec::new();
+        let mut production = Vec::with_capacity(MAX_PRODUCTION);
         for res in &data.production {
             production.push(ResourceAmount {
                 resource: res.resource,
@@ -76,7 +76,7 @@ impl Facility {
             });
         }
 
-        let mut demands = Vec::new();
+        let mut demands = Vec::with_capacity(MAX_DEMANDS);
         for res in &data.demands {
             demands.push(ResourceAmount {
                 resource: res.resource,
@@ -606,7 +606,7 @@ impl Facility {
             return vec![wait];
         }
 
-        let mut actions = Vec::new();
+        let mut actions = Vec::with_capacity(3);
         let facility_name = self.name().to_string();
         let planet_name = planet.name().to_string();
 

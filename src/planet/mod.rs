@@ -6,7 +6,7 @@ use std::fmt;
 use std::hash::Hash;
 
 use crate::constants::FacilityData;
-use crate::constants::FACILITY_DATA;
+use crate::constants::{FACILITY_DATA, MAX_FACILITIES};
 use crate::constants::{AdminType, Resource};
 use crate::solver::Action;
 use crate::solver::Balance;
@@ -92,7 +92,7 @@ impl Planet {
             .expect("Planet must have a hazard rating");
         let size = properties.get("size").cloned().unwrap_or(0.0) as u32;
 
-        let mut facilities = Vec::new();
+        let mut facilities = Vec::with_capacity(MAX_FACILITIES);
 
         // Add default facilities: Population and Spaceport
         if let Some(population) = Facility::new("population".to_string()) {
@@ -777,7 +777,8 @@ impl Planet {
 
     /// Get all possible actions for this planet
     pub fn get_possible_actions(&self, balance: &Balance, slim: bool) -> Vec<Action> {
-        let mut actions = Vec::new();
+        let num_actions_estimate = 4 + self.facilities.len() * 2;
+        let mut actions = Vec::with_capacity(num_actions_estimate);
         let planet_name = self.name.clone();
 
         // If this planet is not colonized, return empty list since colonization is handled by System

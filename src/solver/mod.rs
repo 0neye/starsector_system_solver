@@ -234,7 +234,7 @@ impl Hash for State {
 
 impl State {
     pub fn new(balance: Balance, system: System) -> Self {
-        Self { balance, system, action_log: Vec::new() }
+        Self { balance, system, action_log: Vec::with_capacity(20) }
     }
 
     pub fn balance(&self) -> &Balance {
