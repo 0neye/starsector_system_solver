@@ -1,6 +1,6 @@
 use std::{collections::HashMap, hash::{Hash, Hasher}, hash::DefaultHasher};
 use crate::{constants::{AdminType, ColonyItem, FACILITY_DATA}, System};
-
+use rustc_hash::FxHasher;
 
 
 #[derive(Debug, Clone, Eq, Hash)]
@@ -196,6 +196,45 @@ pub struct State {
     action_log: Vec<Action>,
 }
 
+pub fn get_action_sequence_hash(actions: &Vec<Action>) -> u64 {
+    // Initialize a vector to store hashes of action sequences
+    let mut num_sequence = Vec::new();
+    let mut current_hash = 0u64;
+    let mut is_wait_sequence = false;
+
+    // Iterate through each action in the action log
+    for action in actions {
+        // Check if the current action is a Wait action
+        let is_wait = matches!(action, Action::Wait(_));
+        
+        // If we transition between Wait and non-Wait actions, push the current hash
+        if is_wait != is_wait_sequence && current_hash != 0 {
+            num_sequence.push(current_hash);
+            current_hash = 0;
+        }
+        
+        // Update the wait sequence flag
+        is_wait_sequence = is_wait;
+        
+        // Add the hash of the current action to the running hash
+        // Using wrapping_add to handle potential overflow
+        current_hash = current_hash.wrapping_add(action.get_hash());
+    }
+
+    // Push the final hash if there's any remaining
+    if current_hash != 0 {
+        num_sequence.push(current_hash);
+    }
+
+    // Hash the entire sequence of hashes
+    let mut hasher = FxHasher::default();
+    num_sequence.hash(&mut hasher);
+
+    // Return the final hash
+    hasher.finish()
+}
+
+// TODO: No need for this since we only use it in state.get_hash()
 impl Hash for State {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         // Initialize a vector to store hashes of action sequences
@@ -232,6 +271,7 @@ impl Hash for State {
     }
 }
 
+
 impl State {
     pub fn new(balance: Balance, system: System) -> Self {
         Self { balance, system, action_log: Vec::with_capacity(20) }
@@ -243,6 +283,10 @@ impl State {
 
     pub fn balance_mut(&mut self) -> &mut Balance {
         &mut self.balance
+    }
+
+    pub fn set_balance(&mut self, balance: Balance) {
+        self.balance = balance;
     }
 
     pub fn system(&self) -> &System {
@@ -263,6 +307,18 @@ impl State {
 
     pub fn get_possible_actions(&self, slim: bool) -> Vec<Action> {
         self.system.get_possible_actions(&self.balance, slim)
+    }
+
+    /// Returns a vector of State objects with each planet in their own State
+    pub fn to_vec_by_planet(&self) -> Vec<State> {
+        let mut states = Vec::with_capacity(self.system.planets().len());
+        for (planet_name, planet) in self.system.planets() {
+            let mut new_system = System::new(self.system().name().to_string());
+            new_system.add_planet(planet_name.clone(), planet.clone());
+            let new_state = State::new(self.balance.clone(), new_system);
+            states.push(new_state);
+        }
+        states
     }
 
     pub fn apply_action_raw(&mut self, action: &Action, debug: bool) {

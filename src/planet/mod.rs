@@ -146,12 +146,28 @@ impl Planet {
     }
 
     /// Check if we can add an industry to this planet
-    fn can_add_industry(&self) -> bool {
+    pub fn can_add_industry(&self) -> bool {
         self.facilities
             .iter()
             .filter(|f| !f.is_structure())
             .count()
             <= (self.size.saturating_sub(2)) as usize
+    }
+
+    /// Checks which facilities are not built yet
+    pub fn unbuilt_facilities(&self, only_industries: bool) -> Vec<String> {
+        let mut res = Vec::new();
+
+        for (name, data) in FACILITY_DATA.iter() {
+            if let Some(facility) = self.get_facility(name) {
+                continue;
+            }
+            if (!data.is_structure && only_industries) || !only_industries {
+                res.push(name.to_string());
+            }
+        }
+
+        res
     }
 
     /// Add a facility to this planet
@@ -330,6 +346,30 @@ impl Planet {
         }
 
         total
+    }
+
+    pub fn ground_defense_strength(&self) -> f64 {
+        if !self.has_colony() {
+            return 0.0;
+        }
+        
+        // base strength
+        let mut strength = if self.size == 3 {
+            50.0
+        } else {
+            100.0 * (self.size - 3) as f64
+        };
+
+        // Penalty for low stability
+        strength *= 0.25 + self.stability() as f64 * 0.075;
+
+
+        // Multipliers from facilities
+        for facility in &self.facilities {
+            strength *= facility.calculate_defense_multiplier();
+        }
+
+        strength
     }
 
     /// Get the growth progress of this planet
@@ -610,8 +650,9 @@ impl Planet {
 
         let mut gross_income: f64 = 0.0;
         let mut highest_income_mult: f64 = 1.0;
+        let accessibility = self.calculate_accessibility();
         for facility in &self.facilities {
-            let facility_income = facility.calculate_gross_income(self.size, self);
+            let facility_income = facility.calculate_gross_income(self.size, self, accessibility);
             gross_income += facility_income;
             let income_mult = facility.calculate_income_multiplier();
             highest_income_mult = highest_income_mult.max(income_mult);

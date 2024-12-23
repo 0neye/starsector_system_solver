@@ -124,6 +124,14 @@ impl System {
         self.planets.values().map(|planet| planet.total_upkeep()).sum()
     }
 
+    pub fn avg_stability(&self) -> f64 {
+        self.planets.values().map(|planet| planet.stability()).sum::<i32>() as f64 / self.planets.len() as f64
+    }
+
+    pub fn avg_ground_defense(&self) -> f64 {
+        self.planets.values().map(|planet| planet.ground_defense_strength()).sum::<f64>() / self.planets.len() as f64
+    }
+
     pub fn get_possible_actions(&self, balance: &Balance, slim: bool) -> Vec<Action> {
         let mut actions = Vec::new();
         

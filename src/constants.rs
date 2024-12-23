@@ -1,5 +1,8 @@
 use lazy_static::lazy_static;
+use rustc_hash::FxHashMap;
 use std::collections::HashMap;
+use core::hash::BuildHasherDefault;
+use nohash_hasher::NoHashHasher;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Resource {
@@ -24,6 +27,8 @@ pub enum Resource {
 }
 
 impl Resource {
+
+    #[inline(always)]
     pub fn base_price(&self) -> f64 {
         match self {
             Resource::Supplies => 250.0,
@@ -47,6 +52,7 @@ impl Resource {
         }
     }
 
+    #[inline(always)]
     pub fn sector_demand(&self) -> u32 {
         match self {
             Resource::Supplies => 267,
@@ -70,6 +76,7 @@ impl Resource {
         }
     }
 
+    #[inline(always)]
     pub fn market_value(&self) -> u32 {
         match self {
             Resource::Supplies => 66750,
@@ -93,6 +100,7 @@ impl Resource {
         }
     }
 
+    #[inline(always)]
     pub fn sector_supply(&self) -> u32 {
         match self {
             Resource::Supplies => 50,
@@ -116,6 +124,7 @@ impl Resource {
         }
     }
 
+    #[inline(always)]
     pub fn price_per_unit(&self) -> f64 {
         match self {
             Resource::Supplies => 1335.0,
@@ -174,6 +183,7 @@ pub struct FacilityData {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
 pub enum ColonyItem {
     SoilNanites,
     MantleBore,
@@ -219,8 +229,8 @@ pub struct ColonyItemEffect {
 }
 
 lazy_static! {
-    pub static ref COLONY_ITEM_DATA: HashMap<ColonyItem, ColonyItemEffect> = {
-        let mut map = HashMap::new();
+    pub static ref COLONY_ITEM_DATA: HashMap<ColonyItem, ColonyItemEffect, BuildHasherDefault<NoHashHasher<u8>>> = {
+        let mut map = HashMap::with_hasher(BuildHasherDefault::default());
 
         map.insert(ColonyItem::SoilNanites, ColonyItemEffect {
             compatible_facilities: vec!["farming"],
@@ -401,8 +411,8 @@ lazy_static! {
 }
 
 lazy_static! {
-    pub static ref FACILITY_DATA: HashMap<&'static str, FacilityData> = {
-        let mut map = HashMap::new();
+    pub static ref FACILITY_DATA: FxHashMap<&'static str, FacilityData> = {
+        let mut map = FxHashMap::default();
         
         // Population & Infrastructure (special case, always present)
         map.insert("population", FacilityData {
@@ -869,8 +879,8 @@ lazy_static! {
 }
 
 lazy_static! {
-    pub static ref FACILITY_IMPROVEMENTS: HashMap<&'static str, FacilityEffects> = {
-        let mut map = HashMap::new();
+    pub static ref FACILITY_IMPROVEMENTS: FxHashMap<&'static str, FacilityEffects> = {
+        let mut map = FxHashMap::default();
         
         // Commerce
         map.insert("commerce", FacilityEffects {
@@ -950,8 +960,8 @@ lazy_static! {
         map
     };
 
-    pub static ref FACILITY_ALPHA_CORES: HashMap<&'static str, FacilityEffects> = {
-        let mut map = HashMap::new();
+    pub static ref FACILITY_ALPHA_CORES: FxHashMap<&'static str, FacilityEffects> = {
+        let mut map = FxHashMap::default();
         
         // Commerce
         map.insert("commerce", FacilityEffects {

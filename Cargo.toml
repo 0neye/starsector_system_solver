@@ -6,3 +6,6 @@ edition = "2021"
 [dependencies]
 lazy_static = "1.4.0"
 csv = "1.2"
+rayon = "1.10.0"
+rustc-hash = "2.1.0"
+nohash-hasher = "0.2.0"

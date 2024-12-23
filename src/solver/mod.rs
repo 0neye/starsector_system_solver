@@ -1,15 +1,17 @@
 use crate::constants::{ColonyItem, AdminType, FACILITY_DATA};
 use crate::system::{System};
 use core::panic;
-use std::collections::{HashMap, hash_map};
-use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{hash_map, HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::time::Instant;
 use std::vec;
+
+use nohash_hasher::NoHashHasher;
 
 pub mod state;
 pub mod astar;
 
+use state::get_action_sequence_hash;
 pub use state::{State, Balance, Action};
 
 #[derive(Debug, Clone)]
@@ -36,6 +38,7 @@ impl SearchInfo {
         self.time_limit
     }
 
+    #[inline(always)]
     pub fn is_time_up(&self) -> bool {
         self.start_time.elapsed().as_millis() as u32 >= self.time_limit
     }
@@ -67,7 +70,7 @@ pub fn search(initial_state: &State, time_limit: u32, slim: bool) -> SearchResul
 
     for depth in 2..=MAX_DEPTH {
         // TODO: make useful between depths
-        let mut tt = HashMap::new();
+        let mut tt: HashSet<u64, BuildHasherDefault<NoHashHasher<u64>>> = HashSet::with_hasher(BuildHasherDefault::default());
 
         if info.is_time_up() {
             println!("Time limit reached at depth {}", depth);
@@ -105,7 +108,7 @@ pub fn search(initial_state: &State, time_limit: u32, slim: bool) -> SearchResul
 
 
 
-fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashMap<u64, SearchResult>, slim: bool) -> Option<SearchResult> {
+fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashSet<u64, BuildHasherDefault<NoHashHasher<u64>>>, slim: bool) -> Option<SearchResult> {
     // let indent = " ".repeat((MAX_DEPTH - depth + 1) as usize);
     // println!("{}Entering dfs: depth={}, alpha={}", indent, depth, alpha);
     
@@ -114,11 +117,11 @@ fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashMap<u64, Sear
         return None;
     }
 
-    let hash = info.state.get_hash();
-    if let Some(result) = tt.get(&hash) {
-        // println!("{}Found in transposition table: {}", indent, result.score);
-        return Some(result.clone());
-    }
+    // let hash = info.state.get_hash();
+    // if let Some(result) = tt.get(&hash) {
+    //     // println!("{}Found in transposition table: {}", indent, result.score);
+    //     return Some(result.clone());
+    // }
 
     let mut result = SearchResult {
         score: 0.0,
@@ -138,13 +141,22 @@ fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashMap<u64, Sear
     let actions = info.state.get_ordered_possible_actions(slim);
     // println!("{}Number of possible actions: {}", indent, actions.len());
     // println!("{}Actions: {:#?}", indent, actions);
+    let mut orig_action_log = info.state.action_log().clone();
     let mut best_action_log = info.state.action_log().clone();
     let mut best_score = alpha;
 
     for (i, action) in actions.iter().enumerate() {
+        result.nodes_explored += 1;
         // let pre_action_credits = info.state.balance().credits();
         // println!("{}Applying action {} of {}: {:?}", indent, i + 1, actions.len(), action);
         // let mut orig_state = info.state.clone();
+        orig_action_log.push(action.clone());
+        let next_hash = get_action_sequence_hash(&orig_action_log);
+        orig_action_log.pop();
+
+        if !tt.insert(next_hash) {
+            continue;
+        }
 
         info.state.apply_action_raw(action, false);
 
@@ -196,7 +208,6 @@ fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashMap<u64, Sear
     result.score = best_score;
     result.action_log = best_action_log;
 
-    tt.insert(hash, result.clone());
     // println!("{}Exiting dfs: best_score={}", indent, best_score);
     Some(result)
 }
@@ -327,7 +338,7 @@ pub fn simulate_linear(initial_state: &State, num_turns: u32) -> SearchInfo {
                 println!("    Facility Status:");
                 for facility in planet.facilities().iter() {
                     let name = facility.name();
-                    println!("    {} - Income: {} - Prod: {:#?}", name, facility.calculate_net_income(planet.size(), planet), facility.get_resource_production(planet.size(), 0.0, planet.is_free_port()));
+                    println!("    {} - Income: {} - Prod: {:#?}", name, facility.calculate_net_income(planet.size(), planet, planet.calculate_accessibility()), facility.get_resource_production(planet.size(), 0.0, planet.is_free_port()));
                 }
             }
         }

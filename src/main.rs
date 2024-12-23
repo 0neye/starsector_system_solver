@@ -7,19 +7,21 @@ mod parser;
 
 use std::error::Error;
 use std::collections::HashMap;
-use solver::{simulate_linear, search, State, Balance, SearchInfo};
+use solver::{astar::{search_all_planets, Goal}, search, simulate_linear, Balance, SearchInfo, State};
 use constants::ColonyItem;
 use solver::Action;
 use system::System;
 
-fn test_solver(state: State) {
+fn test_solver(mut state: State, goal: &Goal) {
     println!("\nStarting solver test...");
     println!("Initial state score: {}", state.score() as i32);
     
     // Run simulation for 10 turns
     // simulate_linear(&state, 15);
 
-    println!("{:#?}", search(&state, 50000, true).action_log);
+    println!("{:#?}", search(&state, 25000, true).action_log);
+    // println!("{:#?}", search_all_planets(&mut state, goal, 500000, true).iter().next().unwrap());
+
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -57,26 +59,49 @@ fn main() -> Result<(), Box<dyn Error>> {
     
     // Create initial state
     let mut state = State::new(initial_balance, test_system);
+
+    // Create goal
+    let goal = Goal::new(20000.0, None, None);
+
     
     // Run solver test
-    test_solver(state);
+    test_solver(state, &goal);
     return Ok(());
 
     // Test growth update
     // Apply actions to set up the initial state
     let action_sequence = vec![
-        Action::Colonize("Terran 1".to_string()),
-        Action::AddFacility("Terran 1".to_string(), "commerce".to_string()),
-        Action::Wait(13),
-        Action::AddFacility("Terran 1".to_string(), "refining".to_string()),
-        Action::Wait(11),
+        Action::Colonize(
+            "Terran 1".to_string(),
+        ),
+        Action::AddFacility(
+            "Terran 1".to_string(),
+            "commerce".to_string(),
+        ),
+        Action::Wait(
+            13,
+        ),
+        Action::UpgradeAdmin(
+            "Terran 1".to_string(),
+        ),
+        Action::AddFacility(
+            "Terran 1".to_string(),
+            "megaport".to_string(),
+        ),
+        Action::SetHazardPay(
+            "Terran 1".to_string(),
+            true,
+        ),
+        Action::Wait(
+            5,
+        ),
     ];
 
     let test_action_sequence = vec![
-        Action::AddFacility("Terran 1".to_string(), "light industry".to_string()),
-        Action::Wait(10),
-        Action::AddFacility("Terran 1".to_string(), "heavy industry".to_string()),
-        Action::Wait(10),
+        // Action::AddFacility("Terran 1".to_string(), "light industry".to_string()),
+        // Action::Wait(10),
+        // Action::AddFacility("Terran 1".to_string(), "heavy industry".to_string()),
+        // Action::Wait(10),
     ];
 
     println!("\nInitial state:");
@@ -149,4 +174,11 @@ TODOS:
 - Search one planet at a time, and then plug in the results of each planet into the overall search tree at the end
 - Use a different search algorithm, like IDA* with heuristics
 - Let the user give a specific goal (net income and/or credits, defense multiplier) to optimize for
+
+
+Since the search space for the full tree is quintillions of nodes the plan to do things in stages:
+1. Search each planet individually using state.to_vec_by_planet; in 'slim' mode to limit the search space; this should be parallelizable
+2. Run a quick algorithm to insert AddImprovement and AddAlphaCore actions into the sequence where they'd be most effective, for each optimal action sequence returned from the slim searches
+3. Use these near-optimal action sequences and other data from each individual planet to do one big combined search on the full tree relying on the heuristic data gathered to traverse it quickly and find the optimal solution
+
 */

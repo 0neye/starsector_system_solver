@@ -197,6 +197,7 @@ impl Facility {
         self.base_stability_bonus = data.stability_bonus;
         self.base_defense_multiplier = data.defense_multiplier;
         self.base_income_multiplier = data.income_multiplier;
+        self.is_structure = data.is_structure;
 
         Some(self)
     }
@@ -461,56 +462,37 @@ impl Facility {
         bonus: f64,
         is_free_port: bool,
     ) -> f64 {
-        if self.current_build_days > 0 {
+        if self.current_build_days > 0 || 
+           (!is_free_port && (resource == Resource::Drugs || resource == Resource::HarvestedOrgans)) {
             return 0.0;
         }
 
-        // Special case: Recreational Drugs are only produced if colony is a Free Port
-        if resource == Resource::Drugs && !is_free_port {
-            return 0.0;
-        }
-        // Same with harvested organs and population
-        if resource == Resource::HarvestedOrgans && !is_free_port {
-            return 0.0;
-        }
+        self.base_production.get(resource)
+            .map(|resource_amount| {
+                let amount = (resource_amount.amount_formula)(size);
+                if amount <= 0.0 { return 0.0; }
 
-        if let Some(resource_amount) = self.base_production.get(resource) {
-            let amount = (resource_amount.amount_formula)(size);
+                let mut total_bonus = bonus;
 
-            if amount <= 0.0 {
-                return 0.0;
-            }
-
-            // Apply bonuses from improvements
-            let mut total_bonus: f64 = bonus;
-            if self.improvements {
-                if let Some(effects) = FACILITY_IMPROVEMENTS.get(self.name.as_str())
-                {
-                    total_bonus += effects.production_bonus;
+                if self.improvements {
+                    total_bonus += FACILITY_IMPROVEMENTS.get(self.name.as_str())
+                        .map_or(0.0, |effects| effects.production_bonus);
                 }
-            }
 
-            // Add alpha core bonus
-            if self.alpha_core {
-                if let Some(effects) = FACILITY_ALPHA_CORES.get(self.name.as_str()) {
-                    total_bonus += effects.production_bonus;
+                if self.alpha_core {
+                    total_bonus += FACILITY_ALPHA_CORES.get(self.name.as_str())
+                        .map_or(0.0, |effects| effects.production_bonus);
                 }
-            }
 
-            // Apply colony item production bonus if applicable
-            if let Some(item) = self.colony_item {
-                if let Some(item_data) = COLONY_ITEM_DATA.get(&item) {
-                    if let Some(resource_amount) = item_data.production_bonuses.get(resource) {
-                        let this_bonus = (resource_amount.amount_formula)(size);
-                        total_bonus += this_bonus;
-                    }
+                if let Some(item) = self.colony_item {
+                    total_bonus += COLONY_ITEM_DATA.get(&item)
+                        .and_then(|item_data| item_data.production_bonuses.get(resource))
+                        .map_or(0.0, |resource_amount| (resource_amount.amount_formula)(size));
                 }
-            }
 
-            amount + total_bonus
-        } else {
-            0.0
-        }
+                amount + total_bonus
+            })
+            .unwrap_or(0.0)
     }
 
     pub fn get_resource_production(
@@ -554,7 +536,7 @@ impl Facility {
     }
 
     /// Per month
-    pub fn calculate_gross_income(&self, size: u32, planet: &dyn PlanetConditionChecker) -> f64 {
+    pub fn calculate_gross_income(&self, size: u32, planet: &dyn PlanetConditionChecker, accessibility: f64) -> f64 {
         if self.current_build_days > 0 {
             return 0.0;
         }
@@ -562,8 +544,7 @@ impl Facility {
         let mut gross_income = 0.0;
 
         if self.name == "population" {
-            let population_bonus = 10000.0 * (planet.size() as f64 - 2.0);
-            gross_income += population_bonus;
+            gross_income += 10000.0 * (size as f64 - 2.0);
         }
 
         for resource_amount in &self.base_production {
@@ -573,7 +554,6 @@ impl Facility {
                 0.0,
                 planet.is_free_port(),
             );
-            let accessibility = planet.accessability();
             let market_value = resource_amount.resource.market_value() as f64;
             let sector_supply = resource_amount.resource.sector_supply() as f64;
             // Skip resources with no market value (Crew and Marines)
@@ -589,8 +569,8 @@ impl Facility {
 
     //TODO: upkeep needs to take into account same-faction supply of demanded resources
     /// Per month
-    pub fn calculate_net_income(&self, size: u32, planet: &dyn PlanetConditionChecker) -> f64 {
-        let gross = self.calculate_gross_income(size, planet);
+    pub fn calculate_net_income(&self, size: u32, planet: &dyn PlanetConditionChecker, accessibility: f64) -> f64 {
+        let gross = self.calculate_gross_income(size, planet, accessibility);
         let upkeep = self.calculate_upkeep(planet.get_property("hazard percent"), planet.size());
         gross - upkeep
     }
