@@ -4,6 +4,7 @@ use std::fs::File;
 use std::path::Path;
 
 use csv;
+use rustc_hash::FxHashMap;
 
 use crate::planet::Planet;
 use crate::system::{System, Infrastructure};
@@ -58,7 +59,7 @@ pub fn parse_planets_csv<P: AsRef<Path>>(path: P) -> Result<(HashMap<String, Pla
             .to_string();
         
         // Parse properties from CSV columns
-        let mut properties = HashMap::new();
+        let mut properties = FxHashMap::default();
         
         // Skip the first two columns (planet name, system name) and parse the rest as properties
         for (i, value) in record.iter().skip(2).enumerate() {

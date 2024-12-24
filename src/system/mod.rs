@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHasher};
+
 use crate::solver::{Action, Balance};
 use crate::planet::Planet;
 
@@ -16,8 +18,8 @@ pub enum Infrastructure {
 #[derive(Debug, Clone)]
 pub struct System {
     name: String,
-    planets: HashMap<String, Planet>,
-    infrastructure: HashMap<String, Infrastructure>,
+    planets: FxHashMap<String, Planet>,
+    infrastructure: FxHashMap<String, Infrastructure>,
 }
 
 impl Hash for System {
@@ -57,8 +59,8 @@ impl System {
     pub fn new(name: String) -> Self {
         Self {
             name,
-            planets: HashMap::with_capacity(5), // usually never more than 5
-            infrastructure: HashMap::with_capacity(5),
+            planets: FxHashMap::with_capacity_and_hasher(5, FxBuildHasher::default()), // usually never more than 5
+            infrastructure: FxHashMap::with_capacity_and_hasher(5, FxBuildHasher::default()), // usually never more than 5
         }
     }
 
@@ -85,11 +87,11 @@ impl System {
         self.planets.get_mut(name)
     }
 
-    pub fn planets(&self) -> &HashMap<String, Planet> {
+    pub fn planets(&self) -> &FxHashMap<String, Planet> {
         &self.planets
     }
 
-    pub fn planets_mut(&mut self) -> &mut HashMap<String, Planet> {
+    pub fn planets_mut(&mut self) -> &mut FxHashMap<String, Planet> {
         &mut self.planets
     }
 
@@ -108,7 +110,7 @@ impl System {
         self.infrastructure.get(name)
     }
 
-    pub fn infrastructure(&self) -> &HashMap<String, Infrastructure> {
+    pub fn infrastructure(&self) -> &FxHashMap<String, Infrastructure> {
         &self.infrastructure
     }
 

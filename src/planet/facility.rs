@@ -1,3 +1,5 @@
+use rustc_hash::FxHashMap;
+
 use crate::constants::{
     ColonyItem, FacilityData, Resource, ResourceAmount, ResourceGetter, FacilityType, COLONY_ITEM_DATA,
     FACILITY_ALPHA_CORES, FACILITY_DATA, FACILITY_IMPROVEMENTS, POSSIBLE_COLONY_ITEMS, MAX_PRODUCTION, MAX_DEMANDS
@@ -501,8 +503,8 @@ impl Facility {
         size: u32,
         bonus: f64,
         is_free_port: bool,
-    ) -> HashMap<Resource, f64> {
-        let mut result = HashMap::new();
+    ) -> FxHashMap<Resource, f64> {
+        let mut result = FxHashMap::default();
         for resource_amount in &self.base_production {
             let amount = self.calculate_resource_production(
                 resource_amount.resource,

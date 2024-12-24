@@ -1,5 +1,6 @@
-use std::{collections::HashMap, hash::{Hash, Hasher}, hash::DefaultHasher};
+use std::{collections::HashMap, hash::{BuildHasherDefault, DefaultHasher, Hash, Hasher}};
 use crate::{constants::{AdminType, ColonyItem, FacilityType, FACILITY_DATA}, System};
+use nohash_hasher::NoHashHasher;
 use rustc_hash::FxHasher;
 
 
@@ -85,7 +86,7 @@ pub struct Balance {
     net_income: f64,
     
     // Available colony items and their counts
-    colony_items: HashMap<ColonyItem, u32>,
+    colony_items: HashMap<ColonyItem, u32, BuildHasherDefault<NoHashHasher<u8>>>,
 }
 
 impl Hash for Balance {
@@ -115,7 +116,7 @@ impl Balance {
             alpha_cores: initial_cores,
             gross_income: 0.0,
             net_income: 0.0,
-            colony_items: HashMap::new(),
+            colony_items: HashMap::with_hasher(BuildHasherDefault::<NoHashHasher<u8>>::default()),
         }
     }
 
@@ -125,7 +126,7 @@ impl Balance {
     pub fn alpha_cores(&self) -> u32 { self.alpha_cores }
     pub fn gross_income(&self) -> f64 { self.gross_income }
     pub fn net_income(&self) -> f64 { self.net_income }
-    pub fn colony_items(&self) -> &HashMap<ColonyItem, u32> { &self.colony_items }
+    pub fn colony_items(&self) -> &HashMap<ColonyItem, u32, BuildHasherDefault<NoHashHasher<u8>>> { &self.colony_items }
 
     // Mutators
     pub fn add_credits(&mut self, amount: f64) {

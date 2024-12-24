@@ -9,13 +9,15 @@ use crate::constants::{FacilityData, FacilityType, MAX_FACILITIES, FACILITY_DATA
 use crate::constants::{AdminType, Resource};
 use crate::solver::Action;
 use crate::solver::Balance;
+use rustc_hash::FxHashMap;
 
 pub use facility::Facility;
+use rustc_hash::FxHashSet;
 
 #[derive(Debug, Clone)]
 pub struct Planet {
     name: String,
-    properties: HashMap<String, f64>,
+    properties: FxHashMap<String, f64>,
     facilities: Vec<Facility>,
     hazard_rating: f64,
     is_free_port: bool,
@@ -84,7 +86,7 @@ impl PartialEq for Planet {
 impl Eq for Planet {}
 
 impl Planet {
-    pub fn new(name: String, properties: HashMap<String, f64>) -> Self {
+    pub fn new(name: String, properties: FxHashMap<String, f64>) -> Self {
         let hazard_rating = properties
             .get("hazard percent")
             .cloned()
@@ -125,7 +127,7 @@ impl Planet {
     }
 
     /// Get the properties of this planet
-    pub fn properties(&self) -> &HashMap<String, f64> {
+    pub fn properties(&self) -> &FxHashMap<String, f64> {
         &self.properties
     }
 
@@ -622,13 +624,13 @@ impl Planet {
     }
 
     /// Get a map of all resources produced by this planet and their amounts
-    pub fn get_resource_production(&self) -> HashMap<Resource, f64> {
+    pub fn get_resource_production(&self) -> FxHashMap<Resource, f64> {
         if !self.has_colony() {
-            return HashMap::new();
+            return FxHashMap::default();
         }
 
-        let mut production = HashMap::new();
-        let mut seen_resources = HashSet::new();
+        let mut production = FxHashMap::default();
+        let mut seen_resources = FxHashSet::default();
 
         // Collect all unique resources from all facilities
         for facility in &self.facilities {
