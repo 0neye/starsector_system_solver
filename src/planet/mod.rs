@@ -5,8 +5,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::hash::Hash;
 
-use crate::constants::FacilityData;
-use crate::constants::{FACILITY_DATA, MAX_FACILITIES};
+use crate::constants::{FacilityData, FacilityType, MAX_FACILITIES, FACILITY_DATA};
 use crate::constants::{AdminType, Resource};
 use crate::solver::Action;
 use crate::solver::Balance;
@@ -95,10 +94,10 @@ impl Planet {
         let mut facilities = Vec::with_capacity(MAX_FACILITIES);
 
         // Add default facilities: Population and Spaceport
-        if let Some(population) = Facility::new("population".to_string()) {
+        if let Some(population) = Facility::new(FacilityType::Population) {
             facilities.push(population);
         }
-        if let Some(spaceport) = Facility::new("spaceport".to_string()) {
+        if let Some(spaceport) = Facility::new(FacilityType::Spaceport) {
             facilities.push(spaceport);
         }
 
@@ -135,14 +134,14 @@ impl Planet {
         &self.facilities
     }
 
-    /// Get a facility by its name
-    pub fn get_facility(&self, name: &str) -> Option<&Facility> {
-        self.facilities.iter().find(|f| f.name() == name)
+    /// Get a facility by its type
+    pub fn get_facility(&self, facility_type: FacilityType) -> Option<&Facility> {
+        self.facilities.iter().find(|f| f.facility_type() == &facility_type)
     }
 
-    /// Get a facility by its name, mutable
-    pub fn get_facility_mut(&mut self, name: &str) -> Option<&mut Facility> {
-        self.facilities.iter_mut().find(|f| f.name() == name)
+    /// Get a facility by its type, mutable
+    pub fn get_facility_mut(&mut self, facility_type: FacilityType) -> Option<&mut Facility> {
+        self.facilities.iter_mut().find(|f| f.facility_type() == &facility_type)
     }
 
     /// Check if we can add an industry to this planet
@@ -155,15 +154,15 @@ impl Planet {
     }
 
     /// Checks which facilities are not built yet
-    pub fn unbuilt_facilities(&self, only_industries: bool) -> Vec<String> {
+    pub fn unbuilt_facilities(&self, only_industries: bool) -> Vec<FacilityType> {
         let mut res = Vec::new();
 
-        for (name, data) in FACILITY_DATA.iter() {
-            if let Some(facility) = self.get_facility(name) {
+        for (facility_type, data) in FACILITY_DATA.iter() {
+            if let Some(_) = self.get_facility(*facility_type) {
                 continue;
             }
             if (!data.is_structure && only_industries) || !only_industries {
-                res.push(name.to_string());
+                res.push(*facility_type);
             }
         }
 
@@ -171,14 +170,18 @@ impl Planet {
     }
 
     /// Add a facility to this planet
-    pub fn add_facility(&mut self, name: String) -> bool {
+    pub fn add_facility(&mut self, facility_type: FacilityType) -> bool {
 
         // Check if this is an upgrade by looking at requirements
-        if let Some(data) = FACILITY_DATA.get(name.as_str()) {
+        if let Some(data) = FACILITY_DATA.get(&facility_type) {
             for req in data.requirements.iter() {
                 // If requirement matches an existing facility, this is an upgrade
-                if let Some(fac) = self.get_facility_mut(req) {
-                    _ = fac.swap_raw_w_data(name.clone(), data, false);
+                let req_fac = FacilityType::from_str(req);
+                if req_fac.is_none() {
+                    continue;
+                }
+                if let Some(fac) = self.get_facility_mut(req_fac.unwrap()) {
+                    _ = fac.swap_raw_w_data(facility_type, data, false);
                     return true;
                 }
             }
@@ -186,7 +189,7 @@ impl Planet {
 
         // If not an upgrade, just add as a new facility
         // Create the new facility
-        let new_facility = match Facility::new(name.clone()) {
+        let new_facility = match Facility::new(facility_type) {
             Some(f) => f,
             None => return false,
         };
@@ -196,22 +199,27 @@ impl Planet {
     }
 
     /// Remove a facility from this planet
-    pub fn remove_facility(&mut self, name: &str) -> bool {
-        if name == "population" || name == "spaceport" {
+    pub fn remove_facility(&mut self, facility_type: FacilityType) -> bool {
+        if facility_type == FacilityType::Population || facility_type == FacilityType::Spaceport {
             return false; // Can't remove core facilities
         }
 
-        if let Some(data) = FACILITY_DATA.get(name) {
+        if let Some(data) = FACILITY_DATA.get(&facility_type) {
             for downgrade in data.requirements.iter() {
-                if let Some(fac) = self.get_facility_mut(name) {
-                    if fac.swap_raw(downgrade.to_string(), true).is_some() {
+                let down_type = FacilityType::from_str(downgrade);
+                if down_type.is_none() {
+                    continue;
+                }
+                let down_type = down_type.unwrap();
+                if let Some(fac) = self.get_facility_mut(facility_type) {
+                    if fac.swap_raw_w_data(down_type, FACILITY_DATA.get(&down_type).unwrap(), true).is_some() {
                         return true;
                     }
                 }
             }
         }
 
-        self.facilities.retain(|f| f.name() != name);
+        self.facilities.retain(|f| f.facility_type() != &facility_type);
         true
     }
 
@@ -363,7 +371,6 @@ impl Planet {
         // Penalty for low stability
         strength *= 0.25 + self.stability() as f64 * 0.075;
 
-
         // Multipliers from facilities
         for facility in &self.facilities {
             strength *= facility.calculate_defense_multiplier();
@@ -508,7 +515,6 @@ impl Planet {
         Some((self.growth_progress as f64 / growth_per_day).ceil() as u32)
     }
 
-
     /// Calculate the growth points for this planet (% of size per month)
     pub fn calculate_growth_points(
         &self,
@@ -561,13 +567,13 @@ impl Planet {
         }
 
         // Bonuses for spaceport and megaport
-        if let Some(spaceport) = self.get_facility("spaceport") {
+        if let Some(spaceport) = self.get_facility(FacilityType::Spaceport) {
             points += 2;
             if spaceport.has_improvements() {
                 points += 1;
             }
         }
-        if let Some(megaport) = self.get_facility("megaport") {
+        if let Some(megaport) = self.get_facility(FacilityType::Megaport) {
             points += self.size as i32;
             if megaport.has_improvements() {
                 points += 2;
@@ -845,65 +851,67 @@ impl Planet {
         }
 
         // Add new facilities
-        for (name, facility) in crate::constants::FACILITY_DATA.iter() {
-            if !self.facilities.iter().any(|f| f.name() == *name) {
-                // Check if we meet the requirements for this facility
-                if !self.meets_facility_requirements(&facility.requirements) {
-                    continue;
+        for (facility_type, facility) in FACILITY_DATA.iter() {
+            if let Some(facility) = self.get_facility(*facility_type) {
+                continue;
+            }
+
+            // Check if we meet the requirements for this facility
+            if !self.meets_facility_requirements(&facility.requirements) {
+                continue;
+            }
+
+            // TODO; check if this is what's causing irreversiblity
+            // play with linear simulator; farming seems to disapear
+
+            // Check if this is an upgrade (any requirement matches an existing facility)
+            let upgrade_from = facility
+                .requirements
+                .iter()
+                .find(|req| self.facilities.iter().any(|f| f.name() == **req))
+                .and_then(|name| self.get_facility(FacilityType::from_str(name).unwrap()));
+
+            // Check if we already have an upgrade of this facility
+            let has_upgrade = self.facilities.iter().any(|f| {
+                if let Some(data) = f.get_data() {
+                    data.requirements.contains(&facility_type.as_str())
+                } else {
+                    false
                 }
+            });
 
-                // TODO; check if this is what's causing irreversiblity
-                // play with linear simulator; farming seems to disapear
+            if has_upgrade {
+                continue;
+            }
 
-                // Check if this is an upgrade (any requirement matches an existing facility)
-                let upgrade_from = facility
-                    .requirements
-                    .iter()
-                    .find(|req| self.facilities.iter().any(|f| f.name() == **req))
-                    .and_then(|name| self.get_facility(*name));
-
-                // Check if we already have an upgrade of this facility
-                let has_upgrade = self.facilities.iter().any(|f| {
-                    if let Some(data) = f.get_data() {
-                        data.requirements.contains(name)
-                    } else {
-                        false
-                    }
-                });
-
-                if has_upgrade {
-                    continue;
+            // Determine if we can add this facility
+            let can_add_industry = self.can_add_industry();
+            let can_add = match upgrade_from {
+                // If it's an upgrade, check if we need a new industry slot
+                // And whether the old facility is done building
+                Some(old_facility) => {
+                    // Need industry slot if upgrading from structure to industry
+                    (!old_facility.is_structure()
+                        || facility.is_structure
+                        || can_add_industry)
+                        && old_facility.remaining_build_days() <= 0
                 }
+                // Not an upgrade - normal structure/industry check
+                None => facility.is_structure || can_add_industry,
+            };
 
-                // Determine if we can add this facility
-                let can_add_industry = self.can_add_industry();
-                let can_add = match upgrade_from {
-                    // If it's an upgrade, check if we need a new industry slot
-                    // And whether the old facility is done building
-                    Some(old_facility) => {
-                        // Need industry slot if upgrading from structure to industry
-                        (!old_facility.is_structure()
-                            || facility.is_structure
-                            || can_add_industry)
-                            && old_facility.remaining_build_days() <= 0
-                    }
-                    // Not an upgrade - normal structure/industry check
-                    None => facility.is_structure || can_add_industry,
-                };
-
-                if can_add && balance.credits() >= facility.build_cost as f64 {
-                    actions.push(Action::AddFacility(planet_name.clone(), name.to_string()));
-                } else if !facility.is_structure && !can_add_industry {
-                    // Add a Wait action; need to calculate how long we need to grow
-                    // to next colony size
-                    let days = self.days_till_next_size(None, None);
-                    if let Some(days) = days {
-                        let months = (days as f64 / 30.0).ceil() as u32;
-                        if months > 0 {
-                            let action = Action::Wait(months);
-                            if !actions.contains(&action) {
-                                actions.push(action);
-                            }
+            if can_add && balance.credits() >= facility.build_cost as f64 {
+                actions.push(Action::AddFacility(planet_name.clone(), facility_type.clone()));
+            } else if !facility.is_structure && !can_add_industry {
+                // Add a Wait action; need to calculate how long we need to grow
+                // to next colony size
+                let days = self.days_till_next_size(None, None);
+                if let Some(days) = days {
+                    let months = (days as f64 / 30.0).ceil() as u32;
+                    if months > 0 {
+                        let action = Action::Wait(months);
+                        if !actions.contains(&action) {
+                            actions.push(action);
                         }
                     }
                 }

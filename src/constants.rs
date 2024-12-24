@@ -5,6 +5,7 @@ use core::hash::BuildHasherDefault;
 use nohash_hasher::NoHashHasher;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
 pub enum Resource {
     Supplies,
     Fuel,
@@ -24,6 +25,90 @@ pub enum Resource {
     ShipHullsAndWeapons,
     Crew,           // Special resources with no market value
     Marines,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum FacilityType {
+    Population,
+    Spaceport,
+    Megaport,
+    Farming,
+    Mining,
+    Refining,
+    LightIndustry,
+    HeavyIndustry,
+    FuelProduction,
+    Aquaculture,
+    Commerce,
+    PatrolHQ,
+    MilitaryBase,
+    HighCommand,
+    Waystation,
+    GroundDefenses,
+    HeavyBatteries,
+    OrbitalStation,
+    BattleStation,
+    StarFortress,
+    CryorevivalFacility,
+    PlanetaryShield,
+}
+
+impl FacilityType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            FacilityType::Population => "population",
+            FacilityType::Spaceport => "spaceport",
+            FacilityType::Megaport => "megaport",
+            FacilityType::Farming => "farming",
+            FacilityType::Mining => "mining",
+            FacilityType::Refining => "refining",
+            FacilityType::LightIndustry => "light industry",
+            FacilityType::HeavyIndustry => "heavy industry",
+            FacilityType::FuelProduction => "fuel production",
+            FacilityType::Aquaculture => "aquaculture",
+            FacilityType::Commerce => "commerce",
+            FacilityType::PatrolHQ => "patrol hq",
+            FacilityType::MilitaryBase => "military base",
+            FacilityType::HighCommand => "high command",
+            FacilityType::Waystation => "waystation",
+            FacilityType::GroundDefenses => "ground defenses",
+            FacilityType::HeavyBatteries => "heavy batteries",
+            FacilityType::OrbitalStation => "orbital station",
+            FacilityType::BattleStation => "battle station",
+            FacilityType::StarFortress => "star fortress",
+            FacilityType::CryorevivalFacility => "cryorevival facility",
+            FacilityType::PlanetaryShield => "planetary shield",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "population" => Some(Self::Population),
+            "spaceport" => Some(Self::Spaceport),
+            "megaport" => Some(Self::Megaport),
+            "farming" => Some(Self::Farming),
+            "mining" => Some(Self::Mining),
+            "refining" => Some(Self::Refining),
+            "light industry" => Some(Self::LightIndustry),
+            "heavy industry" => Some(Self::HeavyIndustry),
+            "fuel production" => Some(Self::FuelProduction),
+            "aquaculture" => Some(Self::Aquaculture),
+            "commerce" => Some(Self::Commerce),
+            "patrol hq" => Some(Self::PatrolHQ),
+            "military base" => Some(Self::MilitaryBase),
+            "high command" => Some(Self::HighCommand),
+            "waystation" => Some(Self::Waystation),
+            "ground defenses" => Some(Self::GroundDefenses),
+            "heavy batteries" => Some(Self::HeavyBatteries),
+            "orbital station" => Some(Self::OrbitalStation),
+            "battle station" => Some(Self::BattleStation),
+            "star fortress" => Some(Self::StarFortress),
+            "cryorevival facility" => Some(Self::CryorevivalFacility),
+            "planetary shield" => Some(Self::PlanetaryShield),
+            _ => None,
+        }
+    }
 }
 
 impl Resource {
@@ -221,7 +306,7 @@ impl ColonyItem {
 
 #[derive(Debug, Clone)]
 pub struct ColonyItemEffect {
-    pub compatible_facilities: Vec<&'static str>,
+    pub compatible_facilities: Vec<FacilityType>,
     pub production_bonuses: Vec<ResourceAmount>,
     pub defense_multiplier: f64,
     pub accessibility_bonus: f64,
@@ -233,7 +318,7 @@ lazy_static! {
         let mut map = HashMap::with_hasher(BuildHasherDefault::default());
 
         map.insert(ColonyItem::SoilNanites, ColonyItemEffect {
-            compatible_facilities: vec!["farming"],
+            compatible_facilities: vec![FacilityType::Farming],
             production_bonuses: vec![ResourceAmount {
                 resource: Resource::Food,
                 amount_formula: |_| 2.0,
@@ -244,7 +329,7 @@ lazy_static! {
         });
 
         map.insert(ColonyItem::MantleBore, ColonyItemEffect {
-            compatible_facilities: vec!["mining"],
+            compatible_facilities: vec![FacilityType::Mining],
             production_bonuses: vec![
                 ResourceAmount {
                     resource: Resource::Ore,
@@ -265,7 +350,7 @@ lazy_static! {
         });
 
         map.insert(ColonyItem::BiofactoryEmbryo, ColonyItemEffect {
-            compatible_facilities: vec!["light industry"],
+            compatible_facilities: vec![FacilityType::LightIndustry],
             production_bonuses: vec![
                 ResourceAmount {
                     resource: Resource::DomesticGoods,
@@ -286,7 +371,7 @@ lazy_static! {
         });
 
         map.insert(ColonyItem::CatalyticCore, ColonyItemEffect {
-            compatible_facilities: vec!["refining"],
+            compatible_facilities: vec![FacilityType::Refining],
             production_bonuses: vec![
                 ResourceAmount {
                     resource: Resource::Metals,
@@ -303,7 +388,7 @@ lazy_static! {
         });
 
         map.insert(ColonyItem::DroneReplicator, ColonyItemEffect {
-            compatible_facilities: vec!["ground defenses", "heavy batteries"],
+            compatible_facilities: vec![FacilityType::GroundDefenses, FacilityType::HeavyBatteries],
             production_bonuses: Vec::new(),
             defense_multiplier: 1.5,
             accessibility_bonus: 0.0,
@@ -311,7 +396,7 @@ lazy_static! {
         });
 
         map.insert(ColonyItem::CorruptedNanoforge, ColonyItemEffect {
-            compatible_facilities: vec!["heavy industry"],
+            compatible_facilities: vec![FacilityType::HeavyIndustry],
             production_bonuses: vec![
                 ResourceAmount {
                     resource: Resource::HeavyMachinery,
@@ -336,7 +421,7 @@ lazy_static! {
         });
 
         map.insert(ColonyItem::PristineNanoforge, ColonyItemEffect {
-            compatible_facilities: vec!["heavy industry"],
+            compatible_facilities: vec![FacilityType::HeavyIndustry],
             production_bonuses: vec![
                 ResourceAmount {
                     resource: Resource::HeavyMachinery,
@@ -361,7 +446,7 @@ lazy_static! {
         });
 
         map.insert(ColonyItem::CryoarithmeticEngine, ColonyItemEffect {
-            compatible_facilities: vec!["patrol hq", "military base", "high command"],
+            compatible_facilities: vec![FacilityType::PatrolHQ, FacilityType::MilitaryBase, FacilityType::HighCommand],
             production_bonuses: Vec::new(),
             defense_multiplier: 2.0,
             accessibility_bonus: 0.0,
@@ -369,7 +454,7 @@ lazy_static! {
         });
 
         map.insert(ColonyItem::DealmakerHolosuite, ColonyItemEffect {
-            compatible_facilities: vec!["commerce"],
+            compatible_facilities: vec![FacilityType::Commerce],
             production_bonuses: Vec::new(),
             defense_multiplier: 1.0,
             accessibility_bonus: 0.0,
@@ -377,7 +462,7 @@ lazy_static! {
         });
 
         map.insert(ColonyItem::FullereneSpool, ColonyItemEffect {
-            compatible_facilities: vec!["spaceport", "megaport"],
+            compatible_facilities: vec![FacilityType::Spaceport, FacilityType::Megaport],
             production_bonuses: Vec::new(),
             defense_multiplier: 1.0,
             accessibility_bonus: 0.3,
@@ -385,7 +470,7 @@ lazy_static! {
         });
 
         map.insert(ColonyItem::PlasmaDynamo, ColonyItemEffect {
-            compatible_facilities: vec!["mining"],
+            compatible_facilities: vec![FacilityType::Mining],
             production_bonuses: vec![ResourceAmount {
                 resource: Resource::Volatiles,
                 amount_formula: |_| 3.0,
@@ -396,7 +481,7 @@ lazy_static! {
         });
 
         map.insert(ColonyItem::SynchrotronCore, ColonyItemEffect {
-            compatible_facilities: vec!["fuel production"],
+            compatible_facilities: vec![FacilityType::FuelProduction],
             production_bonuses: vec![ResourceAmount {
                 resource: Resource::Fuel,
                 amount_formula: |_| 3.0,
@@ -411,11 +496,11 @@ lazy_static! {
 }
 
 lazy_static! {
-    pub static ref FACILITY_DATA: FxHashMap<&'static str, FacilityData> = {
-        let mut map = FxHashMap::default();
+    pub static ref FACILITY_DATA: HashMap<FacilityType, FacilityData, BuildHasherDefault<NoHashHasher<u8>>> = {
+        let mut map = HashMap::with_hasher(BuildHasherDefault::default());
         
         // Population & Infrastructure (special case, always present)
-        map.insert("population", FacilityData {
+        map.insert(FacilityType::Population, FacilityData {
             name: "population",
             build_cost: 0,
             build_time: 0,
@@ -443,7 +528,7 @@ lazy_static! {
         });
 
         // Spaceport - Also always present
-        map.insert("spaceport", FacilityData {
+        map.insert(FacilityType::Spaceport, FacilityData {
             name: "spaceport",
             build_cost: 50000,
             build_time: 15,
@@ -466,7 +551,7 @@ lazy_static! {
         });
 
         // Megaport
-        map.insert("megaport", FacilityData {
+        map.insert(FacilityType::Megaport, FacilityData {
             name: "megaport",
             build_cost: 300000,
             build_time: 150,
@@ -489,7 +574,7 @@ lazy_static! {
         });
 
         // Farming
-        map.insert("farming", FacilityData {
+        map.insert(FacilityType::Farming, FacilityData {
             name: "farming",
             build_cost: 75000,
             build_time: 60,
@@ -510,7 +595,7 @@ lazy_static! {
         });
 
         // Mining
-        map.insert("mining", FacilityData {
+        map.insert(FacilityType::Mining, FacilityData {
             name: "mining",
             build_cost: 100000,
             build_time: 60,
@@ -535,7 +620,7 @@ lazy_static! {
         });
 
         // Refining
-        map.insert("refining", FacilityData {
+        map.insert(FacilityType::Refining, FacilityData {
             name: "refining",
             build_cost: 225000,
             build_time: 90,
@@ -559,7 +644,7 @@ lazy_static! {
         });
 
         // Light Industry
-        map.insert("light industry", FacilityData {
+        map.insert(FacilityType::LightIndustry, FacilityData {
             name: "light industry",
             build_cost: 225000,
             build_time: 90,
@@ -582,7 +667,7 @@ lazy_static! {
         });
 
         // Heavy Industry
-        map.insert("heavy industry", FacilityData {
+        map.insert(FacilityType::HeavyIndustry, FacilityData {
             name: "heavy industry",
             build_cost: 500000,
             build_time: 120,
@@ -607,7 +692,7 @@ lazy_static! {
         });
 
         // Aquaculture
-        map.insert("aquaculture", FacilityData {
+        map.insert(FacilityType::Aquaculture, FacilityData {
             name: "aquaculture",
             build_cost: 250000,
             build_time: 60,
@@ -628,7 +713,7 @@ lazy_static! {
         });
 
         // Commerce
-        map.insert("commerce", FacilityData {
+        map.insert(FacilityType::Commerce, FacilityData {
             name: "commerce",
             build_cost: 450000,
             build_time: 90,
@@ -644,7 +729,7 @@ lazy_static! {
             is_structure: false,
         });
 
-        map.insert("Patrol HQ", FacilityData {
+        map.insert(FacilityType::PatrolHQ, FacilityData {
             name: "patrol hq",
             build_cost: 300000,
             build_time: 60,
@@ -668,7 +753,7 @@ lazy_static! {
 
 
         // Military Base
-        map.insert("military base", FacilityData {
+        map.insert(FacilityType::MilitaryBase, FacilityData {
             name: "military base",
             build_cost: 450000,
             build_time: 120,
@@ -692,7 +777,7 @@ lazy_static! {
         });
 
         // High Command
-        map.insert("high command", FacilityData {
+        map.insert(FacilityType::HighCommand, FacilityData {
             name: "high command",
             build_cost: 150000,
             build_time: 120,
@@ -716,7 +801,7 @@ lazy_static! {
         });
 
         // Waystation
-        map.insert("waystation", FacilityData {
+        map.insert(FacilityType::Waystation, FacilityData {
             name: "waystation",
             build_cost: 100000,
             build_time: 60,
@@ -737,7 +822,7 @@ lazy_static! {
         });
 
         // Ground Defenses
-        map.insert("ground defenses", FacilityData {
+        map.insert(FacilityType::GroundDefenses, FacilityData {
             name: "ground defenses",
             build_cost: 150000,
             build_time: 60,
@@ -758,7 +843,7 @@ lazy_static! {
         });
 
         // Heavy Batteries
-        map.insert("heavy batteries", FacilityData {
+        map.insert(FacilityType::HeavyBatteries, FacilityData {
             name: "heavy batteries",
             build_cost: 300000,
             build_time: 90,
@@ -779,7 +864,7 @@ lazy_static! {
         });
 
         // Orbital Station
-        map.insert("orbital station", FacilityData {
+        map.insert(FacilityType::OrbitalStation, FacilityData {
             name: "orbital station",
             build_cost: 150000,
             build_time: 90,
@@ -799,7 +884,7 @@ lazy_static! {
         });
 
         // Battle Station
-        map.insert("battle station", FacilityData {
+        map.insert(FacilityType::BattleStation, FacilityData {
             name: "battle station",
             build_cost: 500000,
             build_time: 120,
@@ -814,12 +899,12 @@ lazy_static! {
                 ResourceAmount { resource: Resource::Crew, amount_formula: |size| 5.0 },
             ],
             special_effects: vec!["75% Station CR"],
-            requirements: vec!["Upgraded from Orbital Station"],
+            requirements: vec!["orbital station"],
             is_structure: true,
         });
 
         // Star Fortress
-        map.insert("star fortress", FacilityData {
+        map.insert(FacilityType::StarFortress, FacilityData {
             name: "star fortress",
             build_cost: 1000000,
             build_time: 180,
@@ -834,7 +919,7 @@ lazy_static! {
                 ResourceAmount { resource: Resource::Crew, amount_formula: |size| 7.0 },
             ],
             special_effects: vec!["100% Station CR"],
-            requirements: vec!["Upgraded from Battlestation"],
+            requirements: vec!["battle station"],
             is_structure: true,
         });
 
@@ -879,61 +964,61 @@ lazy_static! {
 }
 
 lazy_static! {
-    pub static ref FACILITY_IMPROVEMENTS: FxHashMap<&'static str, FacilityEffects> = {
-        let mut map = FxHashMap::default();
+    pub static ref FACILITY_IMPROVEMENTS: HashMap<FacilityType, FacilityEffects, BuildHasherDefault<NoHashHasher<u8>>> = {
+        let mut map = HashMap::with_hasher(BuildHasherDefault::default());
         
         // Commerce
-        map.insert("commerce", FacilityEffects {
+        map.insert(FacilityType::Commerce, FacilityEffects {
             income_bonus: 0.25,  // +25% income
             ..Default::default()
         });
 
         // Spaceport & Megaport
-        map.insert("spaceport", FacilityEffects {
+        map.insert(FacilityType::Spaceport, FacilityEffects {
             accessibility_bonus: 0.20,  // +20% accessibility
             ..Default::default()
         });
-        map.insert("megaport", FacilityEffects {
+        map.insert(FacilityType::Megaport, FacilityEffects {
             accessibility_bonus: 0.20,  // +20% accessibility
             ..Default::default()
         });
 
         // Waystation
-        map.insert("waystation", FacilityEffects {
+        map.insert(FacilityType::Waystation, FacilityEffects {
             accessibility_bonus: 0.20,  // +20% accessibility
             ..Default::default()
         });
 
         // Orbital Station, Battlestation, Star Fortress
-        map.insert("orbital station", FacilityEffects {
+        map.insert(FacilityType::OrbitalStation, FacilityEffects {
             stability_bonus: 1,
             ..Default::default()
         });
-        map.insert("battlestation", FacilityEffects {
+        map.insert(FacilityType::BattleStation, FacilityEffects {
             stability_bonus: 1,
             ..Default::default()
         });
-        map.insert("star fortress", FacilityEffects {
+        map.insert(FacilityType::StarFortress, FacilityEffects {
             stability_bonus: 1,
             ..Default::default()
         });
 
-        // Ground Defenses, Heavy Batteries, Planetary Shield
-        map.insert("ground defenses", FacilityEffects {
+        // Ground Defenses, Heavy Batteries
+        map.insert(FacilityType::GroundDefenses, FacilityEffects {
             defense_multiplier: 0.25,  // x1.25 defense
             ..Default::default()
         });
-        map.insert("heavy batteries", FacilityEffects {
+        map.insert(FacilityType::HeavyBatteries, FacilityEffects {
             defense_multiplier: 0.25,  // x1.25 defense
             ..Default::default()
         });
-        map.insert("planetary shield", FacilityEffects {
+        map.insert(FacilityType::PlanetaryShield, FacilityEffects {
             defense_multiplier: 0.25,  // x1.25 defense
             ..Default::default()
         });
 
         // Population & Infrastructure
-        map.insert("population", FacilityEffects {
+        map.insert(FacilityType::Population, FacilityEffects {
             stability_bonus: 1,
             production_bonus: 1.0,
             ..Default::default()
@@ -941,9 +1026,8 @@ lazy_static! {
 
         // Production facilities with +1 bonus
         for facility in &[
-            "aquaculture", "light industry", "refining", 
-            "fuel production", "heavy industry", "orbital works",
-            "mining"
+            FacilityType::Aquaculture, FacilityType::LightIndustry, FacilityType::Refining,
+            FacilityType::HeavyIndustry, FacilityType::Mining
         ] {
             map.insert(*facility, FacilityEffects {
                 production_bonus: 1.0,
@@ -952,7 +1036,7 @@ lazy_static! {
         }
 
         // Farming (special case with +2 production)
-        map.insert("farming", FacilityEffects {
+        map.insert(FacilityType::Farming, FacilityEffects {
             production_bonus: 2.0,
             ..Default::default()
         });
@@ -960,44 +1044,44 @@ lazy_static! {
         map
     };
 
-    pub static ref FACILITY_ALPHA_CORES: FxHashMap<&'static str, FacilityEffects> = {
-        let mut map = FxHashMap::default();
+    pub static ref FACILITY_ALPHA_CORES: HashMap<FacilityType, FacilityEffects, BuildHasherDefault<NoHashHasher<u8>>> = {
+        let mut map = HashMap::with_hasher(BuildHasherDefault::default());
         
         // Commerce
-        map.insert("commerce", FacilityEffects {
+        map.insert(FacilityType::Commerce, FacilityEffects {
             income_bonus: 0.25,  // +25% income
             ..Default::default()
         });
 
         // Spaceport & Megaport
-        map.insert("spaceport", FacilityEffects {
+        map.insert(FacilityType::Spaceport, FacilityEffects {
             accessibility_bonus: 0.20,  // +20% accessibility
             ..Default::default()
         });
-        map.insert("megaport", FacilityEffects {
+        map.insert(FacilityType::Megaport, FacilityEffects {
             accessibility_bonus: 0.20,  // +20% accessibility
             ..Default::default()
         });
 
-        // Ground Defenses, Heavy Batteries, Planetary Shield
-        map.insert("ground defenses", FacilityEffects {
+        // Ground Defenses, Heavy Batteries
+        map.insert(FacilityType::GroundDefenses, FacilityEffects {
             defense_multiplier: 0.50,  // x1.5 defense
             ..Default::default()
         });
-        map.insert("heavy batteries", FacilityEffects {
+        map.insert(FacilityType::HeavyBatteries, FacilityEffects {
             defense_multiplier: 0.50,  // x1.5 defense
             ..Default::default()
         });
-        map.insert("planetary shield", FacilityEffects {
+        map.insert(FacilityType::PlanetaryShield, FacilityEffects {
             defense_multiplier: 0.50,  // x1.5 defense
             ..Default::default()
         });
 
         // Production facilities with +1 bonus
         for facility in &[
-            "aquaculture", "farming", "light industry", "refining",
-            "fuel production", "heavy industry", "orbital works",
-            "mining", "population"
+            FacilityType::Aquaculture, FacilityType::Farming, FacilityType::LightIndustry,
+            FacilityType::Refining, FacilityType::HeavyIndustry, FacilityType::Mining,
+            FacilityType::Population
         ] {
             map.insert(*facility, FacilityEffects {
                 production_bonus: 1.0,

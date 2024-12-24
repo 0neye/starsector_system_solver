@@ -8,7 +8,7 @@ mod parser;
 use std::error::Error;
 use std::collections::HashMap;
 use solver::{astar::{search_all_planets, Goal}, search, simulate_linear, Balance, SearchInfo, State};
-use constants::ColonyItem;
+use constants::{ColonyItem, FacilityType};
 use solver::Action;
 use system::System;
 
@@ -76,7 +76,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ),
         Action::AddFacility(
             "Terran 1".to_string(),
-            "commerce".to_string(),
+            FacilityType::Commerce,
         ),
         Action::Wait(
             13,
@@ -86,7 +86,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ),
         Action::AddFacility(
             "Terran 1".to_string(),
-            "megaport".to_string(),
+            FacilityType::Megaport,
         ),
         Action::SetHazardPay(
             "Terran 1".to_string(),
@@ -98,9 +98,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     ];
 
     let test_action_sequence = vec![
-        // Action::AddFacility("Terran 1".to_string(), "light industry".to_string()),
+        // Action::AddFacility("Terran 1".to_string(), FacilityType::LightIndustry),
         // Action::Wait(10),
-        // Action::AddFacility("Terran 1".to_string(), "heavy industry".to_string()),
+        // Action::AddFacility("Terran 1".to_string(), FacilityType::HeavyIndustry),
         // Action::Wait(10),
     ];
 

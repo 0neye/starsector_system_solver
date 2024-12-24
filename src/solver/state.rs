@@ -1,14 +1,14 @@
 use std::{collections::HashMap, hash::{Hash, Hasher}, hash::DefaultHasher};
-use crate::{constants::{AdminType, ColonyItem, FACILITY_DATA}, System};
+use crate::{constants::{AdminType, ColonyItem, FacilityType, FACILITY_DATA}, System};
 use rustc_hash::FxHasher;
 
 
 #[derive(Debug, Clone, Eq, Hash)]
 pub enum Action {
-    AddFacility(String, String),      // planet name, facility name
-    AddImprovement(String, String),   // planet name, facility name
-    AddAlphaCore(String, String),     // planet name, facility name
-    InstallItem(String, String, ColonyItem),      // planet name, facility name, item
+    AddFacility(String, FacilityType),      // planet name, facility type
+    AddImprovement(String, FacilityType),   // planet name, facility type
+    AddAlphaCore(String, FacilityType),     // planet name, facility type
+    InstallItem(String, FacilityType, ColonyItem),      // planet name, facility type, item
     SetFreePort(String, bool),        // planet name, is_free_port
     SetHazardPay(String, bool),       // planet name, has_hazard_pay
     UpgradeAdmin(String),  // Upgrade from Base to AlphaCore; planet name
@@ -18,7 +18,7 @@ pub enum Action {
 
 impl Action {
     pub fn get_hash(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = FxHasher::default();
         self.hash(&mut hasher);
         hasher.finish()
     }
@@ -26,8 +26,8 @@ impl Action {
     fn priority(&self) -> i32 {
         match self {
             // Highest priority: Direct income improvements
-            Action::AddFacility(_, name) => {
-                if let Some(facility_data) = FACILITY_DATA.get(name.as_str()) {
+            Action::AddFacility(_, facility_type) => {
+                if let Some(facility_data) = FACILITY_DATA.get(facility_type) {
                     if facility_data.income_multiplier > 1.0 {
                         return 1000;
                     }
@@ -324,37 +324,31 @@ impl State {
     pub fn apply_action_raw(&mut self, action: &Action, debug: bool) {
         self.action_log.push(action.clone());
         match action {
-            Action::AddFacility(planet_name, facility_name) => {
-                // if facility_name == "spaceport" || facility_name == "population" {
-                //     panic!("Can't add core facility {} to planet {}\n{:#?}", facility_name, planet_name, self);
-                // }
+            Action::AddFacility(planet_name, facility_type) => {
                 let planet = self.system_mut().get_planet_mut(planet_name).unwrap();
-                if planet.add_facility(facility_name.clone()) {
-                    if let Some(facility_data) = FACILITY_DATA.get(facility_name.as_str()) {
+                if planet.add_facility(*facility_type) {
+                    if let Some(facility_data) = FACILITY_DATA.get(facility_type) {
                         self.balance_mut().spend_credits(facility_data.build_cost as f64);
                     }
                 }
             },
-            Action::AddImprovement(planet_name, facility_name) => {
+            Action::AddImprovement(planet_name, facility_type) => {
                 let improvement_cost = 2_u32.pow(self.system().get_planet(planet_name).unwrap().get_num_facility_improvements());
                 self.balance_mut().spend_story_points(improvement_cost);
                 let planet = self.system_mut().get_planet_mut(planet_name).unwrap();
-                let fac = planet.get_facility_mut(facility_name).unwrap();
+                let fac = planet.get_facility_mut(*facility_type).unwrap();
                 fac.add_improvements();
-                // fac.update_accessibility_bonus();
             },
-            Action::AddAlphaCore(planet_name, facility_name) => {
+            Action::AddAlphaCore(planet_name, facility_type) => {
                 self.balance_mut().spend_alpha_cores(1);
                 let fac = self.system_mut().get_planet_mut(planet_name).unwrap()
-                    .get_facility_mut(facility_name).unwrap();
+                    .get_facility_mut(*facility_type).unwrap();
                 fac.add_alpha_core();
-                // fac.update_accessibility_bonus();
             },
-            Action::InstallItem(planet_name, facility_name, item) => {
+            Action::InstallItem(planet_name, facility_type, item) => {
                 self.balance_mut().remove_colony_item(item);
-                let fac = self.system_mut().get_planet_mut(planet_name).unwrap().get_facility_mut(facility_name).unwrap();
+                let fac = self.system_mut().get_planet_mut(planet_name).unwrap().get_facility_mut(*facility_type).unwrap();
                 fac.add_colony_item_raw(item.clone());
-                // fac.update_accessibility_bonus();
             },
             Action::SetFreePort(planet_name, is_free_port) => {
                 self.system_mut().get_planet_mut(planet_name).unwrap().set_free_port(*is_free_port);
@@ -377,7 +371,6 @@ impl State {
                     }
                     let (_, net_from_wait) = planet.wait(*months, debug);
                     self.balance.add_credits(net_from_wait);
-                    // println!("Net income from waiting for planet {} is {}", planet.name(), net_from_wait);
                 }
             }
         }
@@ -394,26 +387,23 @@ impl State {
         }
         let action = action.unwrap();
         match action {
-            Action::AddFacility(planet_name, facility_name) => {
-                // if facility_name == "spaceport" || facility_name == "population" {
-                //     panic!("Can't remove core facility {} to planet {}\n{:#?}", facility_name, planet_name, self);
-                // }
-                self.system_mut().get_planet_mut(&planet_name).unwrap().remove_facility(&facility_name);
-                if let Some(facility_data) = FACILITY_DATA.get(facility_name.as_str()) {
+            Action::AddFacility(planet_name, facility_type) => {
+                self.system_mut().get_planet_mut(&planet_name).unwrap().remove_facility(facility_type);
+                if let Some(facility_data) = FACILITY_DATA.get(&facility_type) {
                     self.balance_mut().add_credits(facility_data.build_cost as f64);
                 }
             },
-            Action::AddImprovement(planet_name, facility_name) => {
+            Action::AddImprovement(planet_name, facility_type) => {
                 let improvement_cost = 2u32.pow(self.system().get_planet(&planet_name).unwrap().get_num_facility_improvements()-1);
-                self.system_mut().get_planet_mut(&planet_name).unwrap().get_facility_mut(&facility_name).unwrap().remove_improvements();
+                self.system_mut().get_planet_mut(&planet_name).unwrap().get_facility_mut(facility_type).unwrap().remove_improvements();
                 self.balance_mut().add_story_points(improvement_cost);
             },
-            Action::AddAlphaCore(planet_name, facility_name) => {
-                self.system_mut().get_planet_mut(&planet_name).unwrap().get_facility_mut(&facility_name).unwrap().remove_alpha_core();
+            Action::AddAlphaCore(planet_name, facility_type) => {
+                self.system_mut().get_planet_mut(&planet_name).unwrap().get_facility_mut(facility_type).unwrap().remove_alpha_core();
                 self.balance_mut().add_alpha_cores(1);
             },
-            Action::InstallItem(planet_name, facility_name, item) => {
-                self.system_mut().get_planet_mut(&planet_name).unwrap().get_facility_mut(&facility_name).unwrap().remove_colony_item();
+            Action::InstallItem(planet_name, facility_type, item) => {
+                self.system_mut().get_planet_mut(&planet_name).unwrap().get_facility_mut(facility_type).unwrap().remove_colony_item();
                 self.balance_mut().add_colony_item(item);
             },
             Action::SetFreePort(planet_name, is_free_port) => {
@@ -437,7 +427,6 @@ impl State {
                     }
                     let (_, net_from_wait) = planet.undo_wait(months, debug);
                     self.balance.spend_credits(net_from_wait);
-                    // println!("Undo net income from waiting for planet {} is {}", planet.name(), net_from_wait);
                 }
             },
         }
@@ -515,6 +504,128 @@ impl State {
         self.system.hash(&mut hasher);
         hasher.finish()
     }
+
+    // pub fn rate_action(&self, action: &Action) -> f64 {
+    //     // Start with the base priority from the action
+    //     let mut rating = action.priority() as f64;
+
+    //     match action {
+    //         Action::AddFacility(planet_name, facility_type) => {
+    //             if let Some(planet) = self.system.get_planet(planet_name) {
+    //                 // Higher rating for facilities that synergize with planet conditions
+    //                 if let Some(facility_data) = FACILITY_DATA.get(facility_type) {
+    //                     // Boost rating if this is an income-generating facility
+    //                     if facility_data.income_multiplier > 1.0 {
+    //                         rating *= 1.5;
+    //                     }
+                        
+    //                     // Consider build cost vs current credits
+    //                     let cost_ratio = facility_data.build_cost as f64 / self.balance.credits;
+    //                     if cost_ratio > 0.8 {
+    //                         // Penalize expensive facilities when low on credits
+    //                         rating *= 0.5;
+    //                     }
+    //                 }
+    //             }
+    //         },
+    //         Action::AddImprovement(planet_name, facility_type) => {
+    //             if let Some(planet) = self.system.get_planet(planet_name) {
+    //                 // Higher rating for improving income-generating facilities
+    //                 if let Some(facility) = planet.get_facility(*facility_type) {
+    //                     if facility.income > 0.0 {
+    //                         rating *= 1.3;
+    //                     }
+    //                 }
+                    
+    //                 // Consider story point cost
+    //                 let improvement_cost = 2_u32.pow(planet.get_num_facility_improvements());
+    //                 if improvement_cost > self.balance.story_points() {
+    //                     rating *= 0.4;
+    //                 }
+    //             }
+    //         },
+    //         Action::AddAlphaCore(planet_name, facility_type) => {
+    //             // Only rate highly if we have cores to spare
+    //             if self.balance.alpha_cores() <= 1 {
+    //                 rating *= 0.3;
+    //             }
+                
+    //             if let Some(planet) = self.system.get_planet(planet_name) {
+    //                 // Higher rating for alpha cores in income facilities
+    //                 if let Some(facility) = planet.get_facility(*facility_type) {
+    //                     if facility.income > 0.0 {
+    //                         rating *= 1.4;
+    //                     }
+    //                 }
+    //             }
+    //         },
+    //         Action::InstallItem(planet_name, facility_type, item) => {
+    //             if let Some(planet) = self.system.get_planet(planet_name) {
+    //                 if let Some(facility) = planet.get_facility(*facility_type) {
+    //                     // Higher rating for items that boost income
+    //                     if facility.income > 0.0 {
+    //                         rating *= 1.2;
+    //                     }
+    //                 }
+    //             }
+    //         },
+    //         Action::SetFreePort(planet_name, is_free_port) => {
+    //             if let Some(planet) = self.system.get_planet(planet_name) {
+    //                 // Higher rating for enabling free port on high income planets
+    //                 if *is_free_port && planet.get_base_income() > 5000.0 {
+    //                     rating *= 1.5;
+    //                 }
+    //             }
+    //         },
+    //         Action::SetHazardPay(planet_name, has_hazard_pay) => {
+    //             if let Some(planet) = self.system.get_planet(planet_name) {
+    //                 // Higher rating for hazard pay on high hazard planets
+    //                 if *has_hazard_pay && planet.hazard_rating() > 150.0 {
+    //                     rating *= 1.4;
+    //                 }
+    //             }
+    //         },
+    //         Action::UpgradeAdmin(planet_name) => {
+    //             // Only rate highly if we have cores to spare
+    //             if self.balance.alpha_cores() <= 1 {
+    //                 rating *= 0.3;
+    //             }
+                
+    //             if let Some(planet) = self.system.get_planet(planet_name) {
+    //                 // Higher rating for upgrading admins on high income planets
+    //                 if planet.get_base_income() > 5000.0 {
+    //                     rating *= 1.3;
+    //                 }
+    //             }
+    //         },
+    //         Action::Colonize(planet_name) => {
+    //             // Consider colonization cost vs current credits
+    //             let cost_ratio = 125000.0 / self.balance.credits;
+    //             if cost_ratio > 0.8 {
+    //                 rating *= 0.4;
+    //             }
+                
+    //             if let Some(planet) = self.system.get_planet(planet_name) {
+    //                 // Lower rating for colonizing high hazard planets early
+    //                 if planet.hazard_rating() > 175.0 {
+    //                     rating *= 0.7;
+    //                 }
+    //             }
+    //         },
+    //         Action::Wait(months) => {
+    //             // Higher rating for waiting when we have good income
+    //             if self.balance.net_income() > 5000.0 {
+    //                 rating *= 1.2;
+    //             }
+    //             // Lower rating for long waits
+    //             if *months > 6 {
+    //                 rating *= 0.8;
+    //             }
+    //         }
+    //     }
+
+    //     rating
+    // }
 
     pub fn get_ordered_possible_actions(&self, slim: bool) -> Vec<Action> {
         // println!("Starting get_ordered_possible_actions");

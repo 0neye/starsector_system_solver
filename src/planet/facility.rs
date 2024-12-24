@@ -1,5 +1,5 @@
 use crate::constants::{
-    ColonyItem, FacilityData, Resource, ResourceAmount, ResourceGetter, COLONY_ITEM_DATA,
+    ColonyItem, FacilityData, Resource, ResourceAmount, ResourceGetter, FacilityType, COLONY_ITEM_DATA,
     FACILITY_ALPHA_CORES, FACILITY_DATA, FACILITY_IMPROVEMENTS, POSSIBLE_COLONY_ITEMS, MAX_PRODUCTION, MAX_DEMANDS
 };
 use crate::solver::{Action, Balance};
@@ -8,7 +8,7 @@ use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Facility {
-    name: String,
+    facility_type: FacilityType,
     improvements: bool,
     alpha_core: bool,
     colony_item: Option<ColonyItem>,
@@ -32,7 +32,7 @@ pub struct Facility {
 
 impl Hash for Facility {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.name.hash(state);
+        self.facility_type.hash(state);
         self.improvements.hash(state);
         self.alpha_core.hash(state);
         self.colony_item.hash(state);
@@ -65,8 +65,8 @@ impl Hash for Facility {
 }
 
 impl Facility {
-    pub fn new(name: String) -> Option<Self> {
-        let data = FACILITY_DATA.get(name.as_str())?;
+    pub fn new(fac_type: FacilityType) -> Option<Self> {
+        let data = FACILITY_DATA.get(&fac_type)?;
 
         let mut production = Vec::with_capacity(MAX_PRODUCTION);
         for res in &data.production {
@@ -85,7 +85,7 @@ impl Facility {
         }
 
         let facility = Self {
-            name,
+            facility_type: fac_type,
             improvements: false,
             alpha_core: false,
             colony_item: None,
@@ -108,8 +108,12 @@ impl Facility {
         Some(facility)
     }
 
-    pub fn name(&self) -> &str {
-        &self.name
+    pub fn facility_type(&self) -> &FacilityType {
+        &self.facility_type
+    }
+
+    pub fn name(&self) -> &'static str {
+        self.facility_type.as_str()
     }
 
     pub fn is_structure(&self) -> bool {
@@ -126,7 +130,7 @@ impl Facility {
 
     pub fn get_data(&self) -> Option<FacilityData> {
         crate::constants::FACILITY_DATA
-            .get(self.name.as_str())
+            .get(&self.facility_type)
             .cloned()
     }
 
@@ -184,8 +188,8 @@ impl Facility {
     }
 
     /// Upgrades/downgrades a facility in-place, doesn't check if it's possible
-    pub fn swap_raw_w_data(&mut self, new_name: String, data: &FacilityData, downgrade: bool) -> Option<&Self> {
-        self.name = new_name;
+    pub fn swap_raw_w_data(&mut self, new_type: FacilityType, data: &FacilityData, downgrade: bool) -> Option<&Self> {
+        self.facility_type = new_type;
         self.current_build_days = if downgrade { self.total_build_days } else { data.build_time as i32 };
 
         self.base_production.clear();
@@ -203,14 +207,11 @@ impl Facility {
     }
 
     /// Upgrades/downgrades a facility in-place, doesn't check if it's possible
-    pub fn swap_raw(&mut self, new_name: String, downgrade: bool) -> Option<&Self> {
-        let data = FACILITY_DATA.get(new_name.as_str())?;
+    pub fn swap_raw(&mut self, new_type: FacilityType, downgrade: bool) -> Option<&Self> {
+        let data = FACILITY_DATA.get(&new_type)?;
 
-        self.swap_raw_w_data(new_name, data, downgrade)
+        self.swap_raw_w_data(new_type, data, downgrade)
     }
-
-
-
 
     pub fn can_install_colony_item(
         &self,
@@ -253,7 +254,7 @@ impl Facility {
             .filter_map(|item_str| {
                 if let Some(item) = ColonyItem::from_str(item_str) {
                     if let Some(data) = COLONY_ITEM_DATA.get(&item) {
-                        if !data.compatible_facilities.contains(&self.name.as_str()) {
+                        if !data.compatible_facilities.contains(&self.facility_type) {
                             return None;
                         }
                         if self.can_install_colony_item(&item, planet) {
@@ -312,7 +313,7 @@ impl Facility {
         }
         upkeep *= hazard_rating / 100.0;
         if upkeep < 0.0 {
-            panic!("Upkeep is negative for {}: {}", self.name, upkeep);
+            panic!("Upkeep is negative for {:?}: {}", self.facility_type, upkeep);
         }
         upkeep
     }
@@ -346,14 +347,14 @@ impl Facility {
 
         // Add improvement bonus
         if self.improvements {
-            if let Some(effects) = FACILITY_IMPROVEMENTS.get(self.name.as_str()) {
+            if let Some(effects) = FACILITY_IMPROVEMENTS.get(&self.facility_type) {
                 bonus += effects.accessibility_bonus;
             }
         }
 
         // Add alpha core bonus
         if self.alpha_core {
-            if let Some(effects) = FACILITY_ALPHA_CORES.get(self.name.as_str()) {
+            if let Some(effects) = FACILITY_ALPHA_CORES.get(&self.facility_type) {
                 bonus += effects.accessibility_bonus;
             }
         }
@@ -377,7 +378,7 @@ impl Facility {
 
         // Add improvement bonus
         if self.improvements {
-            if let Some(effects) = FACILITY_IMPROVEMENTS.get(self.name.as_str()) {
+            if let Some(effects) = FACILITY_IMPROVEMENTS.get(&self.facility_type) {
                 bonus += effects.stability_bonus;
             }
         }
@@ -394,14 +395,14 @@ impl Facility {
 
         // Add improvement bonus
         if self.improvements {
-            if let Some(effects) = FACILITY_IMPROVEMENTS.get(self.name.as_str()) {
+            if let Some(effects) = FACILITY_IMPROVEMENTS.get(&self.facility_type) {
                 multiplier += effects.defense_multiplier;
             }
         }
 
         // Add alpha core bonus
         if self.alpha_core {
-            if let Some(effects) = FACILITY_ALPHA_CORES.get(self.name.as_str()) {
+            if let Some(effects) = FACILITY_ALPHA_CORES.get(&self.facility_type) {
                 multiplier += effects.defense_multiplier;
             }
         }
@@ -425,14 +426,14 @@ impl Facility {
 
         // Add improvement bonus
         if self.improvements {
-            if let Some(effects) = FACILITY_IMPROVEMENTS.get(self.name.as_str()) {
+            if let Some(effects) = FACILITY_IMPROVEMENTS.get(&self.facility_type) {
                 multiplier += effects.income_bonus;
             }
         }
 
         // Add alpha core bonus
         if self.alpha_core {
-            if let Some(effects) = FACILITY_ALPHA_CORES.get(self.name.as_str()) {
+            if let Some(effects) = FACILITY_ALPHA_CORES.get(&self.facility_type) {
                 multiplier += effects.income_bonus;
             }
         }
@@ -475,12 +476,12 @@ impl Facility {
                 let mut total_bonus = bonus;
 
                 if self.improvements {
-                    total_bonus += FACILITY_IMPROVEMENTS.get(self.name.as_str())
+                    total_bonus += FACILITY_IMPROVEMENTS.get(&self.facility_type)
                         .map_or(0.0, |effects| effects.production_bonus);
                 }
 
                 if self.alpha_core {
-                    total_bonus += FACILITY_ALPHA_CORES.get(self.name.as_str())
+                    total_bonus += FACILITY_ALPHA_CORES.get(&self.facility_type)
                         .map_or(0.0, |effects| effects.production_bonus);
                 }
 
@@ -543,7 +544,7 @@ impl Facility {
 
         let mut gross_income = 0.0;
 
-        if self.name == "population" {
+        if self.facility_type == FacilityType::Population {
             gross_income += 10000.0 * (size as f64 - 2.0);
         }
 
@@ -587,7 +588,6 @@ impl Facility {
         }
 
         let mut actions = Vec::with_capacity(3);
-        let facility_name = self.name().to_string();
         let planet_name = planet.name().to_string();
 
         if !slim {
@@ -597,7 +597,7 @@ impl Facility {
                 if balance.story_points() >= improvement_cost {
                     actions.push(Action::AddImprovement(
                         planet_name.clone(),
-                        facility_name.to_string(),
+                        self.facility_type,
                     ));
                 }
             }
@@ -607,7 +607,7 @@ impl Facility {
                 if balance.alpha_cores() >= 1 {
                     actions.push(Action::AddAlphaCore(
                         planet_name.clone(),
-                        facility_name.to_string(),
+                        self.facility_type,
                     ));
                 }
             }
@@ -620,7 +620,7 @@ impl Facility {
                 if balance.colony_items().contains_key(&item) {
                     actions.push(Action::InstallItem(
                         planet_name.clone(),
-                        facility_name.to_string(),
+                        self.facility_type,
                         item,
                     ));
                 }
@@ -633,8 +633,8 @@ impl Facility {
     pub fn _get_differences(&self, other: &Facility) -> Vec<String> {
         let mut differences = Vec::new();
 
-        if self.name != other.name {
-            differences.push(format!("Name changed from {} to {}", self.name, other.name));
+        if self.facility_type != other.facility_type {
+            differences.push(format!("Facility type changed from {:?} to {:?}", self.facility_type, other.facility_type));
         }
         if self.current_build_days != other.current_build_days {
             differences.push(format!("Remaining build days changed from {} to {}", self.current_build_days, other.current_build_days));
