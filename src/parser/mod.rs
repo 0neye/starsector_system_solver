@@ -91,7 +91,7 @@ pub fn parse_planets_csv<P: AsRef<Path>>(path: P) -> Result<(HashMap<String, Pla
         let system = systems
             .entry(system_name.clone())
             .or_insert_with(|| System::new(system_name.clone()));
-        system.add_planet(planet_name, planet);
+        system.add_planet(planet);
     }
     
     Ok((planets, systems))

@@ -7,6 +7,7 @@ mod parser;
 
 use std::error::Error;
 use std::collections::HashMap;
+use planet::Planet;
 use solver::{astar::{search_all_planets, Goal}, search, simulate_linear, Balance, SearchInfo, State};
 use constants::{ColonyItem, FacilityType};
 use solver::Action;
@@ -36,8 +37,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut test_system = systems.get("Mia Bravos").unwrap().clone();
 
     // Reduce the system to one planet (Terran 1)
-    test_system.remove_planet("GasGiant 1");
-    test_system.remove_planet("Barren 1");
+    test_system.remove_planet_by_name("GasGiant 1");
+    test_system.remove_planet_by_name("Barren 1");
     
     // Create initial balance with more resources
     let mut initial_balance = Balance::new(
@@ -70,26 +71,25 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Test growth update
     // Apply actions to set up the initial state
+    let terran_1_hash = Planet::_get_planet_name_hash("Terran 1");
     let action_sequence = vec![
-        Action::Colonize(
-            "Terran 1".to_string(),
-        ),
+        Action::Colonize(terran_1_hash),
         Action::AddFacility(
-            "Terran 1".to_string(),
+            terran_1_hash,
             FacilityType::Commerce,
         ),
         Action::Wait(
             13,
         ),
         Action::UpgradeAdmin(
-            "Terran 1".to_string(),
+            terran_1_hash,
         ),
         Action::AddFacility(
-            "Terran 1".to_string(),
+            terran_1_hash,
             FacilityType::Megaport,
         ),
         Action::SetHazardPay(
-            "Terran 1".to_string(),
+            terran_1_hash,
             true,
         ),
         Action::Wait(
@@ -147,7 +147,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
-
 
 
 /*

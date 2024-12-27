@@ -67,6 +67,7 @@ pub fn search(initial_state: &State, time_limit: u32, slim: bool) -> SearchResul
     let mut best_actions = Vec::new();
     let mut best_score = f64::NEG_INFINITY;
     let mut nodes_explored = 0;
+    
 
     for depth in 2..=MAX_DEPTH {
         // TODO: make useful between depths

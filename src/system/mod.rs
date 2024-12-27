@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 use rustc_hash::{FxBuildHasher, FxHashMap, FxHasher};
+use nohash_hasher::{NoHashHasher, BuildNoHashHasher};
 
 use crate::solver::{Action, Balance};
 use crate::planet::Planet;
@@ -18,7 +19,7 @@ pub enum Infrastructure {
 #[derive(Debug, Clone)]
 pub struct System {
     name: String,
-    planets: FxHashMap<String, Planet>,
+    planets: HashMap<u64, Planet, BuildNoHashHasher<u64>>,
     infrastructure: FxHashMap<String, Infrastructure>,
 }
 
@@ -59,7 +60,7 @@ impl System {
     pub fn new(name: String) -> Self {
         Self {
             name,
-            planets: FxHashMap::with_capacity_and_hasher(5, FxBuildHasher::default()), // usually never more than 5
+            planets: HashMap::with_capacity_and_hasher(5, BuildNoHashHasher::default()), // usually never more than 5
             infrastructure: FxHashMap::with_capacity_and_hasher(5, FxBuildHasher::default()), // usually never more than 5
         }
     }
@@ -68,30 +69,45 @@ impl System {
         &self.name
     }
 
-    pub fn add_planet(&mut self, name: String, planet: Planet) {
-        self.planets.insert(name, planet);
+    pub fn add_planet(&mut self, planet: Planet) {
+        self.planets.insert(planet.name_hash(), planet);
         self.update_infrastructure_bonuses();
     }
 
-    pub fn remove_planet(&mut self, name: &str) -> Option<Planet> {
-        let planet = self.planets.remove(name);
+    pub fn remove_planet_by_name(&mut self, name: &str) -> Option<Planet> {
+        let name_hash = Planet::_get_planet_name_hash(name);
+        self.remove_planet_by_hash(name_hash)
+    }
+
+    pub fn remove_planet_by_hash(&mut self, name_hash: u64) -> Option<Planet> {
+        let planet = self.planets.remove(&name_hash);
         self.update_infrastructure_bonuses();
         planet
     }
 
-    pub fn get_planet(&self, name: &str) -> Option<&Planet> {
-        self.planets.get(name)
+    pub fn get_planet_by_name(&self, name: &str) -> Option<&Planet> {
+        let name_hash = Planet::_get_planet_name_hash(name);
+        self.get_planet_by_hash(name_hash)
     }
 
-    pub fn get_planet_mut(&mut self, name: &str) -> Option<&mut Planet> {
-        self.planets.get_mut(name)
+    pub fn get_planet_by_hash(&self, name_hash: u64) -> Option<&Planet> {
+        self.planets.get(&name_hash)
     }
 
-    pub fn planets(&self) -> &FxHashMap<String, Planet> {
+    pub fn get_planet_mut_by_name(&mut self, name: &str) -> Option<&mut Planet> {
+        let name_hash = Planet::_get_planet_name_hash(name);
+        self.get_planet_mut_by_hash(name_hash)
+    }
+
+    pub fn get_planet_mut_by_hash(&mut self, name_hash: u64) -> Option<&mut Planet> {
+        self.planets.get_mut(&name_hash)
+    }
+
+    pub fn planets(&self) -> &HashMap<u64, Planet, BuildNoHashHasher<u64>> {
         &self.planets
     }
 
-    pub fn planets_mut(&mut self) -> &mut FxHashMap<String, Planet> {
+    pub fn planets_mut(&mut self) -> &mut HashMap<u64, Planet, BuildNoHashHasher<u64>> {
         &mut self.planets
     }
 

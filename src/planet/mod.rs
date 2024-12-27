@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::hash::Hash;
+use std::hash::Hasher;
 
 use crate::constants::{FacilityData, FacilityType, MAX_FACILITIES, FACILITY_DATA};
 use crate::constants::{AdminType, Resource};
@@ -13,10 +14,12 @@ use rustc_hash::FxHashMap;
 
 pub use facility::Facility;
 use rustc_hash::FxHashSet;
+use rustc_hash::FxHasher;
 
 #[derive(Debug, Clone)]
 pub struct Planet {
     name: String,
+    name_hash: u64,
     properties: FxHashMap<String, f64>,
     facilities: Vec<Facility>,
     hazard_rating: f64,
@@ -34,7 +37,7 @@ pub struct Planet {
 
 impl Hash for Planet {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name.hash(state);
+        self.name_hash.hash(state);
         self.is_free_port.hash(state);
         self.size.hash(state);
         self.free_port_days.hash(state);
@@ -103,8 +106,11 @@ impl Planet {
             facilities.push(spaceport);
         }
 
+        let name_hash = Self::_get_planet_name_hash(&name);
+
         Self {
-            name,
+            name,   
+            name_hash,
             properties,
             facilities,
             hazard_rating,
@@ -124,6 +130,16 @@ impl Planet {
     /// Get the name of this planet
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub fn name_hash(&self) -> u64 {
+        self.name_hash
+    }
+
+    pub fn _get_planet_name_hash(name: &str) -> u64 {
+        let mut hasher = FxHasher::default();
+        name.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Get the properties of this planet
@@ -157,18 +173,14 @@ impl Planet {
 
     /// Checks which facilities are not built yet
     pub fn unbuilt_facilities(&self, only_industries: bool) -> Vec<FacilityType> {
-        let mut res = Vec::new();
-
-        for (facility_type, data) in FACILITY_DATA.iter() {
-            if let Some(_) = self.get_facility(*facility_type) {
-                continue;
-            }
-            if (!data.is_structure && only_industries) || !only_industries {
-                res.push(*facility_type);
-            }
-        }
-
-        res
+        FACILITY_DATA
+            .iter()
+            .filter(|&(facility_type, data)| {
+                self.get_facility(*facility_type).is_none()
+                    && (!data.is_structure || !only_industries)
+            })
+            .map(|(facility_type, _)| *facility_type)
+            .collect()
     }
 
     /// Add a facility to this planet
@@ -634,8 +646,8 @@ impl Planet {
 
         // Collect all unique resources from all facilities
         for facility in &self.facilities {
-            for resource_amount in facility.production() {
-                seen_resources.insert(resource_amount.resource);
+            for resource in facility.production().keys() {
+                seen_resources.insert(*resource);
             }
         }
 
@@ -828,7 +840,6 @@ impl Planet {
     pub fn get_possible_actions(&self, balance: &Balance, slim: bool) -> Vec<Action> {
         let num_actions_estimate = 4 + self.facilities.len() * 2;
         let mut actions = Vec::with_capacity(num_actions_estimate);
-        let planet_name = self.name.clone();
 
         // If this planet is not colonized, return empty list since colonization is handled by System
         if !self.has_colony() {
@@ -837,18 +848,18 @@ impl Planet {
 
         // Free port toggle (only add if not already a free port)
         if !self.is_free_port() {
-            actions.push(Action::SetFreePort(planet_name.clone(), true));
+            actions.push(Action::SetFreePort(self.name_hash, true));
         }
 
         // Hazard pay toggle (only add if not already paying hazard pay)
         if !self.has_hazard_pay {
-            actions.push(Action::SetHazardPay(planet_name.clone(), true));
+            actions.push(Action::SetHazardPay(self.name_hash, true));
         }
 
         // Admin upgrade (only if not already an alpha core)
         if self.admin == AdminType::Base {
             if balance.alpha_cores() > 0 {
-                actions.push(Action::UpgradeAdmin(planet_name.clone()));
+                actions.push(Action::UpgradeAdmin(self.name_hash));
             }
         }
 
@@ -903,7 +914,7 @@ impl Planet {
             };
 
             if can_add && balance.credits() >= facility.build_cost as f64 {
-                actions.push(Action::AddFacility(planet_name.clone(), facility_type.clone()));
+                actions.push(Action::AddFacility(self.name_hash, facility_type.clone()));
             } else if !facility.is_structure && !can_add_industry {
                 // Add a Wait action; need to calculate how long we need to grow
                 // to next colony size

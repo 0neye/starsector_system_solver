@@ -149,10 +149,9 @@ fn depth_limited_search(
         let next_hash = get_action_sequence_hash(&current_actions);
         current_actions.pop();
         
-        if visited.contains(&next_hash) {
+        if !visited.insert(next_hash) {
             continue;
         }
-        visited.insert(next_hash);
         
         state.apply_action_raw(&action, false);
         let cost = action_cost(&action);

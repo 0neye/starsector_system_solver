@@ -1,34 +1,31 @@
 use rustc_hash::FxHashMap;
+use nohash_hasher::BuildNoHashHasher;
+use std::collections::HashMap;
+use std::cell::RefCell;
 
 use crate::constants::{
     ColonyItem, FacilityData, Resource, ResourceAmount, ResourceGetter, FacilityType, COLONY_ITEM_DATA,
     FACILITY_ALPHA_CORES, FACILITY_DATA, FACILITY_IMPROVEMENTS, POSSIBLE_COLONY_ITEMS, MAX_PRODUCTION, MAX_DEMANDS
 };
 use crate::solver::{Action, Balance};
-use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Facility {
     facility_type: FacilityType,
+    current_build_days: i32,
     improvements: bool,
     alpha_core: bool,
     colony_item: Option<ColonyItem>,
+    base_production: HashMap<Resource, ResourceAmount, BuildNoHashHasher<u8>>,
+    base_demands: HashMap<Resource, ResourceAmount, BuildNoHashHasher<u8>>,
+    production_cache: RefCell<ProductionCache>,
     upkeep_formula: fn(u32) -> f64,
     base_accessibility_bonus: f64,
     base_stability_bonus: i32,
     base_defense_multiplier: f64,
     base_income_multiplier: f64,
-    // // Current cached values
-    // current_accessibility_bonus: f64,
-    // current_stability_bonus: i32,
-    // current_defense_multiplier: f64,
-    // current_income_multiplier: f64,
-    
-    base_production: Vec<ResourceAmount>,
-    base_demands: Vec<ResourceAmount>,
     is_structure: bool,
-    current_build_days: i32,
     total_build_days: i32,
 }
 
@@ -51,63 +48,66 @@ impl Hash for Facility {
 
         // Hash vectors by sorting their entries
         let mut prod_entries: Vec<_> = self.base_production.iter().collect();
-        prod_entries.sort_by(|a, b| a.resource.cmp(&b.resource));
-        for resource_amount in prod_entries {
-            resource_amount.resource.hash(state);
+        prod_entries.sort_by(|a, b| a.0.cmp(&b.0));
+        for (resource, resource_amount) in prod_entries {
+            resource.hash(state);
             resource_amount.amount_formula.hash(state);
         }
 
         let mut demand_entries: Vec<_> = self.base_demands.iter().collect();
-        demand_entries.sort_by(|a, b| a.resource.cmp(&b.resource));
-        for resource_amount in demand_entries {
-            resource_amount.resource.hash(state);
+        demand_entries.sort_by(|a, b| a.0.cmp(&b.0));
+        for (resource, resource_amount) in demand_entries {
+            resource.hash(state);
             resource_amount.amount_formula.hash(state);
         }
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+struct ProductionCache {
+    size: u32,
+    is_free_port: bool,
+    improvements: bool,
+    alpha_core: bool,
+    colony_item: Option<ColonyItem>,
+    cached_production: HashMap<Resource, f64, BuildNoHashHasher<u8>>,
+}
+
 impl Facility {
-    pub fn new(fac_type: FacilityType) -> Option<Self> {
-        let data = FACILITY_DATA.get(&fac_type)?;
+    pub fn new(facility_type: FacilityType) -> Option<Self> {
+        let mut base_production = HashMap::with_hasher(BuildNoHashHasher::default());
+        let mut base_demands = HashMap::with_hasher(BuildNoHashHasher::default());
 
-        let mut production = Vec::with_capacity(MAX_PRODUCTION);
-        for res in &data.production {
-            production.push(ResourceAmount {
-                resource: res.resource,
-                amount_formula: res.amount_formula,
-            });
+        if let Some(facility_data) = FACILITY_DATA.get(&facility_type) {
+            for production in &facility_data.production {
+                base_production.insert(production.resource, production.clone());
+            }
+            for demand in &facility_data.demands {
+                base_demands.insert(demand.resource, demand.clone());
+            }
+
+            let facility = Self {
+                facility_type,
+                current_build_days: facility_data.build_time as i32,
+                improvements: false,
+                alpha_core: false,
+                colony_item: None,
+                base_production,
+                base_demands,
+                production_cache: RefCell::new(ProductionCache::default()),
+                upkeep_formula: facility_data.base_upkeep_formula,
+                base_accessibility_bonus: facility_data.accessibility_bonus,
+                base_stability_bonus: facility_data.stability_bonus,
+                base_defense_multiplier: facility_data.defense_multiplier,
+                base_income_multiplier: facility_data.income_multiplier,
+                is_structure: facility_data.is_structure,
+                total_build_days: facility_data.build_time as i32,
+            };
+
+            Some(facility)
+        } else {
+            None
         }
-
-        let mut demands = Vec::with_capacity(MAX_DEMANDS);
-        for res in &data.demands {
-            demands.push(ResourceAmount {
-                resource: res.resource,
-                amount_formula: res.amount_formula,
-            });
-        }
-
-        let facility = Self {
-            facility_type: fac_type,
-            improvements: false,
-            alpha_core: false,
-            colony_item: None,
-            upkeep_formula: data.base_upkeep_formula,
-            base_accessibility_bonus: data.accessibility_bonus,
-            base_stability_bonus: data.stability_bonus,
-            base_defense_multiplier: data.defense_multiplier,
-            base_income_multiplier: data.income_multiplier,
-            // current_accessibility_bonus: data.accessibility_bonus,
-            // current_stability_bonus: data.stability_bonus,
-            // current_defense_multiplier: data.defense_multiplier,
-            // current_income_multiplier: data.income_multiplier,
-            base_production: production,
-            base_demands: demands,
-            is_structure: data.is_structure,
-            current_build_days: data.build_time as i32,
-            total_build_days: data.build_time as i32,
-        };
-
-        Some(facility)
     }
 
     pub fn facility_type(&self) -> &FacilityType {
@@ -130,10 +130,8 @@ impl Facility {
         self.alpha_core
     }
 
-    pub fn get_data(&self) -> Option<FacilityData> {
-        crate::constants::FACILITY_DATA
-            .get(&self.facility_type)
-            .cloned()
+    pub fn get_data(&self) -> Option<&FacilityData> {
+        crate::constants::FACILITY_DATA.get(&self.facility_type)
     }
 
     pub fn add_improvements(&mut self) -> bool {
@@ -194,10 +192,8 @@ impl Facility {
         self.facility_type = new_type;
         self.current_build_days = if downgrade { self.total_build_days } else { data.build_time as i32 };
 
-        self.base_production.clear();
-        self.base_production.extend(data.production.iter().cloned());
-        self.base_demands.clear();
-        self.base_demands.extend(data.demands.iter().cloned());
+        self.base_production = data.production.iter().map(|ra| (ra.resource, ra.clone())).collect();
+        self.base_demands = data.demands.iter().map(|ra| (ra.resource, ra.clone())).collect();
         self.upkeep_formula = data.base_upkeep_formula;
         self.base_accessibility_bonus = data.accessibility_bonus;
         self.base_stability_bonus = data.stability_bonus;
@@ -251,25 +247,14 @@ impl Facility {
         &self,
         planet: &dyn PlanetConditionChecker,
     ) -> Vec<ColonyItem> {
-        POSSIBLE_COLONY_ITEMS
-            .iter()
-            .filter_map(|item_str| {
-                if let Some(item) = ColonyItem::from_str(item_str) {
-                    if let Some(data) = COLONY_ITEM_DATA.get(&item) {
-                        if !data.compatible_facilities.contains(&self.facility_type) {
-                            return None;
-                        }
-                        if self.can_install_colony_item(&item, planet) {
-                            Some(item)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
+        ColonyItem::all()
+            .into_iter()
+            .filter(|&item| {
+                COLONY_ITEM_DATA.get(&item)
+                    .map_or(false, |data| {
+                        data.compatible_facilities.contains(&self.facility_type)
+                            && self.can_install_colony_item(&item, planet)
+                    })
             })
             .collect()
     }
@@ -450,12 +435,38 @@ impl Facility {
         multiplier
     }
 
-    pub fn production(&self) -> &Vec<ResourceAmount> {
+    pub fn production(&self) -> &HashMap<Resource, ResourceAmount, BuildNoHashHasher<u8>> {
         &self.base_production
     }
 
-    pub fn demands(&self) -> &Vec<ResourceAmount> {
+    pub fn demands(&self) -> &HashMap<Resource, ResourceAmount, BuildNoHashHasher<u8>> {
         &self.base_demands
+    }
+
+    fn get_or_calculate_production(&self, resource: Resource, size: u32, bonus: f64, is_free_port: bool) -> f64 {
+        let mut production_cache = self.production_cache.borrow_mut();
+        
+        if production_cache.size == size && 
+           production_cache.is_free_port == is_free_port && 
+           production_cache.improvements == self.improvements &&
+           production_cache.alpha_core == self.alpha_core &&
+           production_cache.colony_item == self.colony_item {
+            if let Some(&cached) = production_cache.cached_production.get(&resource) {
+                return cached;
+            }
+        } else {
+            production_cache.cached_production.clear();
+        }
+        
+        production_cache.size = size;
+        production_cache.is_free_port = is_free_port;
+        production_cache.improvements = self.improvements;
+        production_cache.alpha_core = self.alpha_core;
+        production_cache.colony_item = self.colony_item;
+        
+        let production = self.calculate_resource_production(resource, size, bonus, is_free_port);
+        production_cache.cached_production.insert(resource, production);
+        production
     }
 
     pub fn calculate_resource_production(
@@ -470,7 +481,7 @@ impl Facility {
             return 0.0;
         }
 
-        self.base_production.get(resource)
+        self.base_production.get(&resource)
             .map(|resource_amount| {
                 let amount = (resource_amount.amount_formula)(size);
                 if amount <= 0.0 { return 0.0; }
@@ -505,15 +516,15 @@ impl Facility {
         is_free_port: bool,
     ) -> FxHashMap<Resource, f64> {
         let mut result = FxHashMap::default();
-        for resource_amount in &self.base_production {
+        for (resource, resource_amount) in &self.base_production {
             let amount = self.calculate_resource_production(
-                resource_amount.resource,
+                *resource,
                 size,
                 bonus,
                 is_free_port,
             );
             if amount > 0.0 {
-                result.insert(resource_amount.resource, amount);
+                result.insert(*resource, amount);
             }
         }
         result
@@ -524,7 +535,7 @@ impl Facility {
             return 0.0;
         }
 
-        if let Some(resource_amount) = self.base_demands.iter().find(|ra| ra.resource == resource) {
+        if let Some(resource_amount) = self.base_demands.get(&resource) {
             let mut amount = (resource_amount.amount_formula)(size);
 
             // Apply reduction from alpha core
@@ -540,7 +551,7 @@ impl Facility {
 
     /// Per month
     pub fn calculate_gross_income(&self, size: u32, planet: &dyn PlanetConditionChecker, accessibility: f64) -> f64 {
-        if self.current_build_days > 0 {
+        if self.current_build_days > 0 || accessibility == 0.0 {
             return 0.0;
         }
 
@@ -550,23 +561,29 @@ impl Facility {
             gross_income += 10000.0 * (size as f64 - 2.0);
         }
 
-        for resource_amount in &self.base_production {
-            let production = self.calculate_resource_production(
-                resource_amount.resource,
-                size,
-                0.0,
-                planet.is_free_port(),
-            );
-            let market_value = resource_amount.resource.market_value() as f64;
-            let sector_supply = resource_amount.resource.sector_supply() as f64;
+        let freeport = planet.is_free_port();
+        
+        // Calculate market share per resource
+        // let resources = self.base_production.keys().map(|r| *r).collect::<Vec<Resource>>();
+        for resource in self.base_production.keys() {
+            let market_value = resource.market_value() as f64;
             // Skip resources with no market value (Crew and Marines)
             if market_value == 0.0 {
                 continue;
             }
+
+            let production = self.get_or_calculate_production(
+                *resource,
+                size,
+                0.0,
+                freeport,
+            );
+            
+            let sector_supply = resource.sector_supply() as f64;
             let market_share = (production * accessibility) / sector_supply;
             gross_income += market_share / market_value;
         }
-
+        
         gross_income
     }
 
@@ -590,7 +607,7 @@ impl Facility {
         }
 
         let mut actions = Vec::with_capacity(3);
-        let planet_name = planet.name().to_string();
+        let planet_name_hash = planet.name_hash();
 
         if !slim {
             // Add improvements if not present
@@ -598,7 +615,7 @@ impl Facility {
                 let improvement_cost = 2_u32.pow(planet.improvements());
                 if balance.story_points() >= improvement_cost {
                     actions.push(Action::AddImprovement(
-                        planet_name.clone(),
+                        planet_name_hash,
                         self.facility_type,
                     ));
                 }
@@ -608,7 +625,7 @@ impl Facility {
             if !self.has_alpha_core() {
                 if balance.alpha_cores() >= 1 {
                     actions.push(Action::AddAlphaCore(
-                        planet_name.clone(),
+                        planet_name_hash,
                         self.facility_type,
                     ));
                 }
@@ -621,7 +638,7 @@ impl Facility {
             for item in self.get_possible_colony_items(planet) {
                 if balance.colony_items().contains_key(&item) {
                     actions.push(Action::InstallItem(
-                        planet_name.clone(),
+                        planet_name_hash,
                         self.facility_type,
                         item,
                     ));
@@ -701,6 +718,7 @@ impl Facility {
 
 pub trait PlanetConditionChecker {
     fn name(&self) -> &str;
+    fn name_hash(&self) -> u64;
     fn size(&self) -> u32;
     fn has_property(&self, property: &str) -> bool;
     fn get_property(&self, property: &str) -> f64;
@@ -712,6 +730,10 @@ pub trait PlanetConditionChecker {
 impl PlanetConditionChecker for super::Planet {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn name_hash(&self) -> u64 {
+        self.name_hash
     }
 
     fn size(&self) -> u32 {

@@ -6,22 +6,45 @@ use rustc_hash::FxHasher;
 
 #[derive(Debug, Clone, Eq, Hash)]
 pub enum Action {
-    AddFacility(String, FacilityType),      // planet name, facility type
-    AddImprovement(String, FacilityType),   // planet name, facility type
-    AddAlphaCore(String, FacilityType),     // planet name, facility type
-    InstallItem(String, FacilityType, ColonyItem),      // planet name, facility type, item
-    SetFreePort(String, bool),        // planet name, is_free_port
-    SetHazardPay(String, bool),       // planet name, has_hazard_pay
-    UpgradeAdmin(String),  // Upgrade from Base to AlphaCore; planet name
-    Colonize(String),                 // planet name
+    AddFacility(u64, FacilityType),      // planet name hash, facility type
+    AddImprovement(u64, FacilityType),   // planet name hash, facility type
+    AddAlphaCore(u64, FacilityType),     // planet name hash, facility type
+    InstallItem(u64, FacilityType, ColonyItem),      // planet name hash, facility type, item
+    SetFreePort(u64, bool),        // planet name hash, is_free_port
+    SetHazardPay(u64, bool),       // planet name hash, has_hazard_pay
+    UpgradeAdmin(u64),  // Upgrade from Base to AlphaCore; planet name hash
+    Colonize(u64),                 // planet name hash
     Wait(u32),                        // number of months
 }
 
 impl Action {
+    /// Custom hasher implementation for speed
     pub fn get_hash(&self) -> u64 {
-        let mut hasher = FxHasher::default();
-        self.hash(&mut hasher);
-        hasher.finish()
+        const PRIME1: u64 = 11400714785074694791;
+        const PRIME2: u64 = 14029467366897019727;
+
+        let hash = match self {
+            Action::AddFacility(planet_hash, facility_type) => 
+                *planet_hash ^ (*facility_type as u64) ^ (1 << 63),
+            Action::AddImprovement(planet_hash, facility_type) => 
+                *planet_hash ^ (*facility_type as u64) ^ (1 << 62),
+            Action::AddAlphaCore(planet_hash, facility_type) => 
+                *planet_hash ^ (*facility_type as u64) ^ (1 << 61),
+            Action::InstallItem(planet_hash, facility_type, item) => 
+                *planet_hash ^ (*facility_type as u64) ^ (*item as u64) ^ (1 << 60),
+            Action::SetFreePort(planet_hash, is_free_port) => 
+                *planet_hash ^ (*is_free_port as u64) ^ (1 << 59),
+            Action::SetHazardPay(planet_hash, has_hazard_pay) => 
+                *planet_hash ^ (*has_hazard_pay as u64) ^ (1 << 58),
+            Action::UpgradeAdmin(planet_hash) => 
+                *planet_hash ^ (1 << 57),
+            Action::Colonize(planet_hash) => 
+                *planet_hash ^ (1 << 56),
+            Action::Wait(months) => 
+                *months as u64 ^ (1 << 55),
+        };
+
+        hash.wrapping_mul(PRIME1) ^ (hash >> 33).wrapping_mul(PRIME2)
     }
 
     fn priority(&self) -> i32 {
@@ -313,9 +336,9 @@ impl State {
     /// Returns a vector of State objects with each planet in their own State
     pub fn to_vec_by_planet(&self) -> Vec<State> {
         let mut states = Vec::with_capacity(self.system.planets().len());
-        for (planet_name, planet) in self.system.planets() {
+        for (_, planet) in self.system.planets() {
             let mut new_system = System::new(self.system().name().to_string());
-            new_system.add_planet(planet_name.clone(), planet.clone());
+            new_system.add_planet(planet.clone());
             let new_state = State::new(self.balance.clone(), new_system);
             states.push(new_state);
         }
@@ -325,45 +348,45 @@ impl State {
     pub fn apply_action_raw(&mut self, action: &Action, debug: bool) {
         self.action_log.push(action.clone());
         match action {
-            Action::AddFacility(planet_name, facility_type) => {
-                let planet = self.system_mut().get_planet_mut(planet_name).unwrap();
+            Action::AddFacility(planet_hash, facility_type) => {
+                let planet = self.system_mut().get_planet_mut_by_hash(*planet_hash).unwrap();
                 if planet.add_facility(*facility_type) {
                     if let Some(facility_data) = FACILITY_DATA.get(facility_type) {
                         self.balance_mut().spend_credits(facility_data.build_cost as f64);
                     }
                 }
             },
-            Action::AddImprovement(planet_name, facility_type) => {
-                let improvement_cost = 2_u32.pow(self.system().get_planet(planet_name).unwrap().get_num_facility_improvements());
+            Action::AddImprovement(planet_hash, facility_type) => {
+                let improvement_cost = 2_u32.pow(self.system().get_planet_by_hash(*planet_hash).unwrap().get_num_facility_improvements());
                 self.balance_mut().spend_story_points(improvement_cost);
-                let planet = self.system_mut().get_planet_mut(planet_name).unwrap();
+                let planet = self.system_mut().get_planet_mut_by_hash(*planet_hash).unwrap();
                 let fac = planet.get_facility_mut(*facility_type).unwrap();
                 fac.add_improvements();
             },
-            Action::AddAlphaCore(planet_name, facility_type) => {
+            Action::AddAlphaCore(planet_hash, facility_type) => {
                 self.balance_mut().spend_alpha_cores(1);
-                let fac = self.system_mut().get_planet_mut(planet_name).unwrap()
+                let fac = self.system_mut().get_planet_mut_by_hash(*planet_hash).unwrap()
                     .get_facility_mut(*facility_type).unwrap();
                 fac.add_alpha_core();
             },
-            Action::InstallItem(planet_name, facility_type, item) => {
+            Action::InstallItem(planet_hash, facility_type, item) => {
                 self.balance_mut().remove_colony_item(item);
-                let fac = self.system_mut().get_planet_mut(planet_name).unwrap().get_facility_mut(*facility_type).unwrap();
+                let fac = self.system_mut().get_planet_mut_by_hash(*planet_hash).unwrap().get_facility_mut(*facility_type).unwrap();
                 fac.add_colony_item_raw(item.clone());
             },
-            Action::SetFreePort(planet_name, is_free_port) => {
-                self.system_mut().get_planet_mut(planet_name).unwrap().set_free_port(*is_free_port);
+            Action::SetFreePort(planet_hash, is_free_port) => {
+                self.system_mut().get_planet_mut_by_hash(*planet_hash).unwrap().set_free_port(*is_free_port);
             },
-            Action::SetHazardPay(planet_name, has_hazard_pay) => {
-                self.system_mut().get_planet_mut(planet_name).unwrap().set_hazard_pay(*has_hazard_pay);
+            Action::SetHazardPay(planet_hash, has_hazard_pay) => {
+                self.system_mut().get_planet_mut_by_hash(*planet_hash).unwrap().set_hazard_pay(*has_hazard_pay);
             }
-            Action::UpgradeAdmin(planet_name) => {
+            Action::UpgradeAdmin(planet_hash) => {
                 self.balance_mut().spend_alpha_cores(1);
-                self.system.get_planet_mut(planet_name).unwrap().set_admin(AdminType::AlphaCore);
+                self.system.get_planet_mut_by_hash(*planet_hash).unwrap().set_admin(AdminType::AlphaCore);
             }
-            Action::Colonize(planet_name) => {
+            Action::Colonize(planet_hash) => {
                 self.balance.spend_credits(125000.0);
-                self.system.get_planet_mut(planet_name).unwrap().set_has_colony(true);
+                self.system.get_planet_mut_by_hash(*planet_hash).unwrap().set_has_colony(true);
             }
             Action::Wait(months) => {
                 for planet in self.system.planets_mut().values_mut() {
@@ -377,7 +400,6 @@ impl State {
         }
         let gross_income = self.system.get_gross_income();
         let net_income = gross_income - self.system.total_upkeep();
-        // println!("Gross income is {}, net income is {}", gross_income, net_income);
         self.balance.update_income(gross_income, net_income);
     }
 
@@ -388,37 +410,37 @@ impl State {
         }
         let action = action.unwrap();
         match action {
-            Action::AddFacility(planet_name, facility_type) => {
-                self.system_mut().get_planet_mut(&planet_name).unwrap().remove_facility(facility_type);
+            Action::AddFacility(planet_hash, facility_type) => {
+                self.system_mut().get_planet_mut_by_hash(planet_hash).unwrap().remove_facility(facility_type);
                 if let Some(facility_data) = FACILITY_DATA.get(&facility_type) {
                     self.balance_mut().add_credits(facility_data.build_cost as f64);
                 }
             },
-            Action::AddImprovement(planet_name, facility_type) => {
-                let improvement_cost = 2u32.pow(self.system().get_planet(&planet_name).unwrap().get_num_facility_improvements()-1);
-                self.system_mut().get_planet_mut(&planet_name).unwrap().get_facility_mut(facility_type).unwrap().remove_improvements();
+            Action::AddImprovement(planet_hash, facility_type) => {
+                let improvement_cost = 2u32.pow(self.system().get_planet_by_hash(planet_hash).unwrap().get_num_facility_improvements()-1);
+                self.system_mut().get_planet_mut_by_hash(planet_hash).unwrap().get_facility_mut(facility_type).unwrap().remove_improvements();
                 self.balance_mut().add_story_points(improvement_cost);
             },
-            Action::AddAlphaCore(planet_name, facility_type) => {
-                self.system_mut().get_planet_mut(&planet_name).unwrap().get_facility_mut(facility_type).unwrap().remove_alpha_core();
+            Action::AddAlphaCore(planet_hash, facility_type) => {
+                self.system_mut().get_planet_mut_by_hash(planet_hash).unwrap().get_facility_mut(facility_type).unwrap().remove_alpha_core();
                 self.balance_mut().add_alpha_cores(1);
             },
-            Action::InstallItem(planet_name, facility_type, item) => {
-                self.system_mut().get_planet_mut(&planet_name).unwrap().get_facility_mut(facility_type).unwrap().remove_colony_item();
+            Action::InstallItem(planet_hash, facility_type, item) => {
+                self.system_mut().get_planet_mut_by_hash(planet_hash).unwrap().get_facility_mut(facility_type).unwrap().remove_colony_item();
                 self.balance_mut().add_colony_item(item);
             },
-            Action::SetFreePort(planet_name, is_free_port) => {
-                self.system_mut().get_planet_mut(&planet_name).unwrap().set_free_port(!is_free_port);
+            Action::SetFreePort(planet_hash, is_free_port) => {
+                self.system_mut().get_planet_mut_by_hash(planet_hash).unwrap().set_free_port(!is_free_port);
             },
-            Action::SetHazardPay(planet_name, has_hazard_pay) => {
-                self.system_mut().get_planet_mut(&planet_name).unwrap().set_hazard_pay(!has_hazard_pay);
+            Action::SetHazardPay(planet_hash, has_hazard_pay) => {
+                self.system_mut().get_planet_mut_by_hash(planet_hash).unwrap().set_hazard_pay(!has_hazard_pay);
             },
-            Action::UpgradeAdmin(planet_name) => {
-                self.system.get_planet_mut(&planet_name).unwrap().set_admin(AdminType::Base);
+            Action::UpgradeAdmin(planet_hash) => {
+                self.system.get_planet_mut_by_hash(planet_hash).unwrap().set_admin(AdminType::Base);
                 self.balance_mut().add_alpha_cores(1);
             },
-            Action::Colonize(planet_name) => {
-                self.system.get_planet_mut(&planet_name).unwrap().set_has_colony(false);
+            Action::Colonize(planet_hash) => {
+                self.system.get_planet_mut_by_hash(planet_hash).unwrap().set_has_colony(false);
                 self.balance_mut().add_credits(125000.0);
             },
             Action::Wait(months) => {
@@ -433,9 +455,7 @@ impl State {
         }
         let gross_income = self.system.get_gross_income();
         let net_income = gross_income - self.system.total_upkeep();
-        // println!("Gross income is {}, net income is {}", gross_income, net_income);
         self.balance.update_income(gross_income, net_income);
-        
     }
 
     pub fn score(&self) -> f64 {

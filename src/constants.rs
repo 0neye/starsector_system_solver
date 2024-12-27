@@ -302,6 +302,23 @@ impl ColonyItem {
             _ => None,
         }
     }
+
+    pub fn all() -> Vec<ColonyItem> {
+        vec![
+            ColonyItem::SoilNanites,
+            ColonyItem::MantleBore,
+            ColonyItem::BiofactoryEmbryo,
+            ColonyItem::CatalyticCore,
+            ColonyItem::DroneReplicator,
+            ColonyItem::CorruptedNanoforge,
+            ColonyItem::PristineNanoforge,
+            ColonyItem::CryoarithmeticEngine,
+            ColonyItem::DealmakerHolosuite,
+            ColonyItem::FullereneSpool,
+            ColonyItem::PlasmaDynamo,
+            ColonyItem::SynchrotronCore,
+        ]
+    }
 }
 
 #[derive(Debug, Clone)]
