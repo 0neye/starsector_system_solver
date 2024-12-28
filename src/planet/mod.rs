@@ -289,7 +289,13 @@ impl Planet {
 
         // Free port bonus
         if self.is_free_port {
-            accessibility += 0.3;
+            // increases to +25% over a year
+            // we're doing it in chunks (not perfectly accurate) so we can cache things later
+            accessibility += match self.free_port_days / 30 {//self.free_port_days as f64 / 365.0 * 0.25;
+                0..=6 => 8.33,
+                7..=11 => 16.66,
+                _ => 25.0,
+            }
         }
 
         accessibility
@@ -358,7 +364,11 @@ impl Planet {
         // Subtract freeport penalty
         if self.is_free_port {
             // starts at -1 and goes to -3 over a year
-            let penalty = (self.free_port_days as f64 / 182.5).ceil() as i32;
+            let penalty = match self.free_port_days / 30 {
+                0..=6 => -1,
+                7..=11 => -2,
+                _ => -3,
+            };
             total -= penalty;
         }
 
@@ -574,8 +584,8 @@ impl Planet {
         if self.is_free_port {
             let months = self.free_port_days / 30;
             points += match months {
-                0..=1 => 1,
-                2..=3 => 2,
+                0..=6 => 1,
+                7..=11 => 2,
                 _ => 3,
             };
         }
@@ -719,32 +729,49 @@ impl Planet {
         }
 
         // Iterate through each month
-        for _ in 0..months {
+        let mut last_free_port_days = self.free_port_days;
+        let mut last_fac_build_days = Vec::with_capacity(self.facilities.len());
+        let mut last_size = self.size;
+        let mut last_gross = 0.0;
+        let mut last_net = 0.0;
+        for facility in &self.facilities {
+            last_fac_build_days.push(facility.remaining_build_days());
+        }
+        for i in 0..months {
             // Update free port days if applicable
             if self.is_free_port {
+                last_free_port_days = self.free_port_days;
                 self.free_port_days = self.free_port_days.saturating_add(30);
             }
 
             // Update planet growth
+            last_size = self.size;
             self.update_growth(30, None);
 
+
             // Progress build days for all facilities
-            for facility in &mut self.facilities {
+            for (index, facility) in &mut self.facilities.iter_mut().enumerate() {
+                last_fac_build_days[index] = facility.remaining_build_days();
                 facility.progress_build_days(30);
             }
 
             // Calculate monthly income
-            let monthly_gross = self.get_gross_income();
-            let monthly_net = monthly_gross - self.total_upkeep();
+            if i == 0 || 
+            (self.free_port_days < 365 && (last_free_port_days / 30 / 6 != self.free_port_days / 30 / 6)) ||
+            self.facilities.iter().zip(last_fac_build_days.iter()).any(|(fac, last)| fac.remaining_build_days() <= 0 && *last > 0) 
+            || self.size != last_size {
+                last_gross = self.get_gross_income();
+                last_net = last_gross - self.total_upkeep();
+            }
 
             // Accumulate income
-            gross_income += monthly_gross;
-            net_income += monthly_net;
+            gross_income += last_gross;
+            net_income += last_net;
 
             if debug {
                 println!(
                     "WAIT - Gross: {:.2}, Net: {:.2}, Growth: {:.2}, Growth P: {}, Size: {}",
-                    monthly_gross.round(), monthly_net.round(), self.growth_progress.round(), self.calculate_growth_points(None), self.size
+                    last_gross.round(), last_net.round(), self.growth_progress.round(), self.calculate_growth_points(None), self.size
                 );
                 println!(
                     "Accumulated income: Gross: {:.2}, Net: {:.2}",
@@ -781,31 +808,47 @@ impl Planet {
         // 1. Calculate income for that month (before undoing changes)
         // 2. Undo growth progress
         // 3. Undo facility build progress
-        for _ in 0..months {
+        let mut last_free_port_days = self.free_port_days;
+        let mut last_fac_build_days = Vec::with_capacity(self.facilities.len());
+        let mut last_size = self.size;
+        let mut last_gross: f64 = 0.0;
+        let mut last_net: f64 = 0.0;
+        for facility in &self.facilities {
+            last_fac_build_days.push(facility.remaining_build_days());
+        }
+        for i in 0..months {
             // First calculate income for this month before undoing changes
-            let monthly_gross = self.get_gross_income();
-            let monthly_net = monthly_gross - self.total_upkeep();
+            if i == 0 ||
+            (self.free_port_days < 365 && (last_free_port_days / 30 / 6 != self.free_port_days / 30 / 6)) ||
+            self.facilities.iter().zip(last_fac_build_days.iter()).any(|(fac, last)| fac.remaining_build_days() > 0 && *last <= 0) 
+            || last_size != self.size {
+                last_gross = self.get_gross_income();
+                last_net = last_gross - self.total_upkeep();
+            }
 
-            gross_income += monthly_gross;
-            net_income += monthly_net;
+            gross_income += last_gross;
+            net_income += last_net;
 
             // Undo facility build progress
-            for facility in &mut self.facilities {
+            for (index, facility) in &mut self.facilities.iter_mut().enumerate() {
+                last_fac_build_days[index] = facility.remaining_build_days();
                 facility.progress_build_days(-30);
             }
 
             // Undo growth progress - now uses negative days
+            last_size = self.size;
             self.update_growth(-30, None);
 
             // Update free port days if applicable
             if self.is_free_port {
+                last_free_port_days = self.free_port_days;
                 self.free_port_days = self.free_port_days.saturating_sub(30);
             }
 
             if debug {
                 println!(
                     "UNDO WAIT - Gross: {:.2}, Net: {:.2}, Growth: {:.2}, Growth P: {}, Size: {}",
-                    monthly_gross.round(), monthly_net.round(), self.growth_progress.round(), self.calculate_growth_points(None), self.size
+                    last_gross.round(), last_net.round(), self.growth_progress.round(), self.calculate_growth_points(None), self.size
                 );
                 println!(
                     "Accumulated income: Gross: {:.2}, Net: {:.2}",
