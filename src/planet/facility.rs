@@ -14,6 +14,7 @@ use std::hash::{Hash, Hasher};
 pub struct Facility {
     facility_type: FacilityType,
     current_build_days: i32,
+    total_build_days: i32,
     improvements: bool,
     alpha_core: bool,
     colony_item: Option<ColonyItem>,
@@ -26,7 +27,6 @@ pub struct Facility {
     base_defense_multiplier: f64,
     base_income_multiplier: f64,
     is_structure: bool,
-    total_build_days: i32,
 }
 
 impl Hash for Facility {
@@ -299,9 +299,9 @@ impl Facility {
             upkeep *= 0.75; // 25% reduction for alpha core
         }
         upkeep *= hazard_rating / 100.0;
-        if upkeep < 0.0 {
-            panic!("Upkeep is negative for {:?}: {}", self.facility_type, upkeep);
-        }
+        // if upkeep < 0.0 {
+        //     panic!("Upkeep is negative for {:?}: {}", self.facility_type, upkeep);
+        // }
         upkeep
     }
 

@@ -2,7 +2,7 @@ use lazy_static::lazy_static;
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use core::hash::BuildHasherDefault;
-use nohash_hasher::NoHashHasher;
+use nohash_hasher::{NoHashHasher, BuildNoHashHasher};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
@@ -331,8 +331,8 @@ pub struct ColonyItemEffect {
 }
 
 lazy_static! {
-    pub static ref COLONY_ITEM_DATA: HashMap<ColonyItem, ColonyItemEffect, BuildHasherDefault<NoHashHasher<u8>>> = {
-        let mut map = HashMap::with_hasher(BuildHasherDefault::default());
+    pub static ref COLONY_ITEM_DATA: HashMap<ColonyItem, ColonyItemEffect, BuildNoHashHasher<u8>> = {
+        let mut map = HashMap::with_hasher(BuildNoHashHasher::default());
 
         map.insert(ColonyItem::SoilNanites, ColonyItemEffect {
             compatible_facilities: vec![FacilityType::Farming],
@@ -513,8 +513,8 @@ lazy_static! {
 }
 
 lazy_static! {
-    pub static ref FACILITY_DATA: HashMap<FacilityType, FacilityData, BuildHasherDefault<NoHashHasher<u8>>> = {
-        let mut map = HashMap::with_hasher(BuildHasherDefault::default());
+    pub static ref FACILITY_DATA: HashMap<FacilityType, FacilityData, BuildNoHashHasher<u8>> = {
+        let mut map = HashMap::with_hasher(BuildNoHashHasher::default());
         
         // Population & Infrastructure (special case, always present)
         map.insert(FacilityType::Population, FacilityData {
@@ -981,8 +981,8 @@ lazy_static! {
 }
 
 lazy_static! {
-    pub static ref FACILITY_IMPROVEMENTS: HashMap<FacilityType, FacilityEffects, BuildHasherDefault<NoHashHasher<u8>>> = {
-        let mut map = HashMap::with_hasher(BuildHasherDefault::default());
+    pub static ref FACILITY_IMPROVEMENTS: HashMap<FacilityType, FacilityEffects, BuildNoHashHasher<u8>> = {
+        let mut map = HashMap::with_hasher(BuildNoHashHasher::default());
         
         // Commerce
         map.insert(FacilityType::Commerce, FacilityEffects {
@@ -1061,8 +1061,8 @@ lazy_static! {
         map
     };
 
-    pub static ref FACILITY_ALPHA_CORES: HashMap<FacilityType, FacilityEffects, BuildHasherDefault<NoHashHasher<u8>>> = {
-        let mut map = HashMap::with_hasher(BuildHasherDefault::default());
+    pub static ref FACILITY_ALPHA_CORES: HashMap<FacilityType, FacilityEffects, BuildNoHashHasher<u8>> = {
+        let mut map = HashMap::with_hasher(BuildNoHashHasher::default());
         
         // Commerce
         map.insert(FacilityType::Commerce, FacilityEffects {

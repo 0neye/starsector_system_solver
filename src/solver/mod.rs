@@ -6,7 +6,7 @@ use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::time::Instant;
 use std::vec;
 
-use nohash_hasher::NoHashHasher;
+use nohash_hasher::{BuildNoHashHasher, NoHashHasher};
 
 pub mod state;
 pub mod astar;
@@ -67,11 +67,12 @@ pub fn search(initial_state: &State, time_limit: u32, slim: bool) -> SearchResul
     let mut best_actions = Vec::new();
     let mut best_score = f64::NEG_INFINITY;
     let mut nodes_explored = 0;
-    
+    let mut last_print_time = std::time::Instant::now();
+    let mut last_unique_nodes = 0;
 
     for depth in 2..=MAX_DEPTH {
-        // TODO: make useful between depths
-        let mut tt: HashSet<u64, BuildHasherDefault<NoHashHasher<u64>>> = HashSet::with_hasher(BuildHasherDefault::default());
+        let starting_size = (2u32.pow(depth) as f64).powf(2.6);
+        let mut tt: HashSet<u64, BuildNoHashHasher<u64>> = HashSet::with_capacity_and_hasher(starting_size as usize, BuildNoHashHasher::default());
 
         if info.is_time_up() {
             println!("Time limit reached at depth {}", depth);
@@ -90,6 +91,16 @@ pub fn search(initial_state: &State, time_limit: u32, slim: bool) -> SearchResul
         let score = result.score;
         let depth_duration = depth_start_time.elapsed();
         println!("Depth {} completed in {:?}. Score: {}, Nodes explored: {}, Unique positions explored: {}", depth, depth_duration, score, result.nodes_explored, tt.len());
+        
+        let current_time = std::time::Instant::now();
+        let elapsed = current_time.duration_since(last_print_time);
+        if elapsed >= std::time::Duration::from_secs(1) {
+            let unique_nodes_per_sec = (tt.len() as f64 - last_unique_nodes as f64) / elapsed.as_secs_f64();
+            println!("Unique nodes/sec: {:.2}", unique_nodes_per_sec);
+            last_print_time = current_time;
+            last_unique_nodes = tt.len() as u32;
+        }
+
         if score > best_score {
             best_score = score;
             best_actions = result.action_log;
@@ -109,7 +120,7 @@ pub fn search(initial_state: &State, time_limit: u32, slim: bool) -> SearchResul
 
 
 
-fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashSet<u64, BuildHasherDefault<NoHashHasher<u64>>>, slim: bool) -> Option<SearchResult> {
+fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashSet<u64, BuildNoHashHasher<u64>>, slim: bool) -> Option<SearchResult> {
     // let indent = " ".repeat((MAX_DEPTH - depth + 1) as usize);
     // println!("{}Entering dfs: depth={}, alpha={}", indent, depth, alpha);
     
@@ -146,7 +157,7 @@ fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashSet<u64, Buil
     let mut best_action_log = info.state.action_log().clone();
     let mut best_score = alpha;
 
-    for (i, action) in actions.iter().enumerate() {
+    for action in actions.iter() {
         result.nodes_explored += 1;
         // let pre_action_credits = info.state.balance().credits();
         // println!("{}Applying action {} of {}: {:?}", indent, i + 1, actions.len(), action);

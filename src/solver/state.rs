@@ -14,7 +14,7 @@ pub enum Action {
     SetHazardPay(u64, bool),       // planet name hash, has_hazard_pay
     UpgradeAdmin(u64),  // Upgrade from Base to AlphaCore; planet name hash
     Colonize(u64),                 // planet name hash
-    Wait(u32),                        // number of months
+    Wait(u32),                     // number of months
 }
 
 impl Action {
@@ -44,7 +44,7 @@ impl Action {
                 *months as u64 ^ (1 << 55),
         };
 
-        hash.wrapping_mul(PRIME1) ^ (hash >> 33).wrapping_mul(PRIME2)
+        hash.wrapping_mul(PRIME1) ^ (hash >> 33).wrapping_add(PRIME2)
     }
 
     fn priority(&self) -> i32 {
@@ -462,7 +462,7 @@ impl State {
         let mut score = 0.0;
         
         // Base score is current credits plus projected income
-        score += self.balance.credits;
+        // score += self.balance.credits;
         score += self.balance.net_income * 24.0; // Project income into the future
         
         // Add value for each colonized planet

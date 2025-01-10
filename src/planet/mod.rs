@@ -287,6 +287,13 @@ impl Planet {
         // Add admin bonus
         accessibility += self.admin.bonuses().accessibility;
 
+        // Add size bonus
+        accessibility += match self.size {
+            0..=4 => 0.0,
+            5 => 10.0,
+            _ => 10.0 + (self.size - 5) as f64 * 5.0,
+        };
+
         // Free port bonus
         if self.is_free_port {
             // increases to +25% over a year
@@ -395,10 +402,14 @@ impl Planet {
         // Penalty for low stability
         strength *= 0.25 + self.stability() as f64 * 0.075;
 
-        // Multipliers from facilities
+        // Sum up all defense multiplier bonuses and apply them once
+        let mut total_defense_bonus = 1.0;
         for facility in &self.facilities {
-            strength *= facility.calculate_defense_multiplier();
+            total_defense_bonus += facility.calculate_defense_multiplier() - 1.0;
         }
+
+        // Apply the total defense bonus
+        strength *= total_defense_bonus;
 
         strength
     }

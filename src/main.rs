@@ -20,8 +20,8 @@ fn test_solver(mut state: State, goal: &Goal) {
     // Run simulation for 10 turns
     // simulate_linear(&state, 15);
 
-    println!("{:#?}", search(&state, 25000, true).action_log);
-    // println!("{:#?}", search_all_planets(&mut state, goal, 500000, true).iter().next().unwrap());
+    // println!("{:#?}", search(&state, 25000, true).action_log);
+    println!("{:#?}", search_all_planets(&mut state, goal, 25000, true).iter().next().unwrap());
 
 }
 
@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut state = State::new(initial_balance, test_system);
 
     // Create goal
-    let goal = Goal::new(20000.0, None, None);
+    let goal = Goal::new(40000.0, None, Some(8));
 
     
     // Run solver test
@@ -71,37 +71,27 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Test growth update
     // Apply actions to set up the initial state
-    let terran_1_hash = Planet::_get_planet_name_hash("Terran 1");
+    let terran_1_hash = 1160120806187968324;//Planet::_get_planet_name_hash("Terran 1");
     let action_sequence = vec![
         Action::Colonize(terran_1_hash),
-        Action::AddFacility(
-            terran_1_hash,
-            FacilityType::Farming,
-        ),
-        Action::Wait(
-            13,
-        ),
-        Action::UpgradeAdmin(
-            terran_1_hash,
-        ),
-        Action::AddFacility(
-            terran_1_hash,
-            FacilityType::Megaport,
-        ),
-        Action::SetHazardPay(
-            terran_1_hash,
-            true,
-        ),
-        Action::Wait(
-            5,
-        ),
+        Action::Wait(1),
+        Action::UpgradeAdmin(terran_1_hash),
+        Action::AddFacility(terran_1_hash, FacilityType::Megaport),
+        Action::AddFacility(terran_1_hash, FacilityType::LightIndustry),
+        Action::AddFacility(terran_1_hash, FacilityType::GroundDefenses),
+        Action::AddFacility(terran_1_hash, FacilityType::OrbitalStation),
+        Action::SetHazardPay(terran_1_hash, true),
+        Action::SetFreePort(terran_1_hash, true),
+        Action::Wait(3),
+        Action::InstallItem(terran_1_hash, FacilityType::LightIndustry, ColonyItem::BiofactoryEmbryo),
+        Action::Wait(2),
     ];
 
     let test_action_sequence = vec![
-        Action::AddFacility(terran_1_hash, FacilityType::LightIndustry),
-        Action::Wait(10),
-        Action::AddFacility(terran_1_hash, FacilityType::HeavyIndustry),
-        Action::Wait(10),
+        // Action::AddFacility(terran_1_hash, FacilityType::LightIndustry),
+        // Action::Wait(10),
+        // Action::AddFacility(terran_1_hash, FacilityType::HeavyIndustry),
+        // Action::Wait(10),
     ];
 
     println!("\nInitial state:");
