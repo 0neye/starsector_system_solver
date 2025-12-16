@@ -360,14 +360,15 @@ pub fn simulate_linear(initial_state: &State, num_turns: u32) -> SearchInfo {
     for action in info.action_log() {
         println!("  - {:?}", action);
     }
-
-    for _ in 0..num_turns {
-        info.state.undo_last_action(false);
-    }
     
     println!("\nSimulation complete!");
     println!("Final score: {}", info.state.score());
     println!("Final credits: {}", info.state.balance().credits());
+
+    // Undo all actions to restore initial state before returning
+    for _ in 0..num_turns {
+        info.state.undo_last_action(false);
+    }
     
     info
 }

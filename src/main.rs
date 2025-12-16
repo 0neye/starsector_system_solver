@@ -21,8 +21,16 @@ fn test_solver(mut state: State, goal: &Goal) {
     // simulate_linear(&state, 15);
 
     // println!("{:#?}", search(&state, 25000, true).action_log);
-    println!("{:#?}", search_all_planets(&mut state, goal, 25000, true).iter().next().unwrap());
-
+    let results = search_all_planets(&mut state, goal, 25000, true);
+    
+    if results.is_empty() {
+        println!("No solution found within time limit.");
+    } else {
+        // Print all results found
+        for (i, result) in results.iter().enumerate() {
+            println!("Result {}:\n{:#?}", i + 1, result);
+        }
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -60,7 +68,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     
     // Create initial state
     let mut state = State::new(initial_balance, test_system);
-
+    
     // Create goal
     let goal = Goal::new(40000.0, None, Some(8));
 

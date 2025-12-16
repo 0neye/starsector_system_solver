@@ -2,6 +2,7 @@ use std::{collections::HashMap, hash::{BuildHasherDefault, DefaultHasher, Hash, 
 use crate::{constants::{AdminType, ColonyItem, FacilityType, FACILITY_DATA}, System};
 use nohash_hasher::NoHashHasher;
 use rustc_hash::FxHasher;
+use crate::planet::PlanetWaitSnapshot;
 
 
 #[derive(Debug, Clone, Eq, Hash, PartialEq)]
@@ -18,33 +19,40 @@ pub enum Action {
 }
 
 impl Action {
-    /// Custom hasher implementation for speed
+    /// Custom hasher implementation for speed with better collision resistance
     pub fn get_hash(&self) -> u64 {
         const PRIME1: u64 = 11400714785074694791;
         const PRIME2: u64 = 14029467366897019727;
+        const PRIME3: u64 = 1609587929392839161;
+
+        // Use discriminant in hash to avoid collisions between action types
+        let discriminant = std::mem::discriminant(self);
+        let disc_val = unsafe { *(&discriminant as *const _ as *const u64) };
 
         let hash = match self {
             Action::AddFacility(planet_hash, facility_type) => 
-                *planet_hash ^ (*facility_type as u64) ^ (1 << 63),
+                planet_hash.wrapping_mul(PRIME3) ^ ((*facility_type as u64) << 8),
             Action::AddImprovement(planet_hash, facility_type) => 
-                *planet_hash ^ (*facility_type as u64) ^ (1 << 62),
+                planet_hash.wrapping_mul(PRIME3) ^ ((*facility_type as u64) << 8),
             Action::AddAlphaCore(planet_hash, facility_type) => 
-                *planet_hash ^ (*facility_type as u64) ^ (1 << 61),
+                planet_hash.wrapping_mul(PRIME3) ^ ((*facility_type as u64) << 8),
             Action::InstallItem(planet_hash, facility_type, item) => 
-                *planet_hash ^ (*facility_type as u64) ^ (*item as u64) ^ (1 << 60),
+                planet_hash.wrapping_mul(PRIME3) ^ ((*facility_type as u64) << 8) ^ ((*item as u64) << 16),
             Action::SetFreePort(planet_hash, is_free_port) => 
-                *planet_hash ^ (*is_free_port as u64) ^ (1 << 59),
+                planet_hash.wrapping_mul(PRIME3) ^ ((*is_free_port as u64) << 8),
             Action::SetHazardPay(planet_hash, has_hazard_pay) => 
-                *planet_hash ^ (*has_hazard_pay as u64) ^ (1 << 58),
+                planet_hash.wrapping_mul(PRIME3) ^ ((*has_hazard_pay as u64) << 8),
             Action::UpgradeAdmin(planet_hash) => 
-                *planet_hash ^ (1 << 57),
+                planet_hash.wrapping_mul(PRIME3),
             Action::Colonize(planet_hash) => 
-                *planet_hash ^ (1 << 56),
+                planet_hash.wrapping_mul(PRIME3),
             Action::Wait(months) => 
-                *months as u64 ^ (1 << 55),
+                (*months as u64).wrapping_mul(PRIME3),
         };
 
-        hash.wrapping_mul(PRIME1) ^ (hash >> 33).wrapping_add(PRIME2)
+        // Mix in discriminant to differentiate action types
+        let combined = hash ^ disc_val.wrapping_mul(PRIME2);
+        combined.wrapping_mul(PRIME1) ^ (combined >> 33).wrapping_add(PRIME2)
     }
 
     fn priority(&self) -> i32 {
@@ -213,6 +221,13 @@ pub struct State {
     balance: Balance,
     system: System,
     action_log: Vec<Action>,
+    wait_undo_stack: Vec<WaitUndoRecord>,
+}
+
+#[derive(Debug, Clone)]
+struct WaitUndoRecord {
+    credits_delta: f64,
+    planet_snapshots: Vec<(u64, PlanetWaitSnapshot)>,
 }
 
 pub fn get_action_sequence_hash(actions: &Vec<Action>) -> u64 {
@@ -293,7 +308,12 @@ impl Hash for State {
 
 impl State {
     pub fn new(balance: Balance, system: System) -> Self {
-        Self { balance, system, action_log: Vec::with_capacity(20) }
+        Self {
+            balance,
+            system,
+            action_log: Vec::with_capacity(20),
+            wait_undo_stack: Vec::new(),
+        }
     }
 
     pub fn balance(&self) -> &Balance {
@@ -384,13 +404,23 @@ impl State {
                 self.system.get_planet_mut_by_hash(*planet_hash).unwrap().set_has_colony(true);
             }
             Action::Wait(months) => {
+                let credits_before = self.balance.credits();
+                let mut wait_undo = WaitUndoRecord {
+                    credits_delta: 0.0,
+                    planet_snapshots: Vec::new(),
+                };
+
                 for planet in self.system.planets_mut().values_mut() {
                     if !planet.has_colony() {
                         continue;
                     }
+                    wait_undo.planet_snapshots.push((planet.name_hash(), planet.snapshot_wait_state()));
                     let (_, net_from_wait) = planet.wait(*months, debug);
                     self.balance.add_credits(net_from_wait);
                 }
+
+                wait_undo.credits_delta = self.balance.credits() - credits_before;
+                self.wait_undo_stack.push(wait_undo);
             }
         }
         let gross_income = self.system.get_gross_income();
@@ -439,12 +469,23 @@ impl State {
                 self.balance_mut().add_credits(125000.0);
             },
             Action::Wait(months) => {
-                for planet in self.system.planets_mut().values_mut() {
-                    if !planet.has_colony() {
-                        continue;
+                if let Some(wait_undo) = self.wait_undo_stack.pop() {
+                    for (planet_hash, snapshot) in wait_undo.planet_snapshots {
+                        self.system
+                            .get_planet_mut_by_hash(planet_hash)
+                            .unwrap()
+                            .restore_wait_state(&snapshot);
                     }
-                    let (_, net_from_wait) = planet.undo_wait(months, debug);
-                    self.balance.spend_credits(net_from_wait);
+                    self.balance.add_credits(-wait_undo.credits_delta);
+                } else {
+                    // Fallback to best-effort undo if no snapshot is available.
+                    for planet in self.system.planets_mut().values_mut() {
+                        if !planet.has_colony() {
+                            continue;
+                        }
+                        let (_, net_from_wait) = planet.undo_wait(months, debug);
+                        self.balance.spend_credits(net_from_wait);
+                    }
                 }
             },
         }

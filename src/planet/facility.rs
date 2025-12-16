@@ -70,6 +70,7 @@ struct ProductionCache {
     improvements: bool,
     alpha_core: bool,
     colony_item: Option<ColonyItem>,
+    is_built: bool,  // Track if facility is complete (build_days <= 0)
     cached_production: HashMap<Resource, f64, BuildNoHashHasher<u8>>,
 }
 
@@ -176,6 +177,15 @@ impl Facility {
 
     pub fn remaining_build_days(&self) -> i32 {
         self.current_build_days
+    }
+
+    pub(crate) fn build_days_state(&self) -> (i32, i32) {
+        (self.current_build_days, self.total_build_days)
+    }
+
+    pub(crate) fn set_build_days_state(&mut self, current_build_days: i32, total_build_days: i32) {
+        self.current_build_days = current_build_days;
+        self.total_build_days = total_build_days;
     }
 
     /// Won't handle income/expenses over wait time
@@ -445,24 +455,30 @@ impl Facility {
 
     fn get_or_calculate_production(&self, resource: Resource, size: u32, bonus: f64, is_free_port: bool) -> f64 {
         let mut production_cache = self.production_cache.borrow_mut();
+        let is_built = self.current_build_days <= 0;
         
+        // Check if cache is valid (all relevant state matches)
         if production_cache.size == size && 
            production_cache.is_free_port == is_free_port && 
            production_cache.improvements == self.improvements &&
            production_cache.alpha_core == self.alpha_core &&
-           production_cache.colony_item == self.colony_item {
+           production_cache.colony_item == self.colony_item &&
+           production_cache.is_built == is_built {
             if let Some(&cached) = production_cache.cached_production.get(&resource) {
                 return cached;
             }
         } else {
+            // Cache is invalid, clear it
             production_cache.cached_production.clear();
         }
         
+        // Update cache state
         production_cache.size = size;
         production_cache.is_free_port = is_free_port;
         production_cache.improvements = self.improvements;
         production_cache.alpha_core = self.alpha_core;
         production_cache.colony_item = self.colony_item;
+        production_cache.is_built = is_built;
         
         let production = self.calculate_resource_production(resource, size, bonus, is_free_port);
         production_cache.cached_production.insert(resource, production);
@@ -579,9 +595,11 @@ impl Facility {
                 freeport,
             );
             
+            // Calculate income: production scaled by accessibility, divided by sector supply 
+            // to get market share, then multiplied by market value
             let sector_supply = resource.sector_supply() as f64;
-            let market_share = (production * accessibility) / sector_supply;
-            gross_income += market_share / market_value;
+            let market_share = (production * accessibility / 100.0) / sector_supply;
+            gross_income += market_share * market_value;
         }
         
         gross_income
@@ -725,7 +743,7 @@ pub trait PlanetConditionChecker {
     fn size(&self) -> u32;
     fn has_property(&self, property: &str) -> bool;
     fn get_property(&self, property: &str) -> f64;
-    fn accessability(&self) -> f64;
+    fn accessibility(&self) -> f64;
     fn improvements(&self) -> u32;
     fn is_free_port(&self) -> bool;
 }
@@ -751,7 +769,7 @@ impl PlanetConditionChecker for super::Planet {
         *self.properties.get(property).unwrap_or(&0.0)
     }
 
-    fn accessability(&self) -> f64 {
+    fn accessibility(&self) -> f64 {
         self.calculate_accessibility()
     }
 

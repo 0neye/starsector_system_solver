@@ -35,6 +35,14 @@ pub struct Planet {
     system_stability_bonus: i32,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PlanetWaitSnapshot {
+    size: u32,
+    growth_progress: f64,
+    free_port_days: u32,
+    facility_build_days: Vec<(i32, i32)>,
+}
+
 impl Hash for Planet {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.name_hash.hash(state);
@@ -284,8 +292,8 @@ impl Planet {
             accessibility += facility.calculate_accessibility_bonus() * 100.0;
         }
 
-        // Add admin bonus
-        accessibility += self.admin.bonuses().accessibility;
+        // Add admin bonus (convert from decimal to percentage)
+        accessibility += self.admin.bonuses().accessibility * 100.0;
 
         // Add size bonus
         accessibility += match self.size {
@@ -370,11 +378,11 @@ impl Planet {
 
         // Subtract freeport penalty
         if self.is_free_port {
-            // starts at -1 and goes to -3 over a year
+            // Starts at -1 and goes to -3 over a year
             let penalty = match self.free_port_days / 30 {
-                0..=6 => -1,
-                7..=11 => -2,
-                _ => -3,
+                0..=6 => 1,
+                7..=11 => 2,
+                _ => 3,
             };
             total -= penalty;
         }
@@ -417,6 +425,42 @@ impl Planet {
     /// Get the growth progress of this planet
     pub fn growth_progress(&self) -> f64 {
         self.growth_progress
+    }
+
+    pub(crate) fn snapshot_wait_state(&self) -> PlanetWaitSnapshot {
+        PlanetWaitSnapshot {
+            size: self.size,
+            growth_progress: self.growth_progress,
+            free_port_days: self.free_port_days,
+            facility_build_days: self
+                .facilities
+                .iter()
+                .map(|f| f.build_days_state())
+                .collect(),
+        }
+    }
+
+    pub(crate) fn restore_wait_state(&mut self, snapshot: &PlanetWaitSnapshot) {
+        self.size = snapshot.size;
+        self.growth_progress = snapshot.growth_progress;
+        self.free_port_days = snapshot.free_port_days;
+
+        if self.facilities.len() != snapshot.facility_build_days.len() {
+            panic!(
+                "restore_wait_state facility count mismatch for {}: {} != {}",
+                self.name,
+                self.facilities.len(),
+                snapshot.facility_build_days.len()
+            );
+        }
+
+        for (facility, (cur, total)) in self
+            .facilities
+            .iter_mut()
+            .zip(snapshot.facility_build_days.iter().copied())
+        {
+            facility.set_build_days_state(cur, total);
+        }
     }
 
     /// Set the has colony status of this planet

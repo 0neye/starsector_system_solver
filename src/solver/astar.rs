@@ -256,7 +256,10 @@ where
     let mut result = Vec::new();
 
     for planet_hash in system.planets().keys() {
-        let unbuilt_list = unbuilt_map.get(planet_hash).unwrap();
+        // Safely get unbuilt list - skip if not found
+        let Some(unbuilt_list) = unbuilt_map.get(planet_hash) else {
+            continue;
+        };
 
         if let Some(facility_map) = precompute_map.get(planet_hash) {
             for fac_type in unbuilt_list {
@@ -399,18 +402,52 @@ fn ida_star(initial_state: &mut State, goal: &Goal, time_limit: u32, slim: bool)
     let start_time = Instant::now();
     let precompute_map = precompute_facility_candidates(initial_state);
     let mut bound = goal.month_lower_bound(initial_state, &precompute_map);
-    let mut visited: HashSet<u64, BuildNoHashHasher<u64>> = HashSet::with_capacity_and_hasher(1000000, BuildNoHashHasher::default());
+    let mut visited: HashMap<u64, i32, BuildNoHashHasher<u64>> =
+        HashMap::with_capacity_and_hasher(1000000, BuildNoHashHasher::default());
     let mut total_nodes_searched = 0;
     let mut total_nodes_pruned = 0;
+    let debug = std::env::var_os("SYSTEM_SOLVER_IDASTAR_DEBUG").is_some();
 
     loop {
+        let root_hash_before = if debug { Some(initial_state.get_deep_hash()) } else { None };
+        let root_credits_before = if debug { Some(initial_state.balance().credits()) } else { None };
+
         println!("Current bound: {:?}", bound);
         let iteration_start = Instant::now();
         visited.clear();
-        visited.insert(initial_state.get_deep_hash());
+        visited.insert(initial_state.get_deep_hash(), 0);
+
+        if debug {
+            let actions_len = initial_state.get_possible_actions(slim).len();
+            let colonized = initial_state.system().planets().values().filter(|p| p.has_colony()).count();
+            println!(
+                "[ida*] root credits: {:.0}, planets: {}, colonized: {}, actions: {}",
+                initial_state.balance().credits(),
+                initial_state.system().planets().len(),
+                colonized,
+                actions_len
+            );
+        }
+
         let result = depth_limited_search(initial_state, goal, 0, bound, &mut visited, &precompute_map, slim);
         total_nodes_searched += result.nodes_searched;
         total_nodes_pruned += result.nodes_pruned_by_bound;
+
+        if debug {
+            let hash_after = initial_state.get_deep_hash();
+            let credits_after = initial_state.balance().credits();
+            if root_hash_before.is_some_and(|h| h != hash_after)
+                || root_credits_before.is_some_and(|c| (c - credits_after).abs() > 0.5)
+            {
+                println!(
+                    "[ida*] WARNING: root state mutated across iteration: hash {} -> {}, credits {:.0} -> {:.0}",
+                    root_hash_before.unwrap_or(0),
+                    hash_after,
+                    root_credits_before.unwrap_or(0.0),
+                    credits_after
+                );
+            }
+        }
         
         let elapsed = iteration_start.elapsed();
         if elapsed >= Duration::from_secs(1) {
@@ -461,7 +498,7 @@ fn depth_limited_search(
     goal: &Goal,
     g: i32,
     bound: i32,
-    visited: &mut HashSet<u64, BuildHasherDefault<NoHashHasher<u64>>>,
+    visited: &mut HashMap<u64, i32, BuildHasherDefault<NoHashHasher<u64>>>,
     precompute_map: &HashMap<u64, HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>, BuildNoHashHasher<u64>>,
     slim: bool
 ) -> AStarSearchResult {
@@ -494,17 +531,21 @@ fn depth_limited_search(
     let mut cutoff_occurred = false;
     let mut best_next_bound = i32::MAX;
     
-    for action in state.get_possible_actions(slim) {
+    for action in state.get_ordered_possible_actions(slim) {
+        let cost = action_cost(&action);
         state.apply_action_raw(&action, false);
         let next_hash = state.get_deep_hash();
-        if !visited.insert(next_hash) {
-            state.undo_last_action(false);
-            nodes_searched += 1;
-            continue;
+        let next_g = g + cost;
+        if let Some(best_g) = visited.get(&next_hash) {
+            if next_g >= *best_g {
+                state.undo_last_action(false);
+                nodes_searched += 1;
+                continue;
+            }
         }
+        visited.insert(next_hash, next_g);
 
-        let cost = action_cost(&action);
-        let result = depth_limited_search(state, goal, g + cost, bound, visited, precompute_map, slim);
+        let result = depth_limited_search(state, goal, next_g, bound, visited, precompute_map, slim);
         state.undo_last_action(false);
         
         if result.solution.is_some() {

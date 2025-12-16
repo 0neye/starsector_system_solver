@@ -121,7 +121,7 @@ pub fn parse_infrastructure_csv<P: AsRef<Path>>(
         if let Some(system) = systems.get_mut(&system_name) {
             let infrastructure = match infra_type.as_str() {
                 "CommRelay" => Infrastructure::CommRelay { domain: is_domain },
-                "NavBouy" => Infrastructure::NavBouy { domain: is_domain },
+                "NavBuoy" => Infrastructure::NavBuoy { domain: is_domain },
                 "SensorArray" => Infrastructure::SensorArray { domain: is_domain },
                 "Gate" => Infrastructure::Gate,
                 "Remnants" => Infrastructure::Remnants { damaged: is_damaged },

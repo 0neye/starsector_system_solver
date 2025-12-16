@@ -10,7 +10,7 @@ use crate::planet::Planet;
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Infrastructure {
     CommRelay {domain: bool}, // only one relevant for simulation; gives +2 stability
-    NavBouy {domain: bool},
+    NavBuoy {domain: bool},
     SensorArray {domain: bool},
     Gate,
     Remnants {damaged: bool}

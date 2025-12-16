@@ -340,9 +340,9 @@ lazy_static! {
                 resource: Resource::Food,
                 amount_formula: |_| 2.0,
             }],
-            defense_multiplier: 1.0,
+            defense_multiplier: 0.0,
             accessibility_bonus: 0.0,
-            income_multiplier: 1.0,
+            income_multiplier: 0.0,
         });
 
         map.insert(ColonyItem::MantleBore, ColonyItemEffect {
@@ -361,9 +361,9 @@ lazy_static! {
                     amount_formula: |_| 3.0,
                 },
             ],
-            defense_multiplier: 1.0,
+            defense_multiplier: 0.0,
             accessibility_bonus: 0.0,
-            income_multiplier: 1.0,
+            income_multiplier: 0.0,
         });
 
         map.insert(ColonyItem::BiofactoryEmbryo, ColonyItemEffect {
@@ -382,9 +382,9 @@ lazy_static! {
                     amount_formula: |_| 2.0,
                 },
             ],
-            defense_multiplier: 1.0,
+            defense_multiplier: 0.0,
             accessibility_bonus: 0.0,
-            income_multiplier: 1.0,
+            income_multiplier: 0.0,
         });
 
         map.insert(ColonyItem::CatalyticCore, ColonyItemEffect {
@@ -399,17 +399,17 @@ lazy_static! {
                     amount_formula: |_| 3.0,
                 },
             ],
-            defense_multiplier: 1.0,
+            defense_multiplier: 0.0,
             accessibility_bonus: 0.0,
-            income_multiplier: 1.0,
+            income_multiplier: 0.0,
         });
 
         map.insert(ColonyItem::DroneReplicator, ColonyItemEffect {
             compatible_facilities: vec![FacilityType::GroundDefenses, FacilityType::HeavyBatteries],
             production_bonuses: Vec::new(),
-            defense_multiplier: 1.5,
+            defense_multiplier: 0.5,  // +50% defense bonus (additive with other bonuses)
             accessibility_bonus: 0.0,
-            income_multiplier: 1.0,
+            income_multiplier: 0.0,
         });
 
         map.insert(ColonyItem::CorruptedNanoforge, ColonyItemEffect {
@@ -432,9 +432,9 @@ lazy_static! {
                     amount_formula: |_| 1.0,
                 },
             ],
-            defense_multiplier: 1.0,
+            defense_multiplier: 0.0,
             accessibility_bonus: 0.0,
-            income_multiplier: 1.0,
+            income_multiplier: 0.0,
         });
 
         map.insert(ColonyItem::PristineNanoforge, ColonyItemEffect {
@@ -457,33 +457,33 @@ lazy_static! {
                     amount_formula: |_| 3.0,
                 },
             ],
-            defense_multiplier: 1.0,
+            defense_multiplier: 0.0,
             accessibility_bonus: 0.0,
-            income_multiplier: 1.0,
+            income_multiplier: 0.0,
         });
 
         map.insert(ColonyItem::CryoarithmeticEngine, ColonyItemEffect {
             compatible_facilities: vec![FacilityType::PatrolHQ, FacilityType::MilitaryBase, FacilityType::HighCommand],
             production_bonuses: Vec::new(),
-            defense_multiplier: 2.0,
+            defense_multiplier: 1.0,  // +100% defense bonus (additive with other bonuses)
             accessibility_bonus: 0.0,
-            income_multiplier: 1.0,
+            income_multiplier: 0.0,
         });
 
         map.insert(ColonyItem::DealmakerHolosuite, ColonyItemEffect {
             compatible_facilities: vec![FacilityType::Commerce],
             production_bonuses: Vec::new(),
-            defense_multiplier: 1.0,
+            defense_multiplier: 0.0,
             accessibility_bonus: 0.0,
-            income_multiplier: 1.5,
+            income_multiplier: 0.5,  // +50% income bonus (additive with other bonuses)
         });
 
         map.insert(ColonyItem::FullereneSpool, ColonyItemEffect {
             compatible_facilities: vec![FacilityType::Spaceport, FacilityType::Megaport],
             production_bonuses: Vec::new(),
-            defense_multiplier: 1.0,
+            defense_multiplier: 0.0,
             accessibility_bonus: 0.3,
-            income_multiplier: 1.0,
+            income_multiplier: 0.0,
         });
 
         map.insert(ColonyItem::PlasmaDynamo, ColonyItemEffect {
@@ -492,9 +492,9 @@ lazy_static! {
                 resource: Resource::Volatiles,
                 amount_formula: |_| 3.0,
             }],
-            defense_multiplier: 1.0,
+            defense_multiplier: 0.0,
             accessibility_bonus: 0.0,
-            income_multiplier: 1.0,
+            income_multiplier: 0.0,
         });
 
         map.insert(ColonyItem::SynchrotronCore, ColonyItemEffect {
@@ -503,9 +503,9 @@ lazy_static! {
                 resource: Resource::Fuel,
                 amount_formula: |_| 3.0,
             }],
-            defense_multiplier: 1.0,
+            defense_multiplier: 0.0,
             accessibility_bonus: 0.0,
-            income_multiplier: 1.0,
+            income_multiplier: 0.0,
         });
 
         map
@@ -704,6 +704,28 @@ lazy_static! {
                 ResourceAmount { resource: Resource::Transplutonics, amount_formula: |size| (size as f64 - 2.0) },
             ],
             special_effects: vec!["Allow usage of Doctrine Fleet", "Removes Cross-faction imports debuff (-25% ship quality)"],
+            requirements: vec![],
+            is_structure: false,
+        });
+
+        // Fuel Production
+        map.insert(FacilityType::FuelProduction, FacilityData {
+            name: "fuel production",
+            build_cost: 225000,
+            build_time: 90,
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 3000.0,
+            accessibility_bonus: 0.0,
+            stability_bonus: 0,
+            defense_multiplier: 1.0,
+            income_multiplier: 1.0,
+            production: vec![
+                ResourceAmount { resource: Resource::Fuel, amount_formula: |size| size as f64 },
+            ],
+            demands: vec![
+                ResourceAmount { resource: Resource::Volatiles, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::HeavyMachinery, amount_formula: |size| (size as f64 - 2.0) },
+            ],
+            special_effects: vec![],
             requirements: vec![],
             is_structure: false,
         });
@@ -1044,7 +1066,7 @@ lazy_static! {
         // Production facilities with +1 bonus
         for facility in &[
             FacilityType::Aquaculture, FacilityType::LightIndustry, FacilityType::Refining,
-            FacilityType::HeavyIndustry, FacilityType::Mining
+            FacilityType::HeavyIndustry, FacilityType::Mining, FacilityType::FuelProduction
         ] {
             map.insert(*facility, FacilityEffects {
                 production_bonus: 1.0,
@@ -1098,7 +1120,7 @@ lazy_static! {
         for facility in &[
             FacilityType::Aquaculture, FacilityType::Farming, FacilityType::LightIndustry,
             FacilityType::Refining, FacilityType::HeavyIndustry, FacilityType::Mining,
-            FacilityType::Population
+            FacilityType::FuelProduction, FacilityType::Population
         ] {
             map.insert(*facility, FacilityEffects {
                 production_bonus: 1.0,
