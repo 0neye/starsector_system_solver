@@ -9,6 +9,9 @@ use crate::solver::{Action, Balance, SearchInfo, State, SearchResult, state::get
 use crate::planet::{Planet, Facility};
 use crate::system::System;
 
+fn days_to_months_ceil(days: u32) -> i32 {
+    ((days + 29) / 30) as i32
+}
 
 #[derive(Debug, Clone)]
 pub struct Goal {
@@ -65,10 +68,6 @@ impl Goal {
         state: &State,
         precompute_map: &HashMap<u64, HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>, BuildNoHashHasher<u64>>,
     ) -> i32 {
-        if self.is_satisfied(state) {
-            return 0;
-        }
-
         // Gather all unbuilt facilities once
         let mut unbuilt_map = HashMap::with_hasher(BuildNoHashHasher::default());
         for (planet_hash, planet) in state.system().planets() {
@@ -112,7 +111,9 @@ impl Goal {
             return 0;
         }
 
-        // Gather candidate facilities from each planet
+        // Optimistic lower bound: assume all eligible facilities can be started now in parallel.
+        // Find the earliest completion month `t` such that the sum of incomes of facilities with
+        // build_time <= t covers the shortfall.
         let candidates: Vec<&PrecomputedFacilityData> = gather_facility_candidates_by_metric(
             state.system(),
             precompute_map,
@@ -120,31 +121,24 @@ impl Goal {
             unbuilt_map,
         );
 
-        // Sort by net_income descending
-        let mut candidates_sorted = candidates;
-        candidates_sorted.sort_by(|a, b| {
-            b.net_income
-                .partial_cmp(&a.net_income)
-                .unwrap_or(Ordering::Equal)
-        });
+        let mut candidates_by_time: Vec<(i32, f64)> = candidates
+            .into_iter()
+            .map(|c| (days_to_months_ceil(c.build_time), c.net_income))
+            .collect();
 
-        // Greedily pick until we cover the shortfall
-        let mut needed = income_shortfall;
-        let mut max_build_time = 0;
-        for fac_data in candidates_sorted {
-            needed -= fac_data.net_income;
-            max_build_time = max_build_time.max(fac_data.build_time as i32);
-            if needed <= 0.0 {
-                break;
+        candidates_by_time.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut accumulated = 0.0;
+        for (months, income) in candidates_by_time {
+            accumulated += income;
+            if accumulated + 1e-9 >= income_shortfall {
+                return months;
             }
         }
 
-        if needed > 0.0 {
-            // Could not cover the gap
-            i32::MAX / 2
-        } else {
-            max_build_time / 30 // convert days to months
-        }
+        // If facility-only estimates can't cover the gap (common when growth drives income),
+        // fall back to an optimistic bound instead of "infinite" so IDA* can still progress.
+        0
     }
 
     /// Estimate months to cover the `defense_shortfall`, based on
@@ -160,46 +154,44 @@ impl Goal {
             return 0;
         }
 
-        // TODO: fix this
+        // Optimistic lower bound similar to income/stability.
+        // We intentionally over-estimate each facility's defense contribution to avoid ever
+        // over-estimating the required months (admissibility).
+        //
+        // Planet::ground_defense_strength() base term peaks at size 6 with stability 10:
+        // base = 100*(6-3)=300 and stability factor = 0.25 + 10*0.075 = 1.0.
+        const MAX_BASE_DEFENSE_STRENGTH: f64 = 300.0;
 
-        let num_planets = precompute_map.len() as f64;
-        let target_defense = self.min_ground_defense.unwrap();
-        let current_defense = target_defense - defense_shortfall;
+        let num_planets = state.system().planets().len() as f64;
+        let total_shortfall = defense_shortfall * num_planets;
 
-        let mut defense_increases = Vec::new();
+        let mut candidates_by_time: Vec<(i32, f64)> = Vec::new();
         for (planet_hash, facility_map) in precompute_map {
-            let planet = state.system().get_planet_by_hash(*planet_hash).unwrap();
-            let current_planet_defense = planet.ground_defense_strength();
-            
             if let Some(unbuilt) = unbuilt_map.get(planet_hash) {
                 for facility_type in unbuilt {
                     if let Some(fac_data) = facility_map.get(facility_type) {
                         if fac_data.defense_mult > 1.0 {
-                            let new_defense = current_planet_defense * fac_data.defense_mult;
-                            let defense_increase = new_defense - current_planet_defense;
-                            defense_increases.push((defense_increase, fac_data));
+                            let delta = MAX_BASE_DEFENSE_STRENGTH * (fac_data.defense_mult - 1.0);
+                            if delta > 0.0 {
+                                candidates_by_time.push((days_to_months_ceil(fac_data.build_time), delta));
+                            }
                         }
                     }
                 }
             }
         }
 
-        defense_increases.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        candidates_by_time.sort_by(|a, b| a.0.cmp(&b.0));
 
-        let mut total_defense_increase = 0.0;
-        let mut max_build_time = 0;
-
-        for (defense_increase, fac_data) in defense_increases {
-            total_defense_increase += defense_increase;
-            max_build_time = max_build_time.max(fac_data.build_time as i32);
-            
-            let new_avg_defense = (total_defense_increase + current_defense * num_planets) / num_planets;
-            if new_avg_defense >= target_defense {
-                return max_build_time / 30;
+        let mut accumulated = 0.0;
+        for (months, delta) in candidates_by_time {
+            accumulated += delta;
+            if accumulated + 1e-9 >= total_shortfall {
+                return months;
             }
         }
 
-        i32::MAX / 2
+        0
     }
 
     /// Estimate months to cover the `stability_shortfall`, based on
@@ -215,7 +207,8 @@ impl Goal {
             return 0;
         }
 
-        // Gather candidate facilities
+        // Optimistic lower bound: assume all eligible facilities can be started now in parallel.
+        // Find earliest completion month where summed stability bonuses cover the shortfall.
         let candidates: Vec<&PrecomputedFacilityData> = gather_facility_candidates_by_metric(
             state.system(),
             precompute_map,
@@ -223,26 +216,22 @@ impl Goal {
             unbuilt_map,
         );
 
-        // Sort by stability_bonus descending
-        let mut candidates_sorted = candidates;
-        candidates_sorted.sort_by(|a, b| b.stability_bonus.cmp(&a.stability_bonus));
+        let mut candidates_by_time: Vec<(i32, f64)> = candidates
+            .into_iter()
+            .map(|c| (days_to_months_ceil(c.build_time), c.stability_bonus as f64))
+            .collect();
 
-        // Greedily pick
-        let mut needed = stability_shortfall;
-        let mut max_build_time = 0;
-        for fac_data in candidates_sorted {
-            needed -= fac_data.stability_bonus as f64;
-            max_build_time = max_build_time.max(fac_data.build_time as i32);
-            if needed <= 0.0 {
-                break;
+        candidates_by_time.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut accumulated = 0.0;
+        for (months, bonus) in candidates_by_time {
+            accumulated += bonus;
+            if accumulated + 1e-9 >= stability_shortfall {
+                return months;
             }
         }
 
-        if needed > 0.0 {
-            i32::MAX / 2
-        } else {
-            max_build_time / 30
-        }
+        0
     }
 }
 
@@ -305,8 +294,18 @@ pub fn precompute_facility_candidates(state: &State)
     let mut result: HashMap<u64, HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>, BuildNoHashHasher<u64>> = HashMap::with_hasher(BuildNoHashHasher::default());
     let mut system = state.system().clone();
 
+    // Optimistic: assume we can achieve the best available income multiplier eventually.
+    let max_income_mult = FACILITY_DATA
+        .values()
+        .fold(1.0_f64, |acc, data| acc.max(data.income_multiplier));
+
     // For each planet in the system
     for (planet_hash, planet) in system.planets_mut() {
+        // Heuristic precompute assumes we can colonize if needed (optimistic lower bound).
+        if !planet.has_colony() {
+            planet.set_has_colony(true);
+        }
+
         // Apply all bonuses
         planet.set_admin(AdminType::AlphaCore);
         planet.set_free_port(true);
@@ -349,7 +348,9 @@ pub fn precompute_facility_candidates(state: &State)
             // From megaport, fullerene spool, improvements, alpha core
             let max_access = planet.calculate_accessibility() + 20.0 + 30.0 + 20.0 + 20.0;
 
-            let fac_net_income = facility.calculate_net_income(planet.size(), planet, max_access);
+            let fac_gross_income = facility.calculate_gross_income(planet.size(), planet, max_access);
+            let fac_upkeep = facility.calculate_upkeep(planet.hazard_rating(), planet.size());
+            let fac_net_income = fac_gross_income * max_income_mult - fac_upkeep;
 
             let fac_stability_bonus = facility.calculate_stability_bonus();
 
@@ -398,26 +399,23 @@ fn ida_star(initial_state: &mut State, goal: &Goal, time_limit: u32, slim: bool)
     let start_time = Instant::now();
     let precompute_map = precompute_facility_candidates(initial_state);
     let mut bound = goal.month_lower_bound(initial_state, &precompute_map);
-    let mut visited: HashSet<u64, BuildNoHashHasher<u64>> = HashSet::with_capacity_and_hasher(100000, BuildNoHashHasher::default());
+    let mut visited: HashSet<u64, BuildNoHashHasher<u64>> = HashSet::with_capacity_and_hasher(1000000, BuildNoHashHasher::default());
     let mut total_nodes_searched = 0;
     let mut total_nodes_pruned = 0;
-    
-    let mut last_print_time = Instant::now();
-    let mut last_nodes = 0;
+
     loop {
         println!("Current bound: {:?}", bound);
+        let iteration_start = Instant::now();
         visited.clear();
+        visited.insert(initial_state.get_deep_hash());
         let result = depth_limited_search(initial_state, goal, 0, bound, &mut visited, &precompute_map, slim);
         total_nodes_searched += result.nodes_searched;
         total_nodes_pruned += result.nodes_pruned_by_bound;
         
-        let current_time = Instant::now();
-        let elapsed = current_time.duration_since(last_print_time);
+        let elapsed = iteration_start.elapsed();
         if elapsed >= Duration::from_secs(1) {
-            let nodes_per_sec = (visited.len() as f64 - last_nodes as f64) / elapsed.as_secs_f64();
+            let nodes_per_sec = visited.len() as f64 / elapsed.as_secs_f64();
             println!("Unique nodes/sec: {:.2}", nodes_per_sec);
-            last_print_time = current_time;
-            last_nodes = visited.len() as u32;
         }
         
         if result.solution.is_some() {
@@ -467,9 +465,20 @@ fn depth_limited_search(
     precompute_map: &HashMap<u64, HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>, BuildNoHashHasher<u64>>,
     slim: bool
 ) -> AStarSearchResult {
+    if goal.is_satisfied(state) {
+        return AStarSearchResult {
+            solution: Some(state.action_log().clone()),
+            cost: g,
+            cutoff_occurred: false,
+            nodes_searched: 1,
+            nodes_pruned_by_bound: 0,
+        };
+    }
+
     let h = goal.month_lower_bound(state, precompute_map);
-    let f = g + h;
-    
+    let f = g.saturating_add(h);
+
+    // Prune by bound
     if f > bound {
         return AStarSearchResult {
             solution: None,
@@ -480,36 +489,20 @@ fn depth_limited_search(
         };
     }
     
-    if h == 0 {
-        return AStarSearchResult {
-            solution: Some(state.action_log().clone()),
-            cost: g,
-            cutoff_occurred: false,
-            nodes_searched: 1,
-            nodes_pruned_by_bound: 0,
-        };
-    }
+    let mut nodes_searched = 1; // current node
+    let mut nodes_pruned_by_bound = 0;
+    let mut cutoff_occurred = false;
+    let mut best_next_bound = i32::MAX;
     
-    let mut current_actions = state.action_log().clone();
-    let mut min = AStarSearchResult {
-        solution: None,
-        cost: i32::MAX,
-        cutoff_occurred: false,
-        nodes_searched: 1, // Count current node
-        nodes_pruned_by_bound: 0,
-    };
-    
-    for action in state.get_ordered_possible_actions(slim) {
-        current_actions.push(action.clone());
-        let next_hash = get_action_sequence_hash(&current_actions);
-        current_actions.pop();
-        
+    for action in state.get_possible_actions(slim) {
+        state.apply_action_raw(&action, false);
+        let next_hash = state.get_deep_hash();
         if !visited.insert(next_hash) {
-            min.nodes_searched += 1;
+            state.undo_last_action(false);
+            nodes_searched += 1;
             continue;
         }
-        
-        state.apply_action_raw(&action, false);
+
         let cost = action_cost(&action);
         let result = depth_limited_search(state, goal, g + cost, bound, visited, precompute_map, slim);
         state.undo_last_action(false);
@@ -519,22 +512,27 @@ fn depth_limited_search(
                 solution: result.solution,
                 cost: result.cost,
                 cutoff_occurred: false,
-                nodes_searched: min.nodes_searched + result.nodes_searched,
-                nodes_pruned_by_bound: min.nodes_pruned_by_bound + result.nodes_pruned_by_bound,
+                nodes_searched: nodes_searched + result.nodes_searched,
+                nodes_pruned_by_bound: nodes_pruned_by_bound + result.nodes_pruned_by_bound,
             };
         }
         
+        nodes_searched += result.nodes_searched;
+        nodes_pruned_by_bound += result.nodes_pruned_by_bound;
+
         if result.cutoff_occurred {
-            min.cutoff_occurred = true;
-            min.cost = min.cost.min(result.cost);
-        } else if result.cost < min.cost {
-            min.cost = result.cost;
+            cutoff_occurred = true;
         }
-        min.nodes_searched += result.nodes_searched;
-        min.nodes_pruned_by_bound += result.nodes_pruned_by_bound;
+        best_next_bound = best_next_bound.min(result.cost);
     }
     
-    min
+    AStarSearchResult {
+        solution: None,
+        cost: best_next_bound,
+        cutoff_occurred,
+        nodes_searched,
+        nodes_pruned_by_bound,
+    }
 }
 
 pub fn search_all_planets(initial_state: &mut State, goal: &Goal, time_limit: u32, slim: bool) -> Vec<AStarSearchResult> {

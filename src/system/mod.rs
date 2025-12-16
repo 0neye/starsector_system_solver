@@ -155,7 +155,7 @@ impl System {
         
         // First, check for uncolonized planets that we can colonize
         for (name, planet) in &self.planets {
-            if !planet.has_colony() && balance.credits() >= 75000.0 {
+            if !planet.has_colony() && balance.credits() >= 125000.0 {
                 actions.push(Action::Colonize(name.clone()));
             }
         }

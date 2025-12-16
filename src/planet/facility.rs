@@ -601,13 +601,25 @@ impl Facility {
         balance: &Balance,
         slim: bool,
     ) -> Vec<Action> {
-        if self.current_build_days > 0 {
-            let wait = Action::Wait((self.current_build_days as f64 / 30.0).ceil() as u32);
-            return vec![wait];
-        }
 
-        let mut actions = Vec::with_capacity(3);
+        // TODO: experiment with allowing adding items before building is done
+
+        let mut actions = Vec::with_capacity(if !slim { 4 } else { 2 });
         let planet_name_hash = planet.name_hash();
+
+        // Add possible colony items if none present
+        if !self.has_colony_item() {
+            // Now we can use the planet reference to get possible colony items
+            for item in self.get_possible_colony_items(planet) {
+                if balance.colony_items().contains_key(&item) {
+                    actions.push(Action::InstallItem(
+                        planet_name_hash,
+                        self.facility_type,
+                        item,
+                    ));
+                }
+            }
+        }
 
         if !slim {
             // Add improvements if not present
@@ -632,18 +644,9 @@ impl Facility {
             }
         }
 
-        // Add possible colony items if none present
-        if !self.has_colony_item() {
-            // Now we can use the planet reference to get possible colony items
-            for item in self.get_possible_colony_items(planet) {
-                if balance.colony_items().contains_key(&item) {
-                    actions.push(Action::InstallItem(
-                        planet_name_hash,
-                        self.facility_type,
-                        item,
-                    ));
-                }
-            }
+        if self.current_build_days > 0 {
+            let wait = Action::Wait((self.current_build_days as f64 / 30.0).ceil() as u32);
+            actions.push(wait);
         }
 
         actions

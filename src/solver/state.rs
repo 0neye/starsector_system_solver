@@ -4,7 +4,7 @@ use nohash_hasher::NoHashHasher;
 use rustc_hash::FxHasher;
 
 
-#[derive(Debug, Clone, Eq, Hash)]
+#[derive(Debug, Clone, Eq, Hash, PartialEq)]
 pub enum Action {
     AddFacility(u64, FacilityType),      // planet name hash, facility type
     AddImprovement(u64, FacilityType),   // planet name hash, facility type
@@ -91,11 +91,6 @@ impl Ord for Action {
     }
 }
 
-impl PartialEq for Action {
-    fn eq(&self, other: &Self) -> bool {
-        self.priority() == other.priority()
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct Balance {
@@ -521,7 +516,7 @@ impl State {
 
     pub fn get_deep_hash(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
-        // self.balance.hash(&mut hasher);
+        self.balance.hash(&mut hasher);
         self.system.hash(&mut hasher);
         hasher.finish()
     }
