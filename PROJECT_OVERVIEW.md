@@ -119,11 +119,34 @@ src/
 ├── planet/
 │   ├── mod.rs          # Planet implementation
 │   └── facility.rs     # Facility implementation
-└── solver/
-    ├── mod.rs          # Main search algorithm (DFS)
-    ├── state.rs        # State and action definitions
-    └── astar.rs        # IDA* search implementation
+├── solver/
+│   ├── mod.rs          # Main search algorithm (DFS)
+│   ├── state.rs        # State and action definitions
+│   └── astar.rs        # IDA* search implementation
+└── tests/              # In-crate test suite (cfg(test) only)
+    ├── mod.rs          # Suite root + conventions
+    ├── support.rs      # Shared fixtures and builders
+    ├── planet.rs       # Colony facility gating / production
+    ├── facility.rs     # Facility construction bookkeeping
+    ├── solver.rs       # Action hashing + apply/undo invariants
+    └── system.rs       # System-wide aggregates
 ```
+
+## Testing
+
+Run the suite with `cargo test`.
+
+Tests live **inside the crate** under `src/tests/` (compiled only under
+`cfg(test)`) rather than in a top-level `tests/` directory, because they assert
+on `pub(crate)` internals — facility build-day counters, the solver's
+apply/undo round-trip — that an external integration test could not reach.
+
+Layout mirrors `src/`: each test file targets the module it shares a name with,
+and shared setup lives in `support.rs` (`PlanetBuilder`, `colonized_state`,
+`apply_all`, …). To add a test: reuse or extend a builder in `support.rs`, drop
+the test in the file matching the module under test, and name it after the
+behavior it guards. Tests that lock in a specific bug fix note the regression
+origin in a doc comment. See `src/tests/mod.rs` for the full convention.
 
 ## Usage Example
 
@@ -180,4 +203,6 @@ Planned improvements (from code TODOs):
 - Fix colony growth reversibility issues
 - Implement multi-phase search strategies
 - Add system-wide restrictions (e.g., commerce facility limits)
+
+
 
