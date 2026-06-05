@@ -607,7 +607,8 @@ impl Planet {
         let mut points = 0;
 
         // Base points from stability
-        points += self.stability;
+        let stability = self.stability();
+        points += stability;
 
         // Penalty for hazardous conditions
         let hazard_penalty = ((self.hazard_rating - 100.0) / 50.0).ceil() as i32;
@@ -629,8 +630,8 @@ impl Planet {
         }
 
         // Penalty for <5 stability
-        if self.stability < 5 {
-            points -= (5 - self.stability) as i32;
+        if stability < 5 {
+            points -= (5 - stability) as i32;
         }
 
         // TODO: add mild climate property so we can give a bonus for it too
@@ -685,9 +686,15 @@ impl Planet {
             return 0.0;
         }
 
-        let mut total_production = 0.0;
-        let production_bonus = 0.0; // Can be modified later to account for global bonuses
+        // Extraction resources are gated on deposit presence and get the deposit's
+        // abundance modifier added as a bonus; non-deposit resources are unaffected.
+        let production_bonus = match facility::deposit_status(resource, self) {
+            facility::DepositStatus::Absent => return 0.0, // no deposit -> no production
+            facility::DepositStatus::Present(modifier) => modifier,
+            facility::DepositStatus::NotDeposit => 0.0,
+        };
 
+        let mut total_production = 0.0;
         for facility in &self.facilities {
             total_production += facility.calculate_resource_production(
                 resource,
@@ -727,6 +734,16 @@ impl Planet {
         production
     }
 
+    /// Free-port maturity bucket; boundaries match the accessibility/stability tiers
+    /// in `calculate_accessibility` and `stability` (changes at month 7 and month 12).
+    fn free_port_bucket(free_port_days: u32) -> u32 {
+        match free_port_days / 30 {
+            0..=6 => 0,
+            7..=11 => 1,
+            _ => 2,
+        }
+    }
+
     /// Get the gross income of this planet (per month)
     pub fn get_gross_income(&self) -> f64 {
         if !self.has_colony() {
@@ -744,8 +761,9 @@ impl Planet {
         }
 
         // Subtract <5 stability penalty
-        if self.stability < 5 {
-            gross_income *= 1.0 - (0.2 * (5 - self.stability) as f64);
+        let stability = self.stability();
+        if stability < 5 {
+            gross_income *= 1.0 - (0.2 * (5 - stability) as f64);
         }
 
         gross_income * highest_income_mult
@@ -812,7 +830,7 @@ impl Planet {
 
             // Calculate monthly income
             if i == 0 || 
-            (self.free_port_days < 365 && (last_free_port_days / 30 / 6 != self.free_port_days / 30 / 6)) ||
+            (Self::free_port_bucket(last_free_port_days) != Self::free_port_bucket(self.free_port_days)) ||
             self.facilities.iter().zip(last_fac_build_days.iter()).any(|(fac, last)| fac.remaining_build_days() <= 0 && *last > 0) 
             || self.size != last_size {
                 last_gross = self.get_gross_income();
@@ -874,7 +892,7 @@ impl Planet {
         for i in 0..months {
             // First calculate income for this month before undoing changes
             if i == 0 ||
-            (self.free_port_days < 365 && (last_free_port_days / 30 / 6 != self.free_port_days / 30 / 6)) ||
+            (Self::free_port_bucket(last_free_port_days) != Self::free_port_bucket(self.free_port_days)) ||
             self.facilities.iter().zip(last_fac_build_days.iter()).any(|(fac, last)| fac.remaining_build_days() > 0 && *last <= 0) 
             || last_size != self.size {
                 last_gross = self.get_gross_income();
@@ -915,23 +933,38 @@ impl Planet {
         (gross_income, net_income)
     }
 
-    /// Check if this planet meets the requirements for a facility
+    /// Check if this planet meets the requirements for a facility.
+    ///
+    /// Facility requirements (e.g. megaport needs a spaceport) are ALL required.
+    /// Property/deposit requirements (e.g. mining lists ores/rare ores/volatiles/organics)
+    /// are satisfied if ANY one of them is present on the planet.
     fn meets_facility_requirements(&self, requirements: &[&str]) -> bool {
+        let mut has_deposit_req = false;
+        let mut deposit_satisfied = false;
+
         for req in requirements {
-            // First check if it's a property requirement
-            if let Some(value) = self.properties.get(*req) {
-                if *value <= 0.0 {
+            if FacilityType::from_str(req).is_some() {
+                // Facility requirement: must be present (these are AND'd together).
+                if !self.facilities.iter().any(|f| f.name() == *req) {
                     return false;
                 }
-                continue;
-            }
-
-            // If not a property, check if it's a required facility
-            if !self.facilities.iter().any(|f| f.name() == *req) {
-                return false;
+            } else {
+                // Property/deposit requirement: any one being present is enough (OR).
+                // A deposit counts as present if its column exists at all (its abundance
+                // modifier may be 0 or -1); `water` is a boolean condition, so it must be true.
+                has_deposit_req = true;
+                let present = if *req == "water" {
+                    self.properties.get(*req).copied().unwrap_or(0.0) > 0.0
+                } else {
+                    self.properties.contains_key(*req)
+                };
+                if present {
+                    deposit_satisfied = true;
+                }
             }
         }
-        true
+
+        !has_deposit_req || deposit_satisfied
     }
 
     /// Get all possible actions for this planet
