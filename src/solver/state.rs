@@ -1,7 +1,6 @@
 use std::{collections::HashMap, hash::{BuildHasherDefault, DefaultHasher, Hash, Hasher}};
 use crate::{constants::{AdminType, ColonyItem, FacilityType, FACILITY_DATA}, System};
 use nohash_hasher::NoHashHasher;
-use rustc_hash::FxHasher;
 use crate::planet::PlanetWaitSnapshot;
 
 
@@ -26,8 +25,17 @@ impl Action {
         const PRIME3: u64 = 1609587929392839161;
 
         // Use discriminant in hash to avoid collisions between action types
-        let discriminant = std::mem::discriminant(self);
-        let disc_val = unsafe { *(&discriminant as *const _ as *const u64) };
+        let disc_val: u64 = match self {
+            Action::AddFacility(..) => 1,
+            Action::AddImprovement(..) => 2,
+            Action::AddAlphaCore(..) => 3,
+            Action::InstallItem(..) => 4,
+            Action::SetFreePort(..) => 5,
+            Action::SetHazardPay(..) => 6,
+            Action::UpgradeAdmin(..) => 7,
+            Action::Colonize(..) => 8,
+            Action::Wait(..) => 9,
+        };
 
         let hash = match self {
             Action::AddFacility(planet_hash, facility_type) => 
@@ -230,78 +238,41 @@ struct WaitUndoRecord {
     planet_snapshots: Vec<(u64, PlanetWaitSnapshot)>,
 }
 
-pub fn get_action_sequence_hash(actions: &Vec<Action>) -> u64 {
-    // Initialize a vector to store hashes of action sequences
-    let mut num_sequence = Vec::new();
-    let mut current_hash = 0u64;
-    let mut is_wait_sequence = false;
-
-    // Iterate through each action in the action log
-    for action in actions {
-        // Check if the current action is a Wait action
-        let is_wait = matches!(action, Action::Wait(_));
-        
-        // If we transition between Wait and non-Wait actions, push the current hash
-        if is_wait != is_wait_sequence && current_hash != 0 {
-            num_sequence.push(current_hash);
-            current_hash = 0;
-        }
-        
-        // Update the wait sequence flag
-        is_wait_sequence = is_wait;
-        
-        // Add the hash of the current action to the running hash
-        // Using wrapping_add to handle potential overflow
-        current_hash = current_hash.wrapping_add(action.get_hash());
-    }
-
-    // Push the final hash if there's any remaining
-    if current_hash != 0 {
-        num_sequence.push(current_hash);
-    }
-
-    // Hash the entire sequence of hashes
-    let mut hasher = FxHasher::default();
-    num_sequence.hash(&mut hasher);
-
-    // Return the final hash
-    hasher.finish()
+#[inline]
+fn mix64(mut x: u64) -> u64 {
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+    x ^ (x >> 31)
 }
 
-// TODO: No need for this since we only use it in state.get_hash()
+pub fn get_action_sequence_hash(actions: &[Action]) -> u64 {
+    const SEQ_PRIME: u64 = 0x100000001b3;
+    let mut seq_hash: u64 = 0xcbf29ce484222325;
+    let mut seg_hash: u64 = 0;
+    let mut in_wait = false;
+    let mut started = false;
+
+    for action in actions {
+        let is_wait = matches!(action, Action::Wait(_));
+        if started && is_wait != in_wait {
+            seq_hash = (seq_hash ^ mix64(seg_hash)).wrapping_mul(SEQ_PRIME);
+            seg_hash = 0;
+        }
+        in_wait = is_wait;
+        started = true;
+        seg_hash = seg_hash.wrapping_add(mix64(action.get_hash()));
+    }
+
+    if started {
+        seq_hash = (seq_hash ^ mix64(seg_hash)).wrapping_mul(SEQ_PRIME);
+    }
+
+    seq_hash
+}
+
 impl Hash for State {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        // Initialize a vector to store hashes of action sequences
-        let mut num_sequence = Vec::new();
-        let mut current_hash = 0u64;
-        let mut is_wait_sequence = false;
-
-        // Iterate through each action in the action log
-        for action in &self.action_log {
-            // Check if the current action is a Wait action
-            let is_wait = matches!(action, Action::Wait(_));
-            
-            // If we transition between Wait and non-Wait actions, push the current hash
-            if is_wait != is_wait_sequence && current_hash != 0 {
-                num_sequence.push(current_hash);
-                current_hash = 0;
-            }
-            
-            // Update the wait sequence flag
-            is_wait_sequence = is_wait;
-            
-            // Add the hash of the current action to the running hash
-            // Using wrapping_add to handle potential overflow
-            current_hash = current_hash.wrapping_add(action.get_hash());
-        }
-
-        // Push the final hash if there's any remaining
-        if current_hash != 0 {
-            num_sequence.push(current_hash);
-        }
-
-        // Hash the entire sequence of hashes
-        num_sequence.hash(state);
+        state.write_u64(get_action_sequence_hash(&self.action_log));
     }
 }
 
@@ -550,9 +521,7 @@ impl State {
     }
 
     pub fn get_hash(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.hash(&mut hasher);
-        hasher.finish()
+        get_action_sequence_hash(&self.action_log)
     }
 
     pub fn get_deep_hash(&self) -> u64 {
