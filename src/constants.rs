@@ -234,7 +234,9 @@ impl Resource {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+// NOTE: no PartialEq/Eq — `amount_formula` is a fn pointer whose address is not a
+// reliable identity. `resource` already identifies the entry within a facility.
+#[derive(Debug, Clone)]
 pub struct ResourceAmount {
     pub resource: Resource,
     pub amount_formula: fn(u32) -> f64,

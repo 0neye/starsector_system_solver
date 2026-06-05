@@ -10,7 +10,7 @@ use crate::constants::{
 use crate::solver::{Action, Balance};
 use std::hash::{Hash, Hasher};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Facility {
     facility_type: FacilityType,
     current_build_days: i32,
@@ -29,6 +29,22 @@ pub struct Facility {
     is_structure: bool,
 }
 
+impl PartialEq for Facility {
+    fn eq(&self, other: &Self) -> bool {
+        self.facility_type == other.facility_type
+            && self.current_build_days == other.current_build_days
+            && self.total_build_days == other.total_build_days
+            && self.improvements == other.improvements
+            && self.alpha_core == other.alpha_core
+            && self.colony_item == other.colony_item
+            && self.is_structure == other.is_structure
+            && self.base_accessibility_bonus == other.base_accessibility_bonus
+            && self.base_stability_bonus == other.base_stability_bonus
+            && self.base_defense_multiplier == other.base_defense_multiplier
+            && self.base_income_multiplier == other.base_income_multiplier
+    }
+}
+
 impl Hash for Facility {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.facility_type.hash(state);
@@ -39,27 +55,15 @@ impl Hash for Facility {
         self.is_structure.hash(state);
         self.current_build_days.hash(state);
         self.total_build_days.hash(state);
-        self.upkeep_formula.hash(state);
 
         // Hash f64 values by converting them to bits
         self.base_accessibility_bonus.to_bits().hash(state);
         self.base_defense_multiplier.to_bits().hash(state);
         self.base_income_multiplier.to_bits().hash(state);
 
-        // Hash vectors by sorting their entries
-        let mut prod_entries: Vec<_> = self.base_production.iter().collect();
-        prod_entries.sort_by(|a, b| a.0.cmp(&b.0));
-        for (resource, resource_amount) in prod_entries {
-            resource.hash(state);
-            resource_amount.amount_formula.hash(state);
-        }
-
-        let mut demand_entries: Vec<_> = self.base_demands.iter().collect();
-        demand_entries.sort_by(|a, b| a.0.cmp(&b.0));
-        for (resource, resource_amount) in demand_entries {
-            resource.hash(state);
-            resource_amount.amount_formula.hash(state);
-        }
+        // NOTE: base_production / base_demands / upkeep_formula are uniquely
+        // determined by facility_type, so they are intentionally not hashed
+        // (hashing the fn pointers inside them is unreliable anyway).
     }
 }
 
@@ -200,7 +204,13 @@ impl Facility {
     /// Upgrades/downgrades a facility in-place, doesn't check if it's possible
     pub fn swap_raw_w_data(&mut self, new_type: FacilityType, data: &FacilityData, downgrade: bool) -> Option<&Self> {
         self.facility_type = new_type;
-        self.current_build_days = if downgrade { self.total_build_days } else { data.build_time as i32 };
+        if downgrade {
+            self.current_build_days = 0;
+            self.total_build_days = data.build_time as i32;
+        } else {
+            self.current_build_days = data.build_time as i32;
+            self.total_build_days = data.build_time as i32;
+        }
 
         self.base_production = data.production.iter().map(|ra| (ra.resource, ra.clone())).collect();
         self.base_demands = data.demands.iter().map(|ra| (ra.resource, ra.clone())).collect();
@@ -588,13 +598,21 @@ impl Facility {
                 continue;
             }
 
+            // Extraction resources are gated on deposit presence and get the deposit's
+            // abundance modifier added as a bonus; non-deposit resources are unaffected.
+            let deposit_bonus = match deposit_status(*resource, planet) {
+                DepositStatus::Absent => continue, // no deposit -> no production
+                DepositStatus::Present(modifier) => modifier,
+                DepositStatus::NotDeposit => 0.0,
+            };
+
             let production = self.get_or_calculate_production(
                 *resource,
                 size,
-                0.0,
+                deposit_bonus,
                 freeport,
             );
-            
+
             // Calculate income: production scaled by accessibility, divided by sector supply 
             // to get market share, then multiplied by market value
             let sector_supply = resource.sector_supply() as f64;
@@ -688,15 +706,8 @@ impl Facility {
         if self.colony_item != other.colony_item {
             differences.push(format!("Colony item changed from {:?} to {:?}", self.colony_item, other.colony_item));
         }
-        if self.base_production != other.base_production {
-            differences.push(format!("Base production changed from {:?} to {:?}", self.base_production, other.base_production));
-        }
-        if self.base_demands != other.base_demands {
-            differences.push(format!("Base demands changed from {:?} to {:?}", self.base_demands, other.base_demands));
-        }
-        if self.upkeep_formula != other.upkeep_formula {
-            differences.push("Upkeep formula changed".to_string());
-        }
+        // base_production / base_demands / upkeep_formula are determined by
+        // facility_type and contain fn pointers, which can't be compared reliably.
         if self.base_accessibility_bonus != other.base_accessibility_bonus {
             differences.push(format!("Base accessibility bonus changed from {} to {}", self.base_accessibility_bonus, other.base_accessibility_bonus));
         }
@@ -735,6 +746,53 @@ impl Facility {
     //     self.update_defense_multiplier();
     //     self.update_income_multiplier();
     // }
+}
+
+/// Deposit-based gating/bonus for extraction resources.
+///
+/// In Starsector a deposit's abundance modifier ranges roughly -1..=+3 and is *added*
+/// to the base (size-derived) production. A deposit with a modifier of -1 or 0 is still
+/// present and still produces. In the data, a *missing* column means "no deposit", while
+/// a present column (even with value 0 or -1) means the deposit exists with that modifier.
+pub enum DepositStatus {
+    /// Not tied to a planetary deposit (manufacturing); produce normally, no bonus.
+    NotDeposit,
+    /// Deposit-gated resource whose deposit is absent on this planet; do not produce.
+    Absent,
+    /// Deposit present with the given abundance modifier (may be negative).
+    Present(f64),
+}
+
+pub fn deposit_status(resource: Resource, planet: &dyn PlanetConditionChecker) -> DepositStatus {
+    let prop = match resource {
+        Resource::Ore => "ores",
+        Resource::TransplutonicOre => "rare ores",
+        Resource::Volatiles => "volatiles",
+        Resource::Organics => "organics",
+        Resource::Food => {
+            // Farming uses a Farmland deposit (modifier may be <= 0); Aquaculture uses a
+            // Water-covered world (a boolean condition with no abundance modifier).
+            let farmland = if planet.has_property("farmland") {
+                Some(planet.get_property("farmland"))
+            } else {
+                None
+            };
+            let water = planet.get_property("water") > 0.0;
+            return match (farmland, water) {
+                (None, false) => DepositStatus::Absent,
+                (Some(m), false) => DepositStatus::Present(m),
+                (None, true) => DepositStatus::Present(0.0),
+                (Some(m), true) => DepositStatus::Present(m.max(0.0)),
+            };
+        }
+        _ => return DepositStatus::NotDeposit,
+    };
+
+    if planet.has_property(prop) {
+        DepositStatus::Present(planet.get_property(prop))
+    } else {
+        DepositStatus::Absent
+    }
 }
 
 pub trait PlanetConditionChecker {
