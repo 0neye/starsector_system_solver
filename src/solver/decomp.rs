@@ -195,29 +195,105 @@ impl Toggle {
 /// The months and action log produced by simulating a plan.
 type PlanOutcome = (Vec<Action>, i32);
 
+/// The full result of simulating a plan, including how close an *infeasible*
+/// plan came to the goal. The outer search ranks by [`is_better`]: feasible
+/// plans beat infeasible ones, feasible plans compete on months (then plan
+/// size), and infeasible plans compete on [`PlanScore::violation`] so the
+/// hill-climb can descend from an infeasible seed toward the feasible region.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PlanScore {
+    feasible: bool,
+    months: i32,
+    /// The smallest instantaneous [`goal_violation`] seen over the simulated
+    /// timeline; `0.0` exactly when the plan satisfies the goal at some instant.
+    violation: f64,
+    /// The action log at the satisfying instant (feasible) or empty (infeasible,
+    /// where only the violation matters for ranking).
+    log: Vec<Action>,
+}
+
+/// Instantaneous, normalized distance from `state` to satisfying `goal`: the sum
+/// of each constraint's relative shortfall. Zero exactly when every constraint
+/// the goal sets is met simultaneously — matching [`Goal::is_satisfied_quiet`].
+///
+/// Normalizing each term by its threshold keeps income (tens of thousands),
+/// stability (single digits) and defense comparable, so the hill-climb doesn't
+/// fixate on the largest-magnitude constraint.
+fn goal_violation(goal: &Goal, state: &State) -> f64 {
+    let mut v = 0.0;
+
+    let income = state.balance().net_income();
+    if income < goal.min_net_income {
+        v += (goal.min_net_income - income) / goal.min_net_income.abs().max(1.0);
+    }
+
+    if let Some(min_defense) = goal.min_ground_defense {
+        let defense = state.system().avg_ground_defense();
+        if defense < min_defense {
+            v += (min_defense - defense) / min_defense.abs().max(1.0);
+        }
+    }
+
+    if let Some(min_stability) = goal.min_stability {
+        let stability = state.system().avg_stability();
+        let min_stability = min_stability as f64;
+        if stability < min_stability {
+            v += (min_stability - stability) / min_stability.abs().max(1.0);
+        }
+    }
+
+    v
+}
+
 /// Level 2 (inner): cost a fixed system plan by forced forward simulation on a
 /// single shared timeline.
 ///
 /// Returns the resulting action log and total months waited, or `None` if the
-/// plan stalls or can't reach the goal within the safety caps.
+/// plan stalls or can't reach the goal within the safety caps. Thin wrapper over
+/// [`run_plan`] preserving the feasible-only contract the test suite relies on.
 pub(crate) fn simulate_plan(
     initial_state: &State,
     goal: &Goal,
     plan: &SystemPlan,
     slim: bool,
 ) -> Option<PlanOutcome> {
+    let score = run_plan(initial_state, goal, plan, slim);
+    score.feasible.then_some((score.log, score.months))
+}
+
+/// Forced forward simulation of a fixed plan, returning a full [`PlanScore`].
+///
+/// Identical to the build-ASAP/wait-to-next-event schedule used before, but it
+/// also tracks the minimum goal violation over the timeline so that infeasible
+/// plans carry a gradient the outer search can follow.
+fn run_plan(initial_state: &State, goal: &Goal, plan: &SystemPlan, slim: bool) -> PlanScore {
     let mut state = initial_state.clone();
     let mut total_months: i32 = 0;
     let mut iters: u32 = 0;
+    let mut min_violation = f64::INFINITY;
+
+    let infeasible = |months: i32, violation: f64| PlanScore {
+        feasible: false,
+        months,
+        violation,
+        log: Vec::new(),
+    };
 
     loop {
-        if goal.is_satisfied_quiet(&state) {
-            return Some((state.action_log().clone(), total_months));
+        let violation = goal_violation(goal, &state);
+        if violation <= 0.0 {
+            return PlanScore {
+                feasible: true,
+                months: total_months,
+                violation: 0.0,
+                log: state.action_log().clone(),
+            };
         }
+        min_violation = min_violation.min(violation);
 
         iters += 1;
         if iters > MAX_SIM_ITERS || total_months > MAX_PLAN_MONTHS {
-            return None;
+            return infeasible(total_months, min_violation);
         }
 
         let actions = state.get_ordered_possible_actions(slim);
@@ -260,7 +336,7 @@ pub(crate) fn simulate_plan(
                     state.apply_action_raw(&Action::Wait(1), false);
                     total_months += 1;
                 } else {
-                    return None;
+                    return infeasible(total_months, min_violation);
                 }
             }
         }
@@ -334,10 +410,17 @@ fn has_pending_target(state: &State, plan: &SystemPlan) -> bool {
 /// metric-helping ones) guarantees prerequisite structures are available — a
 /// Megaport is useless to a plan that forbade its Spaceport. The hill-climb then
 /// trims toward the minimum makespan.
-fn planet_plan_full(colonize: bool) -> PlanetPlan {
+///
+/// `free_port` is seeded separately because it is the one lever that *trades*
+/// objectives: it raises income but costs 1–3 stability (and lowers ground
+/// defense via stability). Forcing it on makes a maximal plan infeasible under a
+/// stability/defense floor, which is exactly the seed the pure-descent climb
+/// can't recover from — so under such a floor we seed it off and let the climb
+/// add it back where it pays for itself.
+fn planet_plan_full(colonize: bool, free_port: bool) -> PlanetPlan {
     PlanetPlan {
         colonize,
-        free_port: true,
+        free_port,
         hazard_pay: true,
         upgrade_admin: true,
         improvements: true,
@@ -350,17 +433,29 @@ fn planet_plan_full(colonize: bool) -> PlanetPlan {
 /// Build a system plan where `active` planets get the full plan and all other
 /// planets are left undeveloped. Pre-colonized planets are always active (their
 /// colony can't be undone), so the meaningful choice is over uncolonized ones.
-fn build_system_plan(state: &State, active: &HashSet<u64>) -> SystemPlan {
+fn build_system_plan(state: &State, active: &HashSet<u64>, free_port: bool) -> SystemPlan {
     let mut planets = HashMap::new();
     for (hash, planet) in state.system().planets() {
         let pplan = if active.contains(hash) {
-            planet_plan_full(!planet.has_colony())
+            planet_plan_full(!planet.has_colony(), free_port)
         } else {
             PlanetPlan::default()
         };
         planets.insert(*hash, pplan);
     }
     SystemPlan { planets }
+}
+
+/// Free-port seed values to try for the maximal plan. With no stability/defense
+/// floor, free port only helps (more income → fewer months) and the climb can
+/// still drop it, so on-only is enough. With such a floor, the all-on seed may
+/// be infeasible while free-port-off is feasible, so we must try both.
+fn seed_free_ports(goal: &Goal) -> &'static [bool] {
+    if goal.min_stability.is_some() || goal.min_ground_defense.is_some() {
+        &[false, true]
+    } else {
+        &[true]
+    }
 }
 
 /// Pick which planets to develop. A maximal "colonize everything" plan is often
@@ -378,7 +473,7 @@ fn choose_planet_set(
     start: Instant,
     deadline: Duration,
     nodes_searched: &mut u32,
-) -> Option<(SystemPlan, PlanOutcome)> {
+) -> Option<(SystemPlan, PlanScore)> {
     let forced: HashSet<u64> = state
         .system()
         .planets()
@@ -394,7 +489,9 @@ fn choose_planet_set(
         .map(|(h, _)| *h)
         .collect();
 
-    let mut best: Option<(SystemPlan, PlanOutcome)> = None;
+    let mut best: Option<(SystemPlan, PlanScore)> = None;
+
+    let free_ports = seed_free_ports(goal);
 
     const MAX_ENUM_OPTIONAL: usize = 6;
     if optional.len() <= MAX_ENUM_OPTIONAL {
@@ -412,15 +509,19 @@ fn choose_planet_set(
             if active.is_empty() {
                 continue; // nothing colonized can't meet a positive goal
             }
-            let plan = build_system_plan(state, &active);
-            consider_plan(state, goal, slim, plan, &mut best, nodes_searched);
+            for &fp in free_ports {
+                let plan = build_system_plan(state, &active, fp);
+                consider_plan(state, goal, slim, plan, &mut best, nodes_searched);
+            }
         }
     } else {
         // Greedy fallback: start from all planets and drop the one whose removal
         // improves the result, until no further improvement.
         let mut active: HashSet<u64> = forced.iter().copied().chain(optional.clone()).collect();
-        let plan = build_system_plan(state, &active);
-        consider_plan(state, goal, slim, plan, &mut best, nodes_searched);
+        for &fp in free_ports {
+            let plan = build_system_plan(state, &active, fp);
+            consider_plan(state, goal, slim, plan, &mut best, nodes_searched);
+        }
         loop {
             if start.elapsed() >= deadline {
                 break;
@@ -435,10 +536,12 @@ fn choose_planet_set(
                 if trial_active.is_empty() {
                     continue;
                 }
-                let before = best.as_ref().map(|(_, o)| o.1);
-                let plan = build_system_plan(state, &trial_active);
-                consider_plan(state, goal, slim, plan, &mut best, nodes_searched);
-                let after = best.as_ref().map(|(_, o)| o.1);
+                let before = best.as_ref().map(|(_, o)| (o.feasible, o.months, o.violation));
+                for &fp in free_ports {
+                    let plan = build_system_plan(state, &trial_active, fp);
+                    consider_plan(state, goal, slim, plan, &mut best, nodes_searched);
+                }
+                let after = best.as_ref().map(|(_, o)| (o.feasible, o.months, o.violation));
                 if after != before {
                     dropped = Some(h);
                     break;
@@ -456,36 +559,49 @@ fn choose_planet_set(
     best
 }
 
-/// Simulate `plan` and replace `best` if the outcome is better (fewer months, or
-/// equal months with a smaller plan).
+/// Simulate `plan` and replace `best` if its score is better (see [`is_better`]).
+/// Unlike a feasible-only filter, infeasible plans are retained and ranked by
+/// violation, so the seed search hands the climb the *least-infeasible* plan when
+/// nothing is outright feasible — the climb can then repair it.
 fn consider_plan(
     state: &State,
     goal: &Goal,
     slim: bool,
     plan: SystemPlan,
-    best: &mut Option<(SystemPlan, PlanOutcome)>,
+    best: &mut Option<(SystemPlan, PlanScore)>,
     nodes: &mut u32,
 ) {
     *nodes += 1;
-    if let Some(out) = simulate_plan(state, goal, &plan, slim) {
-        let better = best
-            .as_ref()
-            .map_or(true, |(bp, bo)| is_better(&out, &plan, bo, bp));
-        if better {
-            *best = Some((plan, out));
-        }
+    let score = run_plan(state, goal, &plan, slim);
+    let better = best
+        .as_ref()
+        .map_or(true, |(bp, bo)| is_better(&score, &plan, bo, bp));
+    if better {
+        *best = Some((plan, score));
     }
 }
 
-/// A candidate is better if it reaches the goal in fewer months, or in the same
-/// months with a smaller plan.
+/// Ranking between two plan scores (lower is better):
+/// * a feasible plan always beats an infeasible one;
+/// * two feasible plans compete on months, then on plan size (prefer simpler);
+/// * two infeasible plans compete on [`PlanScore::violation`] — how close they
+///   came — so the hill-climb has a gradient to follow out of the infeasible
+///   region (e.g. toggling free port off to recover the stability it lacks).
 fn is_better(
-    cand: &PlanOutcome,
+    cand: &PlanScore,
     cand_plan: &SystemPlan,
-    best: &PlanOutcome,
+    best: &PlanScore,
     best_plan: &SystemPlan,
 ) -> bool {
-    cand.1 < best.1 || (cand.1 == best.1 && cand_plan.size() < best_plan.size())
+    match (cand.feasible, best.feasible) {
+        (true, false) => true,
+        (false, true) => false,
+        (true, true) => {
+            cand.months < best.months
+                || (cand.months == best.months && cand_plan.size() < best_plan.size())
+        }
+        (false, false) => cand.violation < best.violation,
+    }
 }
 
 /// Level 1 (outer): two-level decomposition solve over the given state's planets
@@ -531,12 +647,11 @@ pub fn decomp_search(
                 pp.facilities.remove(&ft);
             }
             nodes_searched += 1;
-            if let Some(cand) = simulate_plan(initial_state, goal, &trial, slim) {
-                if is_better(&cand, &trial, &best, &best_plan) {
-                    best = cand;
-                    best_plan = trial;
-                    improved = true;
-                }
+            let cand = run_plan(initial_state, goal, &trial, slim);
+            if is_better(&cand, &trial, &best, &best_plan) {
+                best = cand;
+                best_plan = trial;
+                improved = true;
             }
         }
 
@@ -553,21 +668,52 @@ pub fn decomp_search(
                 let mut trial = best_plan.clone();
                 toggle.set(trial.planets.get_mut(&h).unwrap(), false);
                 nodes_searched += 1;
-                if let Some(cand) = simulate_plan(initial_state, goal, &trial, slim) {
-                    if is_better(&cand, &trial, &best, &best_plan) {
-                        best = cand;
-                        best_plan = trial;
-                        improved = true;
-                    }
+                let cand = run_plan(initial_state, goal, &trial, slim);
+                if is_better(&cand, &trial, &best, &best_plan) {
+                    best = cand;
+                    best_plan = trial;
+                    improved = true;
                 }
+            }
+        }
+
+        // Free port is the one bidirectional lever: the loop above can only turn
+        // it *off*, but a free-port-off seed (used under a stability/defense
+        // floor) needs to turn it back *on* where the extra income shortens the
+        // makespan without breaking the floor. Try flipping it to the opposite
+        // of its current value on each planet.
+        let hashes: Vec<u64> = best_plan.planets.keys().copied().collect();
+        for h in hashes {
+            if start.elapsed() >= deadline {
+                break;
+            }
+            // Only meaningful for planets the plan actually develops.
+            if best_plan.planets[&h].size() == 0 {
+                continue;
+            }
+            let mut trial = best_plan.clone();
+            let pp = trial.planets.get_mut(&h).unwrap();
+            pp.free_port = !pp.free_port;
+            nodes_searched += 1;
+            let cand = run_plan(initial_state, goal, &trial, slim);
+            if is_better(&cand, &trial, &best, &best_plan) {
+                best = cand;
+                best_plan = trial;
+                improved = true;
             }
         }
     }
 
-    let (solution, months) = best;
+    // The climb may have started from an infeasible seed and failed to repair it
+    // (the goal is genuinely unreachable for any plan it reached). Only report a
+    // solution that actually satisfies the goal.
+    if !best.feasible {
+        return None;
+    }
+
     Some(AStarSearchResult {
-        solution: Some(solution),
-        cost: months,
+        solution: Some(best.log),
+        cost: best.months,
         cutoff_occurred: false,
         nodes_searched,
         nodes_pruned_by_bound: 0,
