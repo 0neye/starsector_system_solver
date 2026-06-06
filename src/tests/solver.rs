@@ -3,8 +3,8 @@
 
 use crate::constants::FacilityType;
 use crate::planet::Planet;
-use crate::solver::decomp::{decomp_search, simulate_plan, SystemPlan};
-use crate::solver::goal::Goal;
+use crate::solver::decomp::{decomp_search, decomp_search_maximize, simulate_plan, SystemPlan};
+use crate::solver::goal::{Goal, Metric};
 use crate::solver::state::{get_action_sequence_hash, Action, State};
 use crate::system::System;
 use crate::tests::support::{
@@ -211,6 +211,77 @@ fn decomp_search_returns_satisfying_plan() {
     assert!(
         replay_satisfies(&base, &log, &goal),
         "the returned plan must satisfy the goal when replayed"
+    );
+}
+
+/// Maximize mode must (a) hold the floor on the non-maximized metric and
+/// (b) push income comfortably past a known-reachable threshold, with a cost
+/// consistent with the returned log.
+#[test]
+fn decomp_maximize_income_holds_stability_floor() {
+    let (base, hash) = terran_base();
+    let mut colonized = base.clone();
+    colonized.apply_action_raw(&Action::Colonize(hash), false);
+
+    let target = reachable_income(&colonized, 60);
+    assert!(target > 0.0, "expected a reachable positive income, got {target}");
+
+    // Maximize income with no income floor but a stability floor of 5.
+    let floors = Goal::new(f64::NEG_INFINITY, None, Some(5));
+    let result = decomp_search_maximize(&mut colonized, Metric::Income, &floors, 120, 3_000, true)
+        .expect("a single colony can hold stability 5 while earning income");
+    let log = result.solution.expect("a successful result carries a solution");
+
+    assert_eq!(
+        sum_wait_months(&log),
+        result.cost,
+        "reported cost must equal the summed Wait months at the best instant"
+    );
+
+    let mut replay = base.clone();
+    apply_all(&mut replay, &log);
+    assert!(
+        replay.system().avg_stability() >= 5.0,
+        "maximize must hold the stability floor, got {}",
+        replay.system().avg_stability()
+    );
+    assert!(
+        replay.balance().net_income() >= target * 0.5,
+        "maximized income {} should beat half the reachable income {}",
+        replay.balance().net_income(),
+        target * 0.5
+    );
+}
+
+/// A longer horizon can only help: the best income reachable within 120 months
+/// must be at least the best reachable within 12 (a superset of instants over
+/// the same plan space).
+#[test]
+fn decomp_maximize_longer_horizon_is_no_worse() {
+    let (base, hash) = terran_base();
+    let mut short_state = base.clone();
+    short_state.apply_action_raw(&Action::Colonize(hash), false);
+    let mut long_state = short_state.clone();
+
+    let floors = Goal::new(f64::NEG_INFINITY, None, None);
+
+    let replay_income = |result: Option<crate::solver::AStarSearchResult>| -> f64 {
+        let log = result.expect("income is maximizable with no floor").solution.unwrap();
+        let mut s = base.clone();
+        apply_all(&mut s, &log);
+        s.balance().net_income()
+    };
+
+    let short = replay_income(decomp_search_maximize(
+        &mut short_state, Metric::Income, &floors, 12, 3_000, true,
+    ));
+    let long = replay_income(decomp_search_maximize(
+        &mut long_state, Metric::Income, &floors, 120, 3_000, true,
+    ));
+
+    assert!(
+        long >= short,
+        "a longer horizon must not yield less income: 12mo={short}, 120mo={long}"
     );
 }
 

@@ -4,8 +4,8 @@ pub mod decomp;
 pub mod archive;
 
 pub use state::{State, Balance, Action};
-pub use goal::{AStarSearchResult, Goal};
-pub use decomp::search_system_decomp;
+pub use goal::{AStarSearchResult, Goal, Metric};
+pub use decomp::{search_system_decomp, search_system_maximize};
 
 /// Whether two states' planets disagree on which facilities exist. Used by the
 /// apply/undo consistency checker below.

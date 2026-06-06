@@ -9,7 +9,7 @@ use std::error::Error;
 use std::collections::HashMap;
 use clap::Parser;
 use planet::Planet;
-use solver::{search_system_decomp, Goal, Balance, State};
+use solver::{search_system_decomp, search_system_maximize, Goal, Metric, Balance, State};
 // Archived solvers, kept reachable for benchmarking/comparison:
 use solver::archive::{astar::search_all_planets, split::search_all_planets_decomp};
 use constants::{ColonyItem, FacilityType};
@@ -23,9 +23,10 @@ struct Cli {
     #[arg(long, default_value = "Mia Bravos")]
     system: String,
 
-    /// Minimum net income goal (credits/month)
-    #[arg(long, default_value_t = 200_000.0)]
-    income: f64,
+    /// Minimum net income goal (credits/month). Defaults to 200000 in reach mode
+    /// and to break-even (0) as a `--maximize` floor.
+    #[arg(long)]
+    income: Option<f64>,
 
     /// Minimum average stability goal
     #[arg(long)]
@@ -54,6 +55,57 @@ struct Cli {
     /// Solver time budget in milliseconds
     #[arg(long, default_value_t = 25_000)]
     time_limit: u32,
+
+    /// Maximize one metric instead of reaching a fixed goal. The maximized
+    /// metric's own threshold is ignored; the other two `--income/--stability/
+    /// --defense` values act as floors that must be held.
+    #[arg(long, value_parser = ["income", "defense", "stability"])]
+    maximize: Option<String>,
+
+    /// Game-month horizon for `--maximize`: push the metric as high as possible
+    /// within this many months.
+    #[arg(long, default_value_t = 120)]
+    horizon: i32,
+}
+
+/// Run the maximize-mode solver and report the best plan plus the metric values
+/// it actually achieves (by replaying the solution onto a fresh copy of `state`).
+fn test_maximize(
+    mut state: State,
+    metric: Metric,
+    floors: &Goal,
+    horizon: i32,
+    time_limit: u32,
+) {
+    println!("\nStarting maximize solver ({}, horizon {} months)...", metric.as_str(), horizon);
+
+    let replay_base = state.clone();
+    let results = search_system_maximize(&mut state, metric, floors, horizon, time_limit, true);
+
+    if results.is_empty() {
+        println!("No plan satisfies the floors within the horizon.");
+        return;
+    }
+
+    for (i, result) in results.iter().enumerate() {
+        let mut replay = replay_base.clone();
+        for a in result.solution.iter().flatten() {
+            replay.apply_action_raw(a, false);
+        }
+        println!(
+            "Result {}: best {} reached at month {}",
+            i + 1,
+            metric.as_str(),
+            result.cost,
+        );
+        println!(
+            "    income={:.0}  stability={:.1}  defense={:.1}",
+            replay.balance().net_income(),
+            replay.system().avg_stability(),
+            replay.system().avg_ground_defense(),
+        );
+        println!("{:#?}", result);
+    }
 }
 
 fn test_solver(mut state: State, goal: &Goal, time_limit: u32) {
@@ -271,11 +323,57 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let state = State::new(initial_balance, test_system);
-    let goal = Goal::new(cli.income, cli.defense, cli.stability);
+
+    if let Some(metric_str) = &cli.maximize {
+        let metric = match metric_str.as_str() {
+            "income" => Metric::Income,
+            "defense" => Metric::Defense,
+            "stability" => Metric::Stability,
+            other => unreachable!("clap restricts --maximize values; got {other}"),
+        };
+
+        // Effective floors for the non-maximized metrics. Defaults when the
+        // matching flag is omitted: income break-even (0), stability 7, defense 0.
+        // The maximized metric itself is left unconstrained (it's what we push up).
+        let income_floor = cli.income.unwrap_or(0.0);
+        let stability_floor = cli.stability.unwrap_or(7);
+        let defense_floor = cli.defense.unwrap_or(0.0);
+        let floors = match metric {
+            Metric::Income => {
+                Goal::new(f64::NEG_INFINITY, Some(defense_floor), Some(stability_floor))
+            }
+            Metric::Defense => Goal::new(income_floor, None, Some(stability_floor)),
+            Metric::Stability => Goal::new(income_floor, Some(defense_floor), None),
+        };
+
+        let mut floor_parts = Vec::new();
+        if metric != Metric::Income {
+            floor_parts.push(format!("income >= {income_floor:.0}"));
+        }
+        if metric != Metric::Stability {
+            floor_parts.push(format!("stability >= {stability_floor}"));
+        }
+        if metric != Metric::Defense {
+            floor_parts.push(format!("defense >= {defense_floor:.0}"));
+        }
+        let floors_desc = floor_parts.join(", ");
+        println!(
+            "Maximize {} within {} months ({})",
+            metric.as_str(),
+            cli.horizon,
+            floors_desc,
+        );
+
+        test_maximize(state, metric, &floors, cli.horizon, cli.time_limit);
+        return Ok(());
+    }
+
+    let income = cli.income.unwrap_or(200_000.0);
+    let goal = Goal::new(income, cli.defense, cli.stability);
 
     println!(
         "Goal: income >= {:.0}{}{}",
-        cli.income,
+        income,
         cli.stability.map_or(String::new(), |s| format!(", stability >= {s}")),
         cli.defense.map_or(String::new(), |d| format!(", defense >= {d}")),
     );

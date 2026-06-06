@@ -26,13 +26,68 @@
 //! [`search_system_decomp`] is the entry point: one combined plan over the whole
 //! system on a shared timeline and budget. The older per-planet split lives in
 //! [`crate::solver::archive::split`] for comparison.
+//!
+//! The same two-level machinery also runs a *maximize* objective
+//! ([`search_system_maximize`]): instead of minimizing months to a threshold, it
+//! pushes one [`Metric`] as high as possible within a month horizon while holding
+//! the other metrics above floors. Only the Level-2 stop condition and the
+//! Level-1 ranking ([`is_better`]) differ by [`Objective`]; the plan search,
+//! resource sharing and forced schedule are shared verbatim.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::constants::{FacilityType, FACILITY_DATA};
-use crate::solver::goal::{AStarSearchResult, Goal};
+use crate::solver::goal::{AStarSearchResult, Goal, Metric};
 use crate::solver::state::{Action, State};
+
+/// What the search optimizes.
+///
+/// * `Reach` is the original behavior: minimize the months needed to satisfy a
+///   threshold [`Goal`].
+/// * `Maximize` finds the plan whose reachable state has the highest value of
+///   one [`Metric`] while keeping the *other* metrics above the floors in
+///   `floors`, evaluated over instants up to `horizon_months` game-months. Within
+///   that horizon a faster build-out can win by reaching higher growth sooner, so
+///   the same hill-climb applies — only the ranking direction changes.
+pub enum Objective<'a> {
+    Reach(&'a Goal),
+    Maximize {
+        metric: Metric,
+        floors: &'a Goal,
+        horizon_months: i32,
+    },
+}
+
+impl Objective<'_> {
+    /// The constraints every reported instant must satisfy. In `Reach` mode the
+    /// goal *is* the constraint; in `Maximize` mode these are the floors on the
+    /// non-maximized metrics.
+    fn floors(&self) -> &Goal {
+        match self {
+            Objective::Reach(goal) => goal,
+            Objective::Maximize { floors, .. } => floors,
+        }
+    }
+
+    /// The last month the simulation evaluates. `Reach` runs to the safety cap;
+    /// `Maximize` stops at the caller's budget.
+    fn horizon_months(&self) -> i32 {
+        match self {
+            Objective::Reach(_) => MAX_PLAN_MONTHS,
+            Objective::Maximize { horizon_months, .. } => *horizon_months,
+        }
+    }
+
+    /// The metric to maximize, or `None` in `Reach` mode (where the first
+    /// satisfying instant wins and no value is tracked).
+    fn metric(&self) -> Option<Metric> {
+        match self {
+            Objective::Reach(_) => None,
+            Objective::Maximize { metric, .. } => Some(*metric),
+        }
+    }
+}
 
 /// Credits required to colonize a planet (mirrors `apply_action_raw`).
 const COLONIZE_COST: f64 = 125_000.0;
@@ -207,6 +262,10 @@ pub(crate) struct PlanScore {
     /// The smallest instantaneous [`goal_violation`] seen over the simulated
     /// timeline; `0.0` exactly when the plan satisfies the goal at some instant.
     violation: f64,
+    /// In maximize mode, the value of the maximized metric at the reported
+    /// instant (the best feasible instant within the horizon); `f64::NEG_INFINITY`
+    /// for infeasible plans and unused (`0.0`) in reach mode.
+    value: f64,
     /// The action log at the satisfying instant (feasible) or empty (infeasible,
     /// where only the violation matters for ranking).
     log: Vec<Action>,
@@ -257,43 +316,89 @@ pub(crate) fn simulate_plan(
     plan: &SystemPlan,
     slim: bool,
 ) -> Option<PlanOutcome> {
-    let score = run_plan(initial_state, goal, plan, slim);
+    let score = run_plan(initial_state, &Objective::Reach(goal), plan, slim);
     score.feasible.then_some((score.log, score.months))
 }
 
 /// Forced forward simulation of a fixed plan, returning a full [`PlanScore`].
 ///
-/// Identical to the build-ASAP/wait-to-next-event schedule used before, but it
-/// also tracks the minimum goal violation over the timeline so that infeasible
-/// plans carry a gradient the outer search can follow.
-fn run_plan(initial_state: &State, goal: &Goal, plan: &SystemPlan, slim: bool) -> PlanScore {
+/// Reach and maximize modes share the build-ASAP/wait-to-next-event schedule and
+/// both track the minimum goal violation so infeasible plans carry a gradient.
+/// They differ only in what a *feasible* instant means:
+///
+/// * **Reach**: the first instant the goal is met wins — return immediately with
+///   the months taken.
+/// * **Maximize**: keep simulating to the horizon, and among every instant whose
+///   floors are met, remember the one with the highest metric value (ties broken
+///   toward fewer months). Waits are clamped so the metric is read no later than
+///   the horizon.
+fn run_plan(initial_state: &State, objective: &Objective, plan: &SystemPlan, slim: bool) -> PlanScore {
+    let floors = objective.floors();
+    let horizon = objective.horizon_months();
+    let metric = objective.metric();
+
     let mut state = initial_state.clone();
     let mut total_months: i32 = 0;
     let mut iters: u32 = 0;
     let mut min_violation = f64::INFINITY;
 
+    // Best feasible instant seen so far. Reach mode returns on the first; maximize
+    // mode accumulates the highest-value one across the horizon.
+    let mut best_value = f64::NEG_INFINITY;
+    let mut best_months = 0;
+    let mut best_log: Option<Vec<Action>> = None;
+
     let infeasible = |months: i32, violation: f64| PlanScore {
         feasible: false,
         months,
         violation,
+        value: f64::NEG_INFINITY,
         log: Vec::new(),
     };
 
-    loop {
-        let violation = goal_violation(goal, &state);
-        if violation <= 0.0 {
-            return PlanScore {
-                feasible: true,
-                months: total_months,
-                violation: 0.0,
-                log: state.action_log().clone(),
-            };
+    // Maximize mode never simulates past the horizon, so the metric is read
+    // exactly at the budget boundary; reach mode is unconstrained here.
+    let clamp_wait = |months: u32, total: i32| -> u32 {
+        if metric.is_some() {
+            months.min((horizon - total).max(0) as u32)
+        } else {
+            months
         }
-        min_violation = min_violation.min(violation);
+    };
+
+    loop {
+        let violation = goal_violation(floors, &state);
+        if violation <= 0.0 {
+            match metric {
+                None => {
+                    // Reach: the first satisfying instant is the answer.
+                    return PlanScore {
+                        feasible: true,
+                        months: total_months,
+                        violation: 0.0,
+                        value: 0.0,
+                        log: state.action_log().clone(),
+                    };
+                }
+                Some(metric) => {
+                    let value = metric.value(&state);
+                    if best_log.is_none()
+                        || value > best_value
+                        || (value == best_value && total_months < best_months)
+                    {
+                        best_value = value;
+                        best_months = total_months;
+                        best_log = Some(state.action_log().clone());
+                    }
+                }
+            }
+        } else {
+            min_violation = min_violation.min(violation);
+        }
 
         iters += 1;
-        if iters > MAX_SIM_ITERS || total_months > MAX_PLAN_MONTHS {
-            return infeasible(total_months, min_violation);
+        if iters > MAX_SIM_ITERS || total_months > horizon {
+            break;
         }
 
         let actions = state.get_ordered_possible_actions(slim);
@@ -324,22 +429,36 @@ fn run_plan(initial_state: &State, goal: &Goal, plan: &SystemPlan, slim: bool) -
         }
 
         match wait {
-            Some(months) if months > 0 => {
+            Some(months) if clamp_wait(months, total_months) > 0 => {
+                let months = clamp_wait(months, total_months);
                 state.apply_action_raw(&Action::Wait(months), false);
                 total_months += months as i32;
             }
             _ => {
                 // No event to wait for. If income is positive and targets
                 // remain, nudge one month (growth may unlock requirements);
-                // otherwise the plan can never make progress.
-                if state.balance().net_income() > 0.0 && has_pending_target(&state, plan) {
-                    state.apply_action_raw(&Action::Wait(1), false);
-                    total_months += 1;
+                // otherwise the plan can make no further progress.
+                let step = clamp_wait(1, total_months);
+                if step > 0 && state.balance().net_income() > 0.0 && has_pending_target(&state, plan)
+                {
+                    state.apply_action_raw(&Action::Wait(step), false);
+                    total_months += step as i32;
                 } else {
-                    return infeasible(total_months, min_violation);
+                    break;
                 }
             }
         }
+    }
+
+    match best_log {
+        Some(log) => PlanScore {
+            feasible: true,
+            months: best_months,
+            violation: 0.0,
+            value: best_value,
+            log,
+        },
+        None => infeasible(total_months, min_violation),
     }
 }
 
@@ -468,7 +587,7 @@ fn seed_free_ports(goal: &Goal) -> &'static [bool] {
 /// subsets; beyond that we fall back to greedily dropping one planet at a time.
 fn choose_planet_set(
     state: &State,
-    goal: &Goal,
+    objective: &Objective,
     slim: bool,
     start: Instant,
     deadline: Duration,
@@ -491,7 +610,7 @@ fn choose_planet_set(
 
     let mut best: Option<(SystemPlan, PlanScore)> = None;
 
-    let free_ports = seed_free_ports(goal);
+    let free_ports = seed_free_ports(objective.floors());
 
     const MAX_ENUM_OPTIONAL: usize = 6;
     if optional.len() <= MAX_ENUM_OPTIONAL {
@@ -511,7 +630,7 @@ fn choose_planet_set(
             }
             for &fp in free_ports {
                 let plan = build_system_plan(state, &active, fp);
-                consider_plan(state, goal, slim, plan, &mut best, nodes_searched);
+                consider_plan(state, objective, slim, plan, &mut best, nodes_searched);
             }
         }
     } else {
@@ -520,7 +639,7 @@ fn choose_planet_set(
         let mut active: HashSet<u64> = forced.iter().copied().chain(optional.clone()).collect();
         for &fp in free_ports {
             let plan = build_system_plan(state, &active, fp);
-            consider_plan(state, goal, slim, plan, &mut best, nodes_searched);
+            consider_plan(state, objective, slim, plan, &mut best, nodes_searched);
         }
         loop {
             if start.elapsed() >= deadline {
@@ -539,7 +658,7 @@ fn choose_planet_set(
                 let before = best.as_ref().map(|(_, o)| (o.feasible, o.months, o.violation));
                 for &fp in free_ports {
                     let plan = build_system_plan(state, &trial_active, fp);
-                    consider_plan(state, goal, slim, plan, &mut best, nodes_searched);
+                    consider_plan(state, objective, slim, plan, &mut best, nodes_searched);
                 }
                 let after = best.as_ref().map(|(_, o)| (o.feasible, o.months, o.violation));
                 if after != before {
@@ -565,29 +684,32 @@ fn choose_planet_set(
 /// nothing is outright feasible — the climb can then repair it.
 fn consider_plan(
     state: &State,
-    goal: &Goal,
+    objective: &Objective,
     slim: bool,
     plan: SystemPlan,
     best: &mut Option<(SystemPlan, PlanScore)>,
     nodes: &mut u32,
 ) {
     *nodes += 1;
-    let score = run_plan(state, goal, &plan, slim);
+    let score = run_plan(state, objective, &plan, slim);
     let better = best
         .as_ref()
-        .map_or(true, |(bp, bo)| is_better(&score, &plan, bo, bp));
+        .map_or(true, |(bp, bo)| is_better(objective, &score, &plan, bo, bp));
     if better {
         *best = Some((plan, score));
     }
 }
 
-/// Ranking between two plan scores (lower is better):
+/// Ranking between two plan scores (better wins):
 /// * a feasible plan always beats an infeasible one;
-/// * two feasible plans compete on months, then on plan size (prefer simpler);
+/// * two feasible plans compete on the objective — reach minimizes months then
+///   plan size, maximize takes the higher metric value then fewer months then
+///   smaller plan;
 /// * two infeasible plans compete on [`PlanScore::violation`] — how close they
 ///   came — so the hill-climb has a gradient to follow out of the infeasible
 ///   region (e.g. toggling free port off to recover the stability it lacks).
 fn is_better(
+    objective: &Objective,
     cand: &PlanScore,
     cand_plan: &SystemPlan,
     best: &PlanScore,
@@ -596,26 +718,35 @@ fn is_better(
     match (cand.feasible, best.feasible) {
         (true, false) => true,
         (false, true) => false,
-        (true, true) => {
-            cand.months < best.months
-                || (cand.months == best.months && cand_plan.size() < best_plan.size())
-        }
+        (true, true) => match objective {
+            Objective::Reach(_) => {
+                cand.months < best.months
+                    || (cand.months == best.months && cand_plan.size() < best_plan.size())
+            }
+            Objective::Maximize { .. } => {
+                cand.value > best.value
+                    || (cand.value == best.value && cand.months < best.months)
+                    || (cand.value == best.value
+                        && cand.months == best.months
+                        && cand_plan.size() < best_plan.size())
+            }
+        },
         (false, false) => cand.violation < best.violation,
     }
 }
 
 /// Level 1 (outer): two-level decomposition solve over the given state's planets
-/// on a single shared timeline.
+/// on a single shared timeline, optimizing `objective`.
 ///
 /// First [`choose_planet_set`] decides *which* planets to develop (a maximal
 /// "colonize everything" plan is often infeasible for a system-wide goal). Then
 /// the hill-climb refines that set by dropping per-planet facilities and turning
-/// per-planet toggles off, accepting any change that doesn't increase months.
-/// Bounded by `time_limit` (ms); returns the best plan found, or `None` if no
-/// subset of planets can reach the goal.
-pub fn decomp_search(
+/// per-planet toggles off, accepting any change [`is_better`] approves under the
+/// objective. Bounded by `time_limit` (ms); returns the best plan found, or
+/// `None` if no subset of planets satisfies the objective's floors.
+fn decomp_search_objective(
     initial_state: &mut State,
-    goal: &Goal,
+    objective: &Objective,
     time_limit: u32,
     slim: bool,
 ) -> Option<AStarSearchResult> {
@@ -625,7 +756,7 @@ pub fn decomp_search(
 
     // First decide which planets to develop, then refine facilities/toggles.
     let (mut best_plan, mut best) =
-        choose_planet_set(initial_state, goal, slim, start, deadline, &mut nodes_searched)?;
+        choose_planet_set(initial_state, objective, slim, start, deadline, &mut nodes_searched)?;
 
     // Hill-climb: try dropping each facility / toggle; keep non-worsening moves.
     let mut improved = true;
@@ -647,8 +778,8 @@ pub fn decomp_search(
                 pp.facilities.remove(&ft);
             }
             nodes_searched += 1;
-            let cand = run_plan(initial_state, goal, &trial, slim);
-            if is_better(&cand, &trial, &best, &best_plan) {
+            let cand = run_plan(initial_state, objective, &trial, slim);
+            if is_better(objective, &cand, &trial, &best, &best_plan) {
                 best = cand;
                 best_plan = trial;
                 improved = true;
@@ -668,8 +799,8 @@ pub fn decomp_search(
                 let mut trial = best_plan.clone();
                 toggle.set(trial.planets.get_mut(&h).unwrap(), false);
                 nodes_searched += 1;
-                let cand = run_plan(initial_state, goal, &trial, slim);
-                if is_better(&cand, &trial, &best, &best_plan) {
+                let cand = run_plan(initial_state, objective, &trial, slim);
+                if is_better(objective, &cand, &trial, &best, &best_plan) {
                     best = cand;
                     best_plan = trial;
                     improved = true;
@@ -695,8 +826,8 @@ pub fn decomp_search(
             let pp = trial.planets.get_mut(&h).unwrap();
             pp.free_port = !pp.free_port;
             nodes_searched += 1;
-            let cand = run_plan(initial_state, goal, &trial, slim);
-            if is_better(&cand, &trial, &best, &best_plan) {
+            let cand = run_plan(initial_state, objective, &trial, slim);
+            if is_better(objective, &cand, &trial, &best, &best_plan) {
                 best = cand;
                 best_plan = trial;
                 improved = true;
@@ -720,6 +851,38 @@ pub fn decomp_search(
     })
 }
 
+/// Reach-mode entry: minimize the months needed to satisfy `goal`. Thin wrapper
+/// over [`decomp_search_objective`] preserving the original public signature the
+/// CLI and test suite call.
+pub fn decomp_search(
+    initial_state: &mut State,
+    goal: &Goal,
+    time_limit: u32,
+    slim: bool,
+) -> Option<AStarSearchResult> {
+    decomp_search_objective(initial_state, &Objective::Reach(goal), time_limit, slim)
+}
+
+/// Maximize-mode entry: find the plan whose state has the highest `metric` value
+/// within `horizon_months`, holding the other metrics above `floors`. The
+/// returned [`AStarSearchResult::cost`] is the month at which that best value is
+/// reached; replay the `solution` to read the achieved metric values.
+pub fn decomp_search_maximize(
+    initial_state: &mut State,
+    metric: Metric,
+    floors: &Goal,
+    horizon_months: i32,
+    time_limit: u32,
+    slim: bool,
+) -> Option<AStarSearchResult> {
+    let objective = Objective::Maximize {
+        metric,
+        floors,
+        horizon_months,
+    };
+    decomp_search_objective(initial_state, &objective, time_limit, slim)
+}
+
 /// Joint solve: optimize one combined plan over the whole system on a shared
 /// timeline and budget. Returns a single result (wrapped in a `Vec` for
 /// drop-in symmetry with the other entry points), or empty if unreachable.
@@ -730,6 +893,21 @@ pub fn search_system_decomp(
     slim: bool,
 ) -> Vec<AStarSearchResult> {
     decomp_search(initial_state, goal, time_limit, slim)
+        .into_iter()
+        .collect()
+}
+
+/// Maximize-mode joint solve. Mirrors [`search_system_decomp`] but pushes one
+/// `metric` as high as possible within `horizon_months` subject to `floors`.
+pub fn search_system_maximize(
+    initial_state: &mut State,
+    metric: Metric,
+    floors: &Goal,
+    horizon_months: i32,
+    time_limit: u32,
+    slim: bool,
+) -> Vec<AStarSearchResult> {
+    decomp_search_maximize(initial_state, metric, floors, horizon_months, time_limit, slim)
         .into_iter()
         .collect()
 }

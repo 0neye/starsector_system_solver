@@ -8,6 +8,36 @@
 
 use crate::solver::state::{Action, State};
 
+/// One of the three system metrics the solver can optimize. Used by the
+/// maximize-mode search ([`crate::solver::decomp`]) to name *which* output to
+/// push as high as possible, while the others are held above their floors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Metric {
+    Income,
+    Defense,
+    Stability,
+}
+
+impl Metric {
+    /// The metric's current value in `state`, in its native units (credits/month
+    /// for income, raw average for defense/stability).
+    pub fn value(self, state: &State) -> f64 {
+        match self {
+            Metric::Income => state.balance().net_income(),
+            Metric::Defense => state.system().avg_ground_defense(),
+            Metric::Stability => state.system().avg_stability(),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Metric::Income => "income",
+            Metric::Defense => "defense",
+            Metric::Stability => "stability",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Goal {
     pub(crate) min_net_income: f64,
