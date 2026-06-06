@@ -16,6 +16,29 @@ pub use facility::Facility;
 use rustc_hash::FxHashSet;
 use rustc_hash::FxHasher;
 
+/// The facilities `facility_type` (transitively) upgrades from, nearest first.
+///
+/// Only *facility* requirements are followed (deposit/property requirements such
+/// as "ores" or "farmland" are ignored), so this encodes the upgrade hierarchy:
+/// `star fortress` yields `[battle station, orbital station]` and `high command`
+/// yields `[military base, patrol hq]`. The bottom of a chain (or a facility
+/// with no facility prerequisite) yields an empty vec.
+pub fn upgrade_predecessors(facility_type: FacilityType) -> Vec<FacilityType> {
+    let mut chain = Vec::new();
+    let mut current = facility_type;
+    while let Some(data) = FACILITY_DATA.get(&current) {
+        let Some(prev) = data.requirements.iter().find_map(|req| FacilityType::from_str(req)) else {
+            break;
+        };
+        if chain.contains(&prev) {
+            break; // guard against malformed cyclic data
+        }
+        chain.push(prev);
+        current = prev;
+    }
+    chain
+}
+
 #[derive(Debug, Clone)]
 pub struct Planet {
     name: String,
@@ -168,6 +191,17 @@ impl Planet {
     /// Get a facility by its type, mutable
     pub fn get_facility_mut(&mut self, facility_type: FacilityType) -> Option<&mut Facility> {
         self.facilities.iter_mut().find(|f| f.facility_type() == &facility_type)
+    }
+
+    /// True if the planet has `facility_type`, or a facility that (transitively)
+    /// upgrades from it — e.g. a star fortress satisfies a request for an
+    /// orbital or battle station. Used to avoid treating a tier as still
+    /// "pending" once a higher tier of the same chain has been built.
+    pub fn has_facility_or_upgrade(&self, facility_type: FacilityType) -> bool {
+        self.facilities.iter().any(|f| {
+            *f.facility_type() == facility_type
+                || upgrade_predecessors(*f.facility_type()).contains(&facility_type)
+        })
     }
 
     /// Check if we can add an industry to this planet
@@ -1015,14 +1049,17 @@ impl Planet {
                 .find(|req| self.facilities.iter().any(|f| f.name() == **req))
                 .and_then(|name| self.get_facility(FacilityType::from_str(name).unwrap()));
 
-            // Check if we already have an upgrade of this facility
-            let has_upgrade = self.facilities.iter().any(|f| {
-                if let Some(data) = f.get_data() {
-                    data.requirements.contains(&facility_type.as_str())
-                } else {
-                    false
-                }
-            });
+            // Check if we already have an upgrade of this facility. This must
+            // follow the *whole* chain: a star fortress upgrades from a battle
+            // station which upgrades from an orbital station, so a planet that
+            // already has a star fortress must not be offered either lower tier
+            // again. A one-level check (only "does any facility directly require
+            // this one") misses that, and re-offers the orbital/battle station
+            // as a brand-new facility after the chain has topped out.
+            let has_upgrade = self
+                .facilities
+                .iter()
+                .any(|f| upgrade_predecessors(*f.facility_type()).contains(facility_type));
 
             if has_upgrade {
                 continue;
