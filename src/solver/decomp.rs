@@ -320,6 +320,30 @@ pub(crate) fn simulate_plan(
     score.feasible.then_some((score.log, score.months))
 }
 
+/// Maximize-mode counterpart of [`simulate_plan`]: score a fixed plan and return
+/// the best `metric` value reached within `horizon_months` (with the month it was
+/// reached), or `None` if the plan never satisfies `floors`. `pub(crate)` so the
+/// test suite can assert per-plan properties (e.g. value is monotonic in the
+/// horizon) without going through the heuristic outer search.
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn simulate_plan_maximize(
+    initial_state: &State,
+    metric: Metric,
+    floors: &Goal,
+    horizon_months: i32,
+    plan: &SystemPlan,
+    slim: bool,
+) -> Option<(f64, i32)> {
+    let objective = Objective::Maximize {
+        metric,
+        floors,
+        horizon_months,
+    };
+    let score = run_plan(initial_state, &objective, plan, slim);
+    score.feasible.then_some((score.value, score.months))
+}
+
 /// Forced forward simulation of a fixed plan, returning a full [`PlanScore`].
 ///
 /// Reach and maximize modes share the build-ASAP/wait-to-next-event schedule and
@@ -763,12 +787,16 @@ fn decomp_search_objective(
     while improved && start.elapsed() < deadline {
         improved = false;
 
-        // Per-planet facility removals.
-        let facs: Vec<(u64, FacilityType)> = best_plan
+        // Per-planet facility removals. Sorted so the climb's move order is
+        // deterministic: `planets` and `facilities` are hash collections whose
+        // iteration order is otherwise randomized per run, which would steer the
+        // hill-climb to different local optima on different runs.
+        let mut facs: Vec<(u64, FacilityType)> = best_plan
             .planets
             .iter()
             .flat_map(|(h, p)| p.facilities.iter().map(move |ft| (*h, *ft)))
             .collect();
+        facs.sort_unstable();
         for (h, ft) in facs {
             if start.elapsed() >= deadline {
                 break;
@@ -786,8 +814,9 @@ fn decomp_search_objective(
             }
         }
 
-        // Per-planet toggle removals.
-        let hashes: Vec<u64> = best_plan.planets.keys().copied().collect();
+        // Per-planet toggle removals. Sorted for the same determinism reason.
+        let mut hashes: Vec<u64> = best_plan.planets.keys().copied().collect();
+        hashes.sort_unstable();
         for h in hashes {
             for toggle in Toggle::ALL {
                 if start.elapsed() >= deadline {
@@ -813,7 +842,8 @@ fn decomp_search_objective(
         // floor) needs to turn it back *on* where the extra income shortens the
         // makespan without breaking the floor. Try flipping it to the opposite
         // of its current value on each planet.
-        let hashes: Vec<u64> = best_plan.planets.keys().copied().collect();
+        let mut hashes: Vec<u64> = best_plan.planets.keys().copied().collect();
+        hashes.sort_unstable();
         for h in hashes {
             if start.elapsed() >= deadline {
                 break;

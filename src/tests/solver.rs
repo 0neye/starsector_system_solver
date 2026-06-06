@@ -3,7 +3,9 @@
 
 use crate::constants::FacilityType;
 use crate::planet::Planet;
-use crate::solver::decomp::{decomp_search, decomp_search_maximize, simulate_plan, SystemPlan};
+use crate::solver::decomp::{
+    decomp_search, decomp_search_maximize, simulate_plan, simulate_plan_maximize, SystemPlan,
+};
 use crate::solver::goal::{Goal, Metric};
 use crate::solver::state::{get_action_sequence_hash, Action, State};
 use crate::system::System;
@@ -253,35 +255,28 @@ fn decomp_maximize_income_holds_stability_floor() {
     );
 }
 
-/// A longer horizon can only help: the best income reachable within 120 months
-/// must be at least the best reachable within 12 (a superset of instants over
-/// the same plan space).
+/// For a *fixed plan*, a longer horizon can only help: the best income reachable
+/// within 120 months is a max over a superset of the instants available within
+/// 12, so it must be at least as high. (This monotonicity holds per plan, not
+/// across the heuristic outer search, which may settle on a different local
+/// optimum at a different horizon — hence we drive the inner simulator directly.)
 #[test]
-fn decomp_maximize_longer_horizon_is_no_worse() {
+fn decomp_maximize_longer_horizon_is_no_worse_for_fixed_plan() {
     let (base, hash) = terran_base();
-    let mut short_state = base.clone();
-    short_state.apply_action_raw(&Action::Colonize(hash), false);
-    let mut long_state = short_state.clone();
+    let mut colonized = base.clone();
+    colonized.apply_action_raw(&Action::Colonize(hash), false);
 
+    let plan = SystemPlan::permit_all(&colonized);
     let floors = Goal::new(f64::NEG_INFINITY, None, None);
 
-    let replay_income = |result: Option<crate::solver::AStarSearchResult>| -> f64 {
-        let log = result.expect("income is maximizable with no floor").solution.unwrap();
-        let mut s = base.clone();
-        apply_all(&mut s, &log);
-        s.balance().net_income()
-    };
-
-    let short = replay_income(decomp_search_maximize(
-        &mut short_state, Metric::Income, &floors, 12, 3_000, true,
-    ));
-    let long = replay_income(decomp_search_maximize(
-        &mut long_state, Metric::Income, &floors, 120, 3_000, true,
-    ));
+    let (short, _) = simulate_plan_maximize(&colonized, Metric::Income, &floors, 12, &plan, true)
+        .expect("income is maximizable with no floor");
+    let (long, _) = simulate_plan_maximize(&colonized, Metric::Income, &floors, 120, &plan, true)
+        .expect("income is maximizable with no floor");
 
     assert!(
         long >= short,
-        "a longer horizon must not yield less income: 12mo={short}, 120mo={long}"
+        "a longer horizon must not yield less income for a fixed plan: 12mo={short}, 120mo={long}"
     );
 }
 
