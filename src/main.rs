@@ -7,6 +7,7 @@ mod parser;
 
 use std::error::Error;
 use std::collections::HashMap;
+use clap::Parser;
 use planet::Planet;
 use solver::{search_system_decomp, Goal, Balance, State};
 // Archived solvers, kept reachable for benchmarking/comparison:
@@ -15,12 +16,52 @@ use constants::{ColonyItem, FacilityType};
 use solver::Action;
 use system::System;
 
-fn test_solver(mut state: State, goal: &Goal) {
+#[derive(Parser)]
+#[command(about = "Starsector colony system solver")]
+struct Cli {
+    /// Star system to solve (name as it appears in Planets.csv)
+    #[arg(long, default_value = "Mia Bravos")]
+    system: String,
+
+    /// Minimum net income goal (credits/month)
+    #[arg(long, default_value_t = 200_000.0)]
+    income: f64,
+
+    /// Minimum average stability goal
+    #[arg(long)]
+    stability: Option<i32>,
+
+    /// Minimum average ground defense goal
+    #[arg(long)]
+    defense: Option<f64>,
+
+    /// Starting credits
+    #[arg(long, default_value_t = 5_000_000.0)]
+    credits: f64,
+
+    /// Starting story points
+    #[arg(long, default_value_t = 5)]
+    story_points: u32,
+
+    /// Starting alpha cores
+    #[arg(long, default_value_t = 1)]
+    alpha_cores: u32,
+
+    /// Colony item to start with (repeatable, e.g. --item "corrupted nanoforge")
+    #[arg(long = "item")]
+    items: Vec<ColonyItem>,
+
+    /// Solver time budget in milliseconds
+    #[arg(long, default_value_t = 25_000)]
+    time_limit: u32,
+}
+
+fn test_solver(mut state: State, goal: &Goal, time_limit: u32) {
     println!("\nStarting solver test...");
     println!("Initial state score: {}", state.score() as i32);
 
     // Default solver: the joint two-level decomposition (shared timeline).
-    let results = search_system_decomp(&mut state, goal, 25000, true);
+    let results = search_system_decomp(&mut state, goal, time_limit, true);
 
     if results.is_empty() {
         println!("No solution found within time limit.");
@@ -187,15 +228,10 @@ fn verify_decomp(systems: &HashMap<String, System>) {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    println!("Loading game data...");
-
-    let systems = parser::load_game_data(
-        "Planets.csv",
-        "Infrastructure.csv"
-    )?;
-
-    // A/B comparison mode: SYSTEM_SOLVER_AB=1 (optional SYSTEM_SOLVER_AB_MS budget).
+    // Special env-var modes bypass normal CLI parsing.
     if std::env::var_os("SYSTEM_SOLVER_AB").is_some() {
+        println!("Loading game data...");
+        let systems = parser::load_game_data("Planets.csv", "Infrastructure.csv")?;
         let budget_ms = std::env::var("SYSTEM_SOLVER_AB_MS")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
@@ -205,43 +241,46 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if std::env::var_os("SYSTEM_SOLVER_VERIFY").is_some() {
+        println!("Loading game data...");
+        let systems = parser::load_game_data("Planets.csv", "Infrastructure.csv")?;
         verify_decomp(&systems);
         return Ok(());
     }
 
-    // Create a test case with a single system
-    let mut test_system = systems.get("Mia Bravos").unwrap().clone();
+    let cli = Cli::parse();
 
-    // Reduce the system to one planet (Terran 1)
-    // test_system.remove_planet_by_name("GasGiant 1");
-    // test_system.remove_planet_by_name("Barren 1");
-    
-    // Create initial balance with more resources
-    let mut initial_balance = Balance::new(
-        5000000.0,
-        5,
-        1,
-    );
-    
-    // Add more colony items
-    let mut colony_items = HashMap::new();
-    colony_items.insert(ColonyItem::CorruptedNanoforge, 1);
-    colony_items.insert(ColonyItem::SoilNanites, 1);
-    for (item, count) in colony_items {
-        for _ in 0..count {
-            initial_balance.add_colony_item(item);
-        }
+    println!("Loading game data...");
+    let systems = parser::load_game_data("Planets.csv", "Infrastructure.csv")?;
+
+    let test_system = systems
+        .get(&cli.system)
+        .unwrap_or_else(|| {
+            let mut names: Vec<&String> = systems.keys().collect();
+            names.sort();
+            eprintln!("error: system \"{}\" not found. Available systems:", cli.system);
+            for n in &names {
+                eprintln!("  {n}");
+            }
+            std::process::exit(1);
+        })
+        .clone();
+
+    let mut initial_balance = Balance::new(cli.credits, cli.story_points, cli.alpha_cores);
+    for item in cli.items {
+        initial_balance.add_colony_item(item);
     }
-    
-    // Create initial state
-    let mut state = State::new(initial_balance, test_system);
-    
-    // Create goal
-    let goal = Goal::new(200000.0, None, Some(8));
 
-    
-    // Run solver test
-    test_solver(state, &goal);
+    let state = State::new(initial_balance, test_system);
+    let goal = Goal::new(cli.income, cli.defense, cli.stability);
+
+    println!(
+        "Goal: income >= {:.0}{}{}",
+        cli.income,
+        cli.stability.map_or(String::new(), |s| format!(", stability >= {s}")),
+        cli.defense.map_or(String::new(), |d| format!(", defense >= {d}")),
+    );
+
+    test_solver(state, &goal, cli.time_limit);
     return Ok(());
 
     // Test growth update

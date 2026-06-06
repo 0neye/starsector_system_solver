@@ -305,6 +305,23 @@ impl ColonyItem {
         }
     }
 
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::SoilNanites => "soil nanites",
+            Self::MantleBore => "mantle bore",
+            Self::BiofactoryEmbryo => "biofactory embryo",
+            Self::CatalyticCore => "catalytic core",
+            Self::DroneReplicator => "drone replicator",
+            Self::CorruptedNanoforge => "corrupted nanoforge",
+            Self::PristineNanoforge => "pristine nanoforge",
+            Self::CryoarithmeticEngine => "cryoarithmetic engine",
+            Self::DealmakerHolosuite => "dealmaker holosuite",
+            Self::FullereneSpool => "fullerene spool",
+            Self::PlasmaDynamo => "plasma dynamo",
+            Self::SynchrotronCore => "synchrotron core",
+        }
+    }
+
     pub fn all() -> Vec<ColonyItem> {
         vec![
             ColonyItem::SoilNanites,
@@ -320,6 +337,33 @@ impl ColonyItem {
             ColonyItem::PlasmaDynamo,
             ColonyItem::SynchrotronCore,
         ]
+    }
+}
+
+impl std::str::FromStr for ColonyItem {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let lower = s.to_ascii_lowercase();
+        match lower.trim() {
+            "soil nanites" => Ok(Self::SoilNanites),
+            "mantle bore" => Ok(Self::MantleBore),
+            "biofactory embryo" => Ok(Self::BiofactoryEmbryo),
+            "catalytic core" => Ok(Self::CatalyticCore),
+            "drone replicator" => Ok(Self::DroneReplicator),
+            "corrupted nanoforge" => Ok(Self::CorruptedNanoforge),
+            "pristine nanoforge" => Ok(Self::PristineNanoforge),
+            "cryoarithmetic engine" => Ok(Self::CryoarithmeticEngine),
+            "dealmaker holosuite" => Ok(Self::DealmakerHolosuite),
+            "fullerene spool" => Ok(Self::FullereneSpool),
+            "plasma dynamo" => Ok(Self::PlasmaDynamo),
+            "synchrotron core" => Ok(Self::SynchrotronCore),
+            _ => Err(format!(
+                "unknown colony item: \"{s}\". Valid: soil nanites, mantle bore, \
+                biofactory embryo, catalytic core, drone replicator, corrupted nanoforge, \
+                pristine nanoforge, cryoarithmetic engine, dealmaker holosuite, \
+                fullerene spool, plasma dynamo, synchrotron core"
+            )),
+        }
     }
 }
 
