@@ -8,7 +8,9 @@ mod parser;
 use std::error::Error;
 use std::collections::HashMap;
 use planet::Planet;
-use solver::{astar::{search_all_planets, Goal}, search, simulate_linear, Balance, SearchInfo, State};
+use solver::{search_system_decomp, Goal, Balance, State};
+// Archived solvers, kept reachable for benchmarking/comparison:
+use solver::archive::{astar::search_all_planets, split::search_all_planets_decomp};
 use constants::{ColonyItem, FacilityType};
 use solver::Action;
 use system::System;
@@ -16,13 +18,10 @@ use system::System;
 fn test_solver(mut state: State, goal: &Goal) {
     println!("\nStarting solver test...");
     println!("Initial state score: {}", state.score() as i32);
-    
-    // Run simulation for 10 turns
-    // simulate_linear(&state, 15);
 
-    // println!("{:#?}", search(&state, 25000, true).action_log);
-    let results = search_all_planets(&mut state, goal, 25000, true);
-    
+    // Default solver: the joint two-level decomposition (shared timeline).
+    let results = search_system_decomp(&mut state, goal, 25000, true);
+
     if results.is_empty() {
         println!("No solution found within time limit.");
     } else {
@@ -33,33 +32,201 @@ fn test_solver(mut state: State, goal: &Goal) {
     }
 }
 
+/// Build the standard A/B starting balance: generous credits plus a couple of
+/// colony items, matching the default `main` setup so the comparison is
+/// representative.
+fn ab_balance() -> Balance {
+    let mut balance = Balance::new(5_000_000.0, 5, 1);
+    balance.add_colony_item(ColonyItem::CorruptedNanoforge);
+    balance.add_colony_item(ColonyItem::SoilNanites);
+    balance
+}
+
+/// Summarize a solver's per-planet results into (solved, best_months, all_costs).
+fn summarize(results: &[solver::AStarSearchResult]) -> (usize, Option<i32>, Vec<i32>) {
+    let costs: Vec<i32> = results.iter().map(|r| r.cost).collect();
+    let best = costs.iter().copied().min();
+    (results.len(), best, costs)
+}
+
+/// Run both solvers over every loaded system at an equal per-planet time budget
+/// and print a side-by-side comparison. Triggered by `SYSTEM_SOLVER_AB=1`.
+fn run_ab(systems: &HashMap<String, System>, budget_ms: u32) {
+    use std::time::Instant;
+
+    // A few goals spanning easy -> hard so we can see where each solver wins.
+    let goals = [
+        ("income>=10k, stab>=6", Goal::new(10_000.0, None, Some(6))),
+        ("income>=40k, stab>=8", Goal::new(40_000.0, None, Some(8))),
+        ("income>=80k, stab>=8", Goal::new(80_000.0, None, Some(8))),
+    ];
+
+    let mut names: Vec<&String> = systems.keys().collect();
+    names.sort();
+
+    println!("\n================ A/B: IDA* vs two-level decomposition ================");
+    println!("per-planet budget: {} ms\n", budget_ms);
+
+    for name in names {
+        let system = &systems[name];
+        let planet_count = system.planets().len();
+        println!("### {name} ({planet_count} planets)");
+
+        for (label, goal) in &goals {
+            // Fresh state per solver so neither sees the other's mutations.
+            let mut ida_state = State::new(ab_balance(), system.clone());
+            let mut dec_state = State::new(ab_balance(), system.clone());
+
+            let t0 = Instant::now();
+            let ida = search_all_planets(&mut ida_state, goal, budget_ms, true);
+            let ida_ms = t0.elapsed().as_millis();
+
+            let t1 = Instant::now();
+            let dec = search_all_planets_decomp(&mut dec_state, goal, budget_ms, true);
+            let dec_ms = t1.elapsed().as_millis();
+
+            let mut joint_state = State::new(ab_balance(), system.clone());
+            let t2 = Instant::now();
+            let joint = search_system_decomp(&mut joint_state, goal, budget_ms, true);
+            let joint_ms = t2.elapsed().as_millis();
+
+            let (ida_solved, ida_best, ida_costs) = summarize(&ida);
+            let (dec_solved, dec_best, dec_costs) = summarize(&dec);
+            let joint_cost = joint.first().map(|r| r.cost);
+
+            let fmt_best = |b: Option<i32>| b.map_or("--".to_string(), |m| format!("{m}mo"));
+
+            // NOTE: IDA* and per-planet decomp force *each* planet to meet the
+            // threshold alone; joint solves the true system-wide goal (totals
+            // across planets), so its cost is not directly comparable.
+            println!("  goal: {label}");
+            println!(
+                "    IDA*         : solved {ida_solved}/{planet_count}  best {:>5}  {:>7}ms  costs {:?}",
+                fmt_best(ida_best),
+                ida_ms,
+                ida_costs
+            );
+            println!(
+                "    decomp/split : solved {dec_solved}/{planet_count}  best {:>5}  {:>7}ms  costs {:?}",
+                fmt_best(dec_best),
+                dec_ms,
+                dec_costs
+            );
+            println!(
+                "    decomp/joint : {}  {:>7}ms  (system-wide goal)",
+                joint_cost.map_or("unsolved".to_string(), |c| format!("solved cost {c}mo")),
+                joint_ms,
+            );
+        }
+        println!();
+    }
+    println!("=====================================================================\n");
+}
+
+/// Independently verify the joint decomp solver: solve the whole system, then
+/// replay the returned log on a *fresh* copy of the full system and report the
+/// recomputed net income, stability, unfinished facilities, and — crucially —
+/// whether any one-off resource (alpha cores / story points) went negative,
+/// which would mean a shared resource was double-spent. Trusts nothing about the
+/// simulator's incremental bookkeeping.
+fn verify_decomp(systems: &HashMap<String, System>) {
+    let goal = Goal::new(40_000.0, None, Some(6));
+    let mut names: Vec<&String> = systems.keys().collect();
+    names.sort();
+
+    println!("\n--------- joint decomp verification (goal income>=40k, stab>=6) ---------");
+    for name in names {
+        let mut state = State::new(ab_balance(), systems[name].clone());
+        let planet_count = state.system().planets().len();
+
+        let Some(result) = solver::decomp::decomp_search(&mut state, &goal, 50000, true) else {
+            println!("### {name}: no solution");
+            continue;
+        };
+        let log = result.solution.unwrap();
+
+        // Replay from scratch on the full system.
+        let mut replay = State::new(ab_balance(), systems[name].clone());
+        for a in &log {
+            replay.apply_action_raw(a, false);
+        }
+
+        let unfinished = replay
+            .system()
+            .planets()
+            .values()
+            .flat_map(|p| p.facilities().iter())
+            .filter(|f| f.remaining_build_days() > 0)
+            .count();
+        let colonized = replay
+            .system()
+            .planets()
+            .values()
+            .filter(|p| p.has_colony())
+            .count();
+
+        println!(
+            "### {name} ({planet_count} planets): cost={}mo  colonized={colonized}",
+            result.cost
+        );
+        println!(
+            "    replay net_income={:.0}  stab={:.1}  unfinished_facilities={}  satisfied={}",
+            replay.balance().net_income(),
+            replay.system().avg_stability(),
+            unfinished,
+            goal.is_satisfied_quiet(&replay),
+        );
+        println!(
+            "    remaining resources: credits={:.0}  story_points={}  alpha_cores={}  (none should be impossible)",
+            replay.balance().credits(),
+            replay.balance().story_points(),
+            replay.balance().alpha_cores(),
+        );
+    }
+    println!("------------------------------------------------------------------------\n");
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     println!("Loading game data...");
-    
+
     let systems = parser::load_game_data(
         "Planets.csv",
         "Infrastructure.csv"
     )?;
-    
+
+    // A/B comparison mode: SYSTEM_SOLVER_AB=1 (optional SYSTEM_SOLVER_AB_MS budget).
+    if std::env::var_os("SYSTEM_SOLVER_AB").is_some() {
+        let budget_ms = std::env::var("SYSTEM_SOLVER_AB_MS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(8_000);
+        run_ab(&systems, budget_ms);
+        return Ok(());
+    }
+
+    if std::env::var_os("SYSTEM_SOLVER_VERIFY").is_some() {
+        verify_decomp(&systems);
+        return Ok(());
+    }
+
     // Create a test case with a single system
     let mut test_system = systems.get("Mia Bravos").unwrap().clone();
 
     // Reduce the system to one planet (Terran 1)
-    test_system.remove_planet_by_name("GasGiant 1");
-    test_system.remove_planet_by_name("Barren 1");
+    // test_system.remove_planet_by_name("GasGiant 1");
+    // test_system.remove_planet_by_name("Barren 1");
     
     // Create initial balance with more resources
     let mut initial_balance = Balance::new(
-        10000000.0,
+        5000000.0,
         5,
-        5,
+        1,
     );
     
     // Add more colony items
     let mut colony_items = HashMap::new();
-    colony_items.insert(ColonyItem::CorruptedNanoforge, 2);
-    colony_items.insert(ColonyItem::SoilNanites, 2);
-    colony_items.insert(ColonyItem::BiofactoryEmbryo, 1);
+    colony_items.insert(ColonyItem::CorruptedNanoforge, 1);
+    colony_items.insert(ColonyItem::SoilNanites, 1);
     for (item, count) in colony_items {
         for _ in 0..count {
             initial_balance.add_colony_item(item);
@@ -70,7 +237,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut state = State::new(initial_balance, test_system);
     
     // Create goal
-    let goal = Goal::new(40000.0, None, Some(8));
+    let goal = Goal::new(200000.0, None, Some(8));
 
     
     // Run solver test

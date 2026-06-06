@@ -1,60 +1,25 @@
-use std::collections::{BinaryHeap, HashMap, HashSet};
-use std::cmp::Ordering;
+//! Archived IDA* solver (superseded by the joint decomposition solver in
+//! [`crate::solver::decomp`]). Kept for comparison/benchmarking; not on the
+//! default path. The `Goal` and `AStarSearchResult` types it uses now live in
+//! [`crate::solver::goal`]; the IDA*-specific admissible-bound methods are
+//! attached here as a separate `impl Goal` block.
+
+use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 use std::time::{Duration, Instant};
 use nohash_hasher::{BuildNoHashHasher, NoHashHasher};
 use rayon::prelude::*;
 use crate::constants::{AdminType, FacilityType, FACILITY_DATA};
-use crate::solver::{Action, Balance, SearchInfo, State, SearchResult, state::get_action_sequence_hash};
-use crate::planet::{Planet, Facility};
+use crate::solver::goal::{AStarSearchResult, Goal};
+use crate::solver::state::{Action, State};
+use crate::planet::Facility;
 use crate::system::System;
 
 fn days_to_months_ceil(days: u32) -> i32 {
     ((days + 29) / 30) as i32
 }
 
-#[derive(Debug, Clone)]
-pub struct Goal {
-    min_net_income: f64,
-    min_ground_defense: Option<f64>,
-    min_stability: Option<i32>,
-}
-
 impl Goal {
-    pub fn new(min_net_income: f64, min_ground_defense: Option<f64>, min_stability: Option<i32>) -> Self {
-        Self {
-            min_net_income,
-            min_ground_defense,
-            min_stability,
-        }
-    }
-
-    pub fn is_satisfied(&self, state: &State) -> bool {
-        if state.balance().net_income() < self.min_net_income {
-            return false;
-        }
-
-        let system = state.system();
-
-        if let Some(min_defense) = self.min_ground_defense {
-            if system.avg_ground_defense() < min_defense {
-                return false;
-            }
-        }
-
-        if let Some(min_stability) = self.min_stability {
-            if system.avg_stability() < min_stability as f64 {
-                return false;
-            }
-        }
-
-        println!("\nSatisfied with balance: {:?}", state.balance());
-        println!("Satisfied with ground defense: {}", system.avg_ground_defense());
-        println!("Satisfied with stability: {}", system.avg_stability());
-
-        true
-    }
-
     /// Returns an admissible lower-bound on the number of months
     /// needed for `state` to satisfy the goal, using the precomputed
     /// facility data in `precompute_map`.
@@ -380,15 +345,6 @@ pub fn precompute_facility_candidates(state: &State)
     result
 }
 
-
-#[derive(Debug, Clone)]
-pub struct AStarSearchResult {
-    pub solution: Option<Vec<Action>>,
-    pub cost: i32,
-    pub cutoff_occurred: bool,
-    pub nodes_searched: u32,
-    pub nodes_pruned_by_bound: u32,
-}
 
 fn action_cost(action: &Action) -> i32 {
     match action {
