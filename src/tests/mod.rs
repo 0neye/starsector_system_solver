@@ -12,6 +12,7 @@
 //! - [`facility`] — facility construction/upgrade bookkeeping
 //! - [`solver`]   — action-sequence hashing and apply/undo round-trips
 //! - [`system`]   — system-wide aggregates (averages)
+//! - [`parser`]   — CSV loading (e.g. infrastructure-type spellings)
 //!
 //! ## Adding a test
 //! 1. Reuse a builder from [`support`] (`PlanetBuilder`, `colonized_state`, …);
@@ -25,6 +26,7 @@
 mod support;
 
 mod facility;
+mod parser;
 mod planet;
 mod solver;
 mod system;
