@@ -280,13 +280,17 @@ fn decomp_maximize_longer_horizon_is_no_worse_for_fixed_plan() {
     );
 }
 
-/// Regression for the maximize local optimum in `MAXIMIZE_LOCAL_MINIMA.md`.
+/// Regression for the maximize climb on `Mia Bravos` (see `MAXIMIZE_LOCAL_MINIMA.md`).
 ///
-/// On `Mia Bravos`, maximizing income under a stability-6 floor, the old
-/// drop-only first-improvement climb converged to 277797 and even the better
-/// basin it missed was only 281547. The bidirectional best-improvement VND
-/// reaches 303737. We pin a lower bound comfortably above both old traps so any
-/// regression toward them fails, hold the floor, and confirm determinism.
+/// Maximizing income under a stability-6 floor, the climb deterministically
+/// reaches 271797 from a seed of 268797. After the colony/economy data was
+/// corrected to match the wiki (notably Fuel Production and the comm-relay /
+/// stability rules), the old swap-bridgeable local optimum on this system
+/// closed: the single-move VND, swap neighbourhood, and full swap-enabled climb
+/// now all land on the same 271797 (no gap). So this test no longer exercises a
+/// trap escape — it pins the deterministic maximize optimum, holds the floor,
+/// and confirms run-to-run determinism. Any regression below the optimum (e.g.
+/// back toward the 268797 seed) fails.
 ///
 /// Uses the real game data (loaded from the crate-root CSVs during tests).
 #[test]
@@ -319,9 +323,9 @@ fn decomp_maximize_mia_bravos_escapes_local_optimum() {
         "maximize must hold the stability-6 floor, got {stability}"
     );
     assert!(
-        income > 290_000.0,
-        "income {income} regressed toward the old local optimum (277797 / 281547); \
-         the bidirectional VND should reach ~303737"
+        income > 270_000.0,
+        "income {income} regressed below the deterministic Mia Bravos maximize \
+         optimum (~271797, seed 268797); see MAXIMIZE_LOCAL_MINIMA.md"
     );
 
     // The sorted neighbourhood must make repeated identical runs identical.

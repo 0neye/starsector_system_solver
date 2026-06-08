@@ -426,7 +426,8 @@ impl Planet {
             total -= 2;
         }
 
-        total
+        // Stability is clamped to 0..=10 in-game.
+        total.clamp(0, 10)
     }
 
     pub fn ground_defense_strength(&self) -> f64 {

@@ -511,7 +511,9 @@ lazy_static! {
         map.insert(ColonyItem::CryoarithmeticEngine, ColonyItemEffect {
             compatible_facilities: vec![FacilityType::PatrolHQ, FacilityType::MilitaryBase, FacilityType::HighCommand],
             production_bonuses: Vec::new(),
-            defense_multiplier: 1.0,  // +100% defense bonus (additive with other bonuses)
+            // Wiki: boosts launched-fleet SIZE (+25% hot / +100% extreme heat), NOT ground
+            // defense. Fleet size is not a solver metric, so this item has no modeled effect.
+            defense_multiplier: 0.0,
             accessibility_bonus: 0.0,
             income_multiplier: 0.0,
         });
@@ -710,7 +712,7 @@ lazy_static! {
         map.insert(FacilityType::LightIndustry, FacilityData {
             name: "light industry",
             build_cost: 225000,
-            build_time: 90,
+            build_time: 60,
             base_upkeep_formula: |size| (size as f64 - 2.0) * 4000.0,
             accessibility_bonus: 0.0,
             stability_bonus: 0,
@@ -757,19 +759,18 @@ lazy_static! {
         // Fuel Production
         map.insert(FacilityType::FuelProduction, FacilityData {
             name: "fuel production",
-            build_cost: 225000,
-            build_time: 90,
-            base_upkeep_formula: |size| (size as f64 - 2.0) * 3000.0,
+            build_cost: 450000,
+            build_time: 120,
+            base_upkeep_formula: |size| (size as f64 - 2.0) * 5000.0,
             accessibility_bonus: 0.0,
             stability_bonus: 0,
             defense_multiplier: 1.0,
             income_multiplier: 1.0,
             production: vec![
-                ResourceAmount { resource: Resource::Fuel, amount_formula: |size| size as f64 },
+                ResourceAmount { resource: Resource::Fuel, amount_formula: |size| (size as f64 - 2.0) },
             ],
             demands: vec![
                 ResourceAmount { resource: Resource::Volatiles, amount_formula: |size| size as f64 },
-                ResourceAmount { resource: Resource::HeavyMachinery, amount_formula: |size| (size as f64 - 2.0) },
             ],
             special_effects: vec![],
             requirements: vec![],
@@ -1102,10 +1103,9 @@ lazy_static! {
             ..Default::default()
         });
 
-        // Population & Infrastructure
+        // Population & Infrastructure (wiki: improvement grants +1 stability only)
         map.insert(FacilityType::Population, FacilityEffects {
             stability_bonus: 1,
-            production_bonus: 1.0,
             ..Default::default()
         });
 
@@ -1120,9 +1120,9 @@ lazy_static! {
             });
         }
 
-        // Farming (special case with +2 production)
+        // Farming (story-point improvement: +1 production, per wiki)
         map.insert(FacilityType::Farming, FacilityEffects {
-            production_bonus: 2.0,
+            production_bonus: 1.0,
             ..Default::default()
         });
 

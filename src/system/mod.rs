@@ -49,9 +49,21 @@ impl System {
         })
     }
 
+    /// System-wide stability from comm relay status, per wiki:
+    /// no relay = -1, makeshift relay = +1, Domain-era relay = +2.
+    pub fn comm_relay_stability_bonus(&self) -> i32 {
+        let mut bonus = -1; // no comm relay
+        for infra in self.infrastructure.values() {
+            if let Infrastructure::CommRelay { domain } = infra {
+                bonus = bonus.max(if *domain { 2 } else { 1 });
+            }
+        }
+        bonus
+    }
+
     pub fn update_infrastructure_bonuses(&mut self) {
-        let stability_bonus = if self.has_comm_relay() { 2 } else { 0 };
-        
+        let stability_bonus = self.comm_relay_stability_bonus();
+
         for planet in self.planets.values_mut() {
             planet.set_system_stability_bonus(stability_bonus);
         }
