@@ -1,0 +1,321 @@
+use crate::solver::decomp::search_system_maximize;
+use crate::solver::goal::{Goal, Metric};
+use crate::solver::state::{Action, Balance, State};
+use crate::system::System;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrontierKind {
+    Stability,
+    Defense,
+}
+
+impl FrontierKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FrontierKind::Stability => "stability",
+            FrontierKind::Defense => "defense",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ParetoPoint {
+    pub kind: FrontierKind,
+    pub floor: f64,
+    pub income: f64,
+    pub stability: f64,
+    pub defense: f64,
+    pub months: i32,
+    pub actions: Vec<Action>,
+}
+
+impl ParetoPoint {
+    fn frontier_x(&self) -> f64 {
+        match self.kind {
+            FrontierKind::Stability => self.stability,
+            FrontierKind::Defense => self.defense,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ParetoSolve {
+    pub stability_frontier: Vec<ParetoPoint>,
+    pub defense_frontier: Vec<ParetoPoint>,
+    pub stability_auc: f64,
+    pub defense_auc: f64,
+    pub score: f64,
+    pub recommendation: Option<ParetoPoint>,
+}
+
+const STABILITY_FLOORS: [i32; 6] = [5, 6, 7, 8, 9, 10];
+const DEFENSE_FLOORS: [f64; 5] = [0.0, 250.0, 500.0, 750.0, 1000.0];
+const SCORE_INCOME_UNIT: f64 = 1_000.0;
+
+pub fn solve_pareto(
+    system: &System,
+    balance: &Balance,
+    horizon: i32,
+    time_limit: u32,
+) -> ParetoSolve {
+    let mut samples = Vec::new();
+
+    for stability in STABILITY_FLOORS {
+        let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stability));
+        if let Some(point) = measure_point(
+            system,
+            balance,
+            FrontierKind::Stability,
+            stability as f64,
+            &floors,
+            horizon,
+            time_limit,
+        ) {
+            samples.push(point);
+        }
+    }
+
+    for defense in DEFENSE_FLOORS {
+        let floors = Goal::new(f64::NEG_INFINITY, Some(defense), Some(0));
+        if let Some(point) = measure_point(
+            system,
+            balance,
+            FrontierKind::Defense,
+            defense,
+            &floors,
+            horizon,
+            time_limit,
+        ) {
+            samples.push(point);
+        }
+    }
+
+    let stability_frontier = pareto_frontier(
+        samples
+            .iter()
+            .filter(|p| p.kind == FrontierKind::Stability)
+            .cloned()
+            .collect(),
+    );
+    let defense_frontier = pareto_frontier(
+        samples
+            .iter()
+            .filter(|p| p.kind == FrontierKind::Defense)
+            .cloned()
+            .collect(),
+    );
+
+    let stability_auc = normalized_auc(&stability_frontier, FrontierKind::Stability);
+    let defense_auc = normalized_auc(&defense_frontier, FrontierKind::Defense);
+    let score = ((stability_auc + defense_auc) / 2.0) / SCORE_INCOME_UNIT;
+    let recommendation = recommend_tradeoff(&stability_frontier, &defense_frontier);
+
+    ParetoSolve {
+        stability_frontier,
+        defense_frontier,
+        stability_auc,
+        defense_auc,
+        score,
+        recommendation,
+    }
+}
+
+fn measure_point(
+    system: &System,
+    balance: &Balance,
+    kind: FrontierKind,
+    floor: f64,
+    floors: &Goal,
+    horizon: i32,
+    time_limit: u32,
+) -> Option<ParetoPoint> {
+    let mut state = State::new(balance.clone(), system.clone());
+    let base = state.clone();
+    let result = search_system_maximize(
+        &mut state,
+        Metric::Income,
+        floors,
+        horizon,
+        time_limit,
+        true,
+    )
+    .into_iter()
+    .next()?;
+    let actions = result.solution.unwrap_or_default();
+
+    let mut replay = base;
+    for action in &actions {
+        replay.apply_action_raw(action, false);
+    }
+
+    Some(ParetoPoint {
+        kind,
+        floor,
+        income: replay.balance().net_income(),
+        stability: replay.system().avg_stability(),
+        defense: replay.system().avg_ground_defense(),
+        months: result.cost,
+        actions,
+    })
+}
+
+fn pareto_frontier(points: Vec<ParetoPoint>) -> Vec<ParetoPoint> {
+    let mut frontier: Vec<ParetoPoint> = points
+        .iter()
+        .filter(|candidate| {
+            !points.iter().any(|other| {
+                other.kind == candidate.kind
+                    && other.frontier_x() >= candidate.frontier_x()
+                    && other.income >= candidate.income
+                    && (other.frontier_x() > candidate.frontier_x()
+                        || other.income > candidate.income)
+            })
+        })
+        .cloned()
+        .collect();
+
+    frontier.sort_by(|a, b| {
+        a.frontier_x()
+            .total_cmp(&b.frontier_x())
+            .then_with(|| b.income.total_cmp(&a.income))
+            .then_with(|| a.months.cmp(&b.months))
+    });
+
+    let mut deduped: Vec<ParetoPoint> = Vec::new();
+    for point in frontier {
+        if let Some(last) = deduped.last_mut() {
+            if last.kind == point.kind && last.frontier_x() == point.frontier_x() {
+                if point.income > last.income
+                    || (point.income == last.income && point.months < last.months)
+                {
+                    *last = point;
+                }
+                continue;
+            }
+        }
+        deduped.push(point);
+    }
+
+    deduped
+}
+
+fn normalized_auc(frontier: &[ParetoPoint], kind: FrontierKind) -> f64 {
+    let (min_x, max_x) = frontier_bounds(kind);
+    let span = max_x - min_x;
+    if span <= 0.0 {
+        return 0.0;
+    }
+
+    raw_auc(frontier, min_x, max_x) / span
+}
+
+fn raw_auc(frontier: &[ParetoPoint], min_x: f64, max_x: f64) -> f64 {
+    frontier
+        .windows(2)
+        .map(|pair| {
+            let x0 = pair[0].frontier_x().clamp(min_x, max_x);
+            let x1 = pair[1].frontier_x().clamp(min_x, max_x);
+            let y0 = pair[0].income.max(0.0);
+            let y1 = pair[1].income.max(0.0);
+            (x1 - x0).max(0.0) * (y0 + y1) / 2.0
+        })
+        .sum()
+}
+
+fn frontier_bounds(kind: FrontierKind) -> (f64, f64) {
+    match kind {
+        FrontierKind::Stability => (
+            STABILITY_FLOORS[0] as f64,
+            STABILITY_FLOORS[STABILITY_FLOORS.len() - 1] as f64,
+        ),
+        FrontierKind::Defense => (DEFENSE_FLOORS[0], DEFENSE_FLOORS[DEFENSE_FLOORS.len() - 1]),
+    }
+}
+
+fn recommend_tradeoff(
+    stability_frontier: &[ParetoPoint],
+    defense_frontier: &[ParetoPoint],
+) -> Option<ParetoPoint> {
+    let all: Vec<&ParetoPoint> = stability_frontier
+        .iter()
+        .chain(defense_frontier.iter())
+        .collect();
+
+    let max_income = all
+        .iter()
+        .map(|p| p.income.max(0.0))
+        .fold(0.0_f64, f64::max);
+    let max_stability = all.iter().map(|p| p.stability).fold(0.0_f64, f64::max);
+    let max_defense = all.iter().map(|p| p.defense).fold(0.0_f64, f64::max);
+
+    all.into_iter()
+        .max_by(|a, b| {
+            let score_a = balanced_point_score(a, max_income, max_stability, max_defense);
+            let score_b = balanced_point_score(b, max_income, max_stability, max_defense);
+            score_a
+                .total_cmp(&score_b)
+                .then_with(|| a.income.total_cmp(&b.income))
+                .then_with(|| b.months.cmp(&a.months))
+        })
+        .cloned()
+}
+
+fn balanced_point_score(
+    point: &ParetoPoint,
+    max_income: f64,
+    max_stability: f64,
+    max_defense: f64,
+) -> f64 {
+    let income = normalized(point.income.max(0.0), max_income);
+    let stability = normalized(point.stability, max_stability);
+    let defense = normalized(point.defense, max_defense);
+
+    income * 0.5 + stability * 0.25 + defense * 0.25
+}
+
+fn normalized(value: f64, max: f64) -> f64 {
+    if max <= 0.0 {
+        0.0
+    } else {
+        value / max
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalized_auc, pareto_frontier, raw_auc, FrontierKind, ParetoPoint};
+
+    fn point(x: f64, income: f64) -> ParetoPoint {
+        ParetoPoint {
+            kind: FrontierKind::Stability,
+            floor: x,
+            income,
+            stability: x,
+            defense: 0.0,
+            months: 0,
+            actions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn frontier_removes_dominated_points() {
+        let frontier = pareto_frontier(vec![point(5.0, 100.0), point(6.0, 90.0), point(5.0, 80.0)]);
+        assert_eq!(frontier.len(), 2);
+        assert_eq!(frontier[0].stability, 5.0);
+        assert_eq!(frontier[0].income, 100.0);
+        assert_eq!(frontier[1].stability, 6.0);
+        assert_eq!(frontier[1].income, 90.0);
+    }
+
+    #[test]
+    fn auc_uses_trapezoids() {
+        let frontier = vec![point(5.0, 100.0), point(6.0, 50.0), point(8.0, 25.0)];
+        assert_eq!(raw_auc(&frontier, 5.0, 10.0), 150.0);
+    }
+
+    #[test]
+    fn normalized_auc_divides_by_frontier_domain() {
+        let frontier = vec![point(5.0, 100.0), point(10.0, 50.0)];
+        assert_eq!(normalized_auc(&frontier, FrontierKind::Stability), 75.0);
+    }
+}

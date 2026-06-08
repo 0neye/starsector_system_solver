@@ -9,7 +9,7 @@ use std::error::Error;
 use std::collections::HashMap;
 use clap::Parser;
 use planet::Planet;
-use solver::{diagnose_maximize_gap, search_system_decomp, search_system_maximize, Goal, Metric, Balance, State};
+use solver::{diagnose_maximize_gap, search_system_decomp, search_system_maximize, solve_pareto, Goal, Metric, Balance, State};
 // Archived solvers, kept reachable for benchmarking/comparison:
 use solver::archive::{astar::search_all_planets, split::search_all_planets_decomp};
 use constants::{ColonyItem, FacilityType};
@@ -35,6 +35,10 @@ struct Cli {
     /// Minimum average ground defense goal
     #[arg(long)]
     defense: Option<f64>,
+
+    /// Score the system with Pareto frontiers and recommend a balanced plan.
+    #[arg(long)]
+    solve: bool,
 
     /// Starting credits
     #[arg(long, default_value_t = 5_000_000.0)]
@@ -122,6 +126,68 @@ fn test_solver(mut state: State, goal: &Goal, time_limit: u32) {
         for (i, result) in results.iter().enumerate() {
             println!("Result {}:\n{:#?}", i + 1, result);
         }
+    }
+}
+
+fn print_action_log(actions: &[Action]) {
+    for (i, action) in actions.iter().enumerate() {
+        println!("    {:>2}. {:?}", i + 1, action);
+    }
+}
+
+fn run_solve(system_name: &str, system: &System, balance: &Balance, horizon: i32, time_limit: u32) {
+    println!("Pareto solve for {system_name} (horizon {horizon} months)");
+    println!(
+        "Starting balance: credits={:.0}, story_points={}, alpha_cores={}",
+        balance.credits(),
+        balance.story_points(),
+        balance.alpha_cores(),
+    );
+
+    let solution = solve_pareto(system, balance, horizon, time_limit);
+
+    println!("\nSystem score: {:.1}", solution.score);
+    println!("  stability normalized AUC: {:.0} credits/month", solution.stability_auc);
+    println!("  defense normalized AUC:   {:.0} credits/month", solution.defense_auc);
+
+    println!("\nStability frontier:");
+    for point in &solution.stability_frontier {
+        println!(
+            "  floor {:>4.0} -> income={:>9.0}, stability={:>4.1}, defense={:>7.1}, month={}",
+            point.floor,
+            point.income,
+            point.stability,
+            point.defense,
+            point.months,
+        );
+    }
+
+    println!("\nDefense frontier:");
+    for point in &solution.defense_frontier {
+        println!(
+            "  floor {:>4.0} -> income={:>9.0}, stability={:>4.1}, defense={:>7.1}, month={}",
+            point.floor,
+            point.income,
+            point.stability,
+            point.defense,
+            point.months,
+        );
+    }
+
+    if let Some(point) = solution.recommendation {
+        println!(
+            "\nRecommended tradeoff: {} floor {:.0} -> income={:.0}, stability={:.1}, defense={:.1} at month {}",
+            point.kind.as_str(),
+            point.floor,
+            point.income,
+            point.stability,
+            point.defense,
+            point.months,
+        );
+        println!("Action sequence:");
+        print_action_log(&point.actions);
+    } else {
+        println!("\nNo feasible Pareto point found within the time budget.");
     }
 }
 
@@ -317,6 +383,81 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
+    // Pareto-frontier sweep used by plot_pareto_frontiers.py. For each system,
+    // maximize income (slim/CLI path) while sweeping the stability floor (5..=10)
+    // and the ground-defense floor, printing CSV rows of the achieved
+    // (income, stability, defense). Triggered by SYSTEM_SOLVER_PARETO=1.
+    //
+    // Configurable via env vars:
+    //   SYSTEM_SOLVER_PARETO_HORIZON   — game-month horizon (default 120)
+    //   SYSTEM_SOLVER_PARETO_MS        — solver time budget ms (default 5000)
+    //   SYSTEM_SOLVER_PARETO_CREDITS   — starting credits (default 5_000_000)
+    //   SYSTEM_SOLVER_PARETO_SP        — starting story points (default 5)
+    //   SYSTEM_SOLVER_PARETO_ALPHA     — starting alpha cores (default 1)
+    //   SYSTEM_SOLVER_PARETO_ALL_ITEMS — add N of every colony item (default 0)
+    if std::env::var_os("SYSTEM_SOLVER_PARETO").is_some() {
+        let systems = parser::load_game_data("Planets.csv", "Infrastructure.csv")?;
+        let horizon: i32 = std::env::var("SYSTEM_SOLVER_PARETO_HORIZON")
+            .ok().and_then(|v| v.parse().ok()).unwrap_or(120);
+        let time_limit: u32 = std::env::var("SYSTEM_SOLVER_PARETO_MS")
+            .ok().and_then(|v| v.parse().ok()).unwrap_or(5_000);
+        let credits: f64 = std::env::var("SYSTEM_SOLVER_PARETO_CREDITS")
+            .ok().and_then(|v| v.parse().ok()).unwrap_or(5_000_000.0);
+        let sp: u32 = std::env::var("SYSTEM_SOLVER_PARETO_SP")
+            .ok().and_then(|v| v.parse().ok()).unwrap_or(5);
+        let alpha: u32 = std::env::var("SYSTEM_SOLVER_PARETO_ALPHA")
+            .ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+        let all_items_count: u32 = std::env::var("SYSTEM_SOLVER_PARETO_ALL_ITEMS")
+            .ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+
+        let mut base_balance = Balance::new(credits, sp, alpha);
+        if all_items_count > 0 {
+            for item in ColonyItem::all() {
+                for _ in 0..all_items_count {
+                    base_balance.add_colony_item(item);
+                }
+            }
+        }
+
+        let mut names: Vec<&String> = systems.keys().collect();
+        names.sort();
+
+        let measure = |system: &System, floors: &Goal| -> Option<(f64, f64, f64)> {
+            let mut state = State::new(base_balance.clone(), system.clone());
+            let base = state.clone();
+            let results =
+                search_system_maximize(&mut state, Metric::Income, floors, horizon, time_limit, true);
+            let result = results.into_iter().next()?;
+            let mut replay = base;
+            for a in result.solution.iter().flatten() {
+                replay.apply_action_raw(a, false);
+            }
+            Some((
+                replay.balance().net_income(),
+                replay.system().avg_stability(),
+                replay.system().avg_ground_defense(),
+            ))
+        };
+
+        println!("system,kind,floor,income,stability,defense");
+        for name in names {
+            let system = &systems[name];
+            for stab in 5..=10 {
+                let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stab));
+                if let Some((inc, st, def)) = measure(system, &floors) {
+                    println!("{name},stability,{stab},{inc:.1},{st:.3},{def:.3}");
+                }
+            }
+            for def_floor in [0.0, 250.0, 500.0, 750.0, 1000.0] {
+                let floors = Goal::new(f64::NEG_INFINITY, Some(def_floor), Some(0));
+                if let Some((inc, st, def)) = measure(system, &floors) {
+                    println!("{name},defense,{def_floor:.0},{inc:.1},{st:.3},{def:.3}");
+                }
+            }
+        }
+        return Ok(());
+    }
+
     let cli = Cli::parse();
 
     println!("Loading game data...");
@@ -341,6 +482,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let state = State::new(initial_balance, test_system);
+
+    if cli.solve {
+        run_solve(&cli.system, state.system(), state.balance(), cli.horizon, cli.time_limit);
+        return Ok(());
+    }
 
     if let Some(metric_str) = &cli.maximize {
         let metric = match metric_str.as_str() {

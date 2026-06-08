@@ -16,6 +16,10 @@ SYSTEM_SOLVER_AB_MS=8000 cargo run   # custom time budget (ms)
 
 # Replay solutions on fresh state to verify correctness
 SYSTEM_SOLVER_VERIFY=1 cargo run
+
+# Sample Pareto-frontier data (income vs stability/defense) as CSV, then plot it
+SYSTEM_SOLVER_PARETO=1 cargo run
+python plot_pareto_frontiers.py   # writes pareto_frontiers.png
 ```
 
 Key CLI flags: `--income`, `--stability`, `--defense`, `--credits`, `--story-points`, `--alpha-cores`, `--item <NAME>` (repeatable), `--time-limit <MS>`.
