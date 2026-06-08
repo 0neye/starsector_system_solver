@@ -9,7 +9,7 @@ use std::error::Error;
 use std::collections::HashMap;
 use clap::Parser;
 use planet::Planet;
-use solver::{search_system_decomp, search_system_maximize, Goal, Metric, Balance, State};
+use solver::{diagnose_maximize_gap, search_system_decomp, search_system_maximize, Goal, Metric, Balance, State};
 // Archived solvers, kept reachable for benchmarking/comparison:
 use solver::archive::{astar::search_all_planets, split::search_all_planets_decomp};
 use constants::{ColonyItem, FacilityType};
@@ -296,6 +296,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("Loading game data...");
         let systems = parser::load_game_data("Planets.csv", "Infrastructure.csv")?;
         verify_decomp(&systems);
+        return Ok(());
+    }
+
+    // Maximize local-minimum diagnostic: reproduce the Mia Bravos
+    // `--maximize income --stability 6` gap and report which move type bridges it.
+    // SYSTEM_SOLVER_DIAG=<system> overrides the system (default "Mia Bravos").
+    if let Some(diag) = std::env::var_os("SYSTEM_SOLVER_DIAG") {
+        println!("Loading game data...");
+        let systems = parser::load_game_data("Planets.csv", "Infrastructure.csv")?;
+        let sys_name = diag.to_str().filter(|s| !s.is_empty()).unwrap_or("Mia Bravos");
+        let system = systems
+            .get(sys_name)
+            .unwrap_or_else(|| panic!("diagnostic system {sys_name:?} not found"))
+            .clone();
+        // Match the CLI defaults so the diagnostic reproduces the real repro.
+        let state = State::new(Balance::new(5_000_000.0, 5, 1), system);
+        let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(6));
+        println!("{}", diagnose_maximize_gap(&state, Metric::Income, &floors, 120, true));
         return Ok(());
     }
 

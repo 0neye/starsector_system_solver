@@ -280,6 +280,55 @@ fn decomp_maximize_longer_horizon_is_no_worse_for_fixed_plan() {
     );
 }
 
+/// Regression for the maximize local optimum in `MAXIMIZE_LOCAL_MINIMA.md`.
+///
+/// On `Mia Bravos`, maximizing income under a stability-6 floor, the old
+/// drop-only first-improvement climb converged to 277797 and even the better
+/// basin it missed was only 281547. The bidirectional best-improvement VND
+/// reaches 303737. We pin a lower bound comfortably above both old traps so any
+/// regression toward them fails, hold the floor, and confirm determinism.
+///
+/// Uses the real game data (loaded from the crate-root CSVs during tests).
+#[test]
+fn decomp_maximize_mia_bravos_escapes_local_optimum() {
+    use crate::parser::load_game_data;
+    use crate::solver::state::Balance;
+
+    let systems = load_game_data("Planets.csv", "Infrastructure.csv")
+        .expect("game data CSVs load from the crate root during tests");
+    let system = systems
+        .get("Mia Bravos")
+        .expect("Mia Bravos is present in Planets.csv")
+        .clone();
+
+    // Match the CLI defaults for `--maximize income --stability 6`.
+    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(6));
+    let run = || {
+        let mut state = State::new(Balance::new(5_000_000.0, 5, 1), system.clone());
+        let result = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 5_000, true)
+            .expect("Mia Bravos can hold stability 6 while earning income");
+        let log = result.solution.expect("a successful result carries a solution");
+        let mut replay = State::new(Balance::new(5_000_000.0, 5, 1), system.clone());
+        apply_all(&mut replay, &log);
+        (replay.balance().net_income(), replay.system().avg_stability())
+    };
+
+    let (income, stability) = run();
+    assert!(
+        stability >= 6.0,
+        "maximize must hold the stability-6 floor, got {stability}"
+    );
+    assert!(
+        income > 290_000.0,
+        "income {income} regressed toward the old local optimum (277797 / 281547); \
+         the bidirectional VND should reach ~303737"
+    );
+
+    // The sorted neighbourhood must make repeated identical runs identical.
+    let (income2, _) = run();
+    assert_eq!(income, income2, "maximize result must be deterministic run to run");
+}
+
 /// A fresh, uncolonized two-planet system.
 fn two_planet_base() -> State {
     let mut system = System::new("Test".to_string());

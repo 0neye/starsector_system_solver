@@ -38,6 +38,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::constants::{FacilityType, FACILITY_DATA};
+use crate::planet::upgrade_predecessors;
 use crate::solver::goal::{AStarSearchResult, Goal, Metric};
 use crate::solver::state::{Action, State};
 
@@ -759,6 +760,184 @@ fn is_better(
     }
 }
 
+/// Whether `plan` develops the planet `hash`: it is pre-colonized (its colony is
+/// permanent) or the plan elects to colonize it. Undeveloped planets are owned by
+/// the planet-set seed ([`choose_planet_set`]), not the facility/toggle climb, so
+/// the neighbor generators skip them.
+fn plan_develops(state: &State, plan: &SystemPlan, hash: u64) -> bool {
+    plan.planets.get(&hash).is_some_and(|p| p.colonize)
+        || state
+            .system()
+            .get_planet_by_hash(hash)
+            .is_some_and(|p| p.has_colony())
+}
+
+/// All legal single-move neighbors of `plan`: drop one facility, add one facility
+/// (pulling in its prerequisite upgrade chain so the add can actually build), or
+/// flip one non-`Colonize` toggle on/off. Only developed planets are touched
+/// (`Colonize` is the seed's job). The move order is deterministic — planets,
+/// facilities and toggles are all visited in sorted order — so the best-
+/// improvement climb is reproducible run to run.
+fn one_move_neighbors(state: &State, plan: &SystemPlan) -> Vec<SystemPlan> {
+    let mut out = Vec::new();
+    let mut hashes: Vec<u64> = plan.planets.keys().copied().collect();
+    hashes.sort_unstable();
+
+    for h in hashes {
+        if !plan_develops(state, plan, h) {
+            continue;
+        }
+        let pplan = &plan.planets[&h];
+
+        // Facility drops.
+        let mut present: Vec<FacilityType> = pplan.facilities.iter().copied().collect();
+        present.sort_unstable();
+        for ft in &present {
+            let mut trial = plan.clone();
+            trial.planets.get_mut(&h).unwrap().facilities.remove(ft);
+            out.push(trial);
+        }
+
+        // Facility adds, normalized to include the prerequisite chain so the
+        // permission actually bites (a Megaport permit is inert without its
+        // Spaceport). A higher tier already present supersedes lower ones, so
+        // skip facilities the plan already covers via an upgrade.
+        let mut missing: Vec<FacilityType> = FACILITY_DATA
+            .keys()
+            .copied()
+            .filter(|ft| !pplan.facilities.contains(ft))
+            .collect();
+        missing.sort_unstable();
+        for ft in &missing {
+            let mut trial = plan.clone();
+            let tp = trial.planets.get_mut(&h).unwrap();
+            tp.facilities.insert(*ft);
+            for pre in upgrade_predecessors(*ft) {
+                tp.facilities.insert(pre);
+            }
+            out.push(trial);
+        }
+
+        // Toggle flips, both directions. `Colonize` is excluded: which planets to
+        // develop is decided by the seed, not walked by the climb.
+        for toggle in Toggle::ALL {
+            if matches!(toggle, Toggle::Colonize) {
+                continue;
+            }
+            let mut trial = plan.clone();
+            let tp = trial.planets.get_mut(&h).unwrap();
+            let cur = toggle.get(tp);
+            toggle.set(tp, !cur);
+            out.push(trial);
+        }
+    }
+    out
+}
+
+/// Swap neighbors: drop facility A and add facility B (with B's prerequisite
+/// chain) on the same developed planet in a single move. A swap expresses the
+/// credit/time tradeoff directly — freeing one build's budget to fund a more
+/// valuable one sooner — which two independent single flips cannot cross in one
+/// step on the rugged maximize landscape. Deterministic order, like
+/// [`one_move_neighbors`].
+fn swap_neighbors(state: &State, plan: &SystemPlan) -> Vec<SystemPlan> {
+    let mut out = Vec::new();
+    let mut hashes: Vec<u64> = plan.planets.keys().copied().collect();
+    hashes.sort_unstable();
+
+    for h in hashes {
+        if !plan_develops(state, plan, h) {
+            continue;
+        }
+        let pplan = &plan.planets[&h];
+
+        let mut present: Vec<FacilityType> = pplan.facilities.iter().copied().collect();
+        present.sort_unstable();
+        let mut missing: Vec<FacilityType> = FACILITY_DATA
+            .keys()
+            .copied()
+            .filter(|ft| !pplan.facilities.contains(ft))
+            .collect();
+        missing.sort_unstable();
+
+        for drop in &present {
+            for add in &missing {
+                let mut trial = plan.clone();
+                let tp = trial.planets.get_mut(&h).unwrap();
+                tp.facilities.remove(drop);
+                tp.facilities.insert(*add);
+                for pre in upgrade_predecessors(*add) {
+                    tp.facilities.insert(pre);
+                }
+                out.push(trial);
+            }
+        }
+    }
+    out
+}
+
+/// Best-improvement Variable-Neighborhood-Descent from `(best_plan, best)`.
+///
+/// Each pass evaluates the *whole* fresh neighbourhood and applies the single
+/// steepest improving move, then restarts — removing the path-dependence of the
+/// old ordered first-improvement scan. The neighbourhood is bidirectional
+/// (add/drop/toggle either way via [`one_move_neighbors`]), which lets the climb
+/// walk back *up* where the budget tradeoff rewards it instead of only pruning
+/// the maximal seed downward. When `use_swaps` is set, drop-A+add-B moves are
+/// included to cross basins single flips cannot. Bounded by `deadline`.
+#[allow(clippy::too_many_arguments)] // mirrors `choose_planet_set`'s threaded search context
+fn hill_climb(
+    state: &State,
+    objective: &Objective,
+    slim: bool,
+    mut best_plan: SystemPlan,
+    mut best: PlanScore,
+    use_swaps: bool,
+    start: Instant,
+    deadline: Duration,
+    nodes_searched: &mut u32,
+) -> (SystemPlan, PlanScore) {
+    loop {
+        if start.elapsed() >= deadline {
+            break;
+        }
+
+        let mut neighbors = one_move_neighbors(state, &best_plan);
+        if use_swaps {
+            neighbors.extend(swap_neighbors(state, &best_plan));
+        }
+
+        let mut best_move: Option<(SystemPlan, PlanScore)> = None;
+        for trial in neighbors {
+            if start.elapsed() >= deadline {
+                break;
+            }
+            *nodes_searched += 1;
+            let cand = run_plan(state, objective, &trial, slim);
+            // Must beat the incumbent, then be the steepest such move this pass.
+            if !is_better(objective, &cand, &trial, &best, &best_plan) {
+                continue;
+            }
+            let steeper = best_move
+                .as_ref()
+                .map_or(true, |(mp, mo)| is_better(objective, &cand, &trial, mo, mp));
+            if steeper {
+                best_move = Some((trial, cand));
+            }
+        }
+
+        match best_move {
+            Some((plan, score)) => {
+                best_plan = plan;
+                best = score;
+            }
+            None => break,
+        }
+    }
+
+    (best_plan, best)
+}
+
 /// Level 1 (outer): two-level decomposition solve over the given state's planets
 /// on a single shared timeline, optimizing `objective`.
 ///
@@ -779,91 +958,26 @@ fn decomp_search_objective(
     let mut nodes_searched: u32 = 0;
 
     // First decide which planets to develop, then refine facilities/toggles.
-    let (mut best_plan, mut best) =
+    let (seed_plan, seed_score) =
         choose_planet_set(initial_state, objective, slim, start, deadline, &mut nodes_searched)?;
 
-    // Hill-climb: try dropping each facility / toggle; keep non-worsening moves.
-    let mut improved = true;
-    while improved && start.elapsed() < deadline {
-        improved = false;
-
-        // Per-planet facility removals. Sorted so the climb's move order is
-        // deterministic: `planets` and `facilities` are hash collections whose
-        // iteration order is otherwise randomized per run, which would steer the
-        // hill-climb to different local optima on different runs.
-        let mut facs: Vec<(u64, FacilityType)> = best_plan
-            .planets
-            .iter()
-            .flat_map(|(h, p)| p.facilities.iter().map(move |ft| (*h, *ft)))
-            .collect();
-        facs.sort_unstable();
-        for (h, ft) in facs {
-            if start.elapsed() >= deadline {
-                break;
-            }
-            let mut trial = best_plan.clone();
-            if let Some(pp) = trial.planets.get_mut(&h) {
-                pp.facilities.remove(&ft);
-            }
-            nodes_searched += 1;
-            let cand = run_plan(initial_state, objective, &trial, slim);
-            if is_better(objective, &cand, &trial, &best, &best_plan) {
-                best = cand;
-                best_plan = trial;
-                improved = true;
-            }
-        }
-
-        // Per-planet toggle removals. Sorted for the same determinism reason.
-        let mut hashes: Vec<u64> = best_plan.planets.keys().copied().collect();
-        hashes.sort_unstable();
-        for h in hashes {
-            for toggle in Toggle::ALL {
-                if start.elapsed() >= deadline {
-                    break;
-                }
-                if !toggle.get(&best_plan.planets[&h]) {
-                    continue;
-                }
-                let mut trial = best_plan.clone();
-                toggle.set(trial.planets.get_mut(&h).unwrap(), false);
-                nodes_searched += 1;
-                let cand = run_plan(initial_state, objective, &trial, slim);
-                if is_better(objective, &cand, &trial, &best, &best_plan) {
-                    best = cand;
-                    best_plan = trial;
-                    improved = true;
-                }
-            }
-        }
-
-        // Free port is the one bidirectional lever: the loop above can only turn
-        // it *off*, but a free-port-off seed (used under a stability/defense
-        // floor) needs to turn it back *on* where the extra income shortens the
-        // makespan without breaking the floor. Try flipping it to the opposite
-        // of its current value on each planet.
-        let mut hashes: Vec<u64> = best_plan.planets.keys().copied().collect();
-        hashes.sort_unstable();
-        for h in hashes {
-            if start.elapsed() >= deadline {
-                break;
-            }
-            // Only meaningful for planets the plan actually develops.
-            if best_plan.planets[&h].size() == 0 {
-                continue;
-            }
-            let mut trial = best_plan.clone();
-            let pp = trial.planets.get_mut(&h).unwrap();
-            pp.free_port = !pp.free_port;
-            nodes_searched += 1;
-            let cand = run_plan(initial_state, objective, &trial, slim);
-            if is_better(objective, &cand, &trial, &best, &best_plan) {
-                best = cand;
-                best_plan = trial;
-                improved = true;
-            }
-        }
-    }
+    // Best-improvement VND over a bidirectional neighbourhood (add/drop/toggle
+    // either way). Swaps are *off*: the maximize-gap diagnostic
+    // (`diagnose_maximize_gap`) showed bidirectional single moves already escape
+    // the old drop-only trap (Mia Bravos income 277797 → 303737) and that swaps
+    // add nothing from that optimum, so they are not worth the quadratic
+    // neighbourhood. See `MAXIMIZE_LOCAL_MINIMA.md`.
+    let (_best_plan, best) = hill_climb(
+        initial_state,
+        objective,
+        slim,
+        seed_plan,
+        seed_score,
+        false,
+        start,
+        deadline,
+        &mut nodes_searched,
+    );
 
     // The climb may have started from an infeasible seed and failed to repair it
     // (the goal is genuinely unreachable for any plan it reached). Only report a
@@ -940,4 +1054,93 @@ pub fn search_system_maximize(
     decomp_search_maximize(initial_state, metric, floors, horizon_months, time_limit, slim)
         .into_iter()
         .collect()
+}
+
+/// One-shot diagnostic for the maximize local-minimum gap (see
+/// `MAXIMIZE_LOCAL_MINIMA.md`). Reports, from the same seed:
+/// * the seed value,
+/// * the optimum a **single-move** best-improvement VND reaches (no swaps),
+/// * whether any single move or any **swap** still improves from that optimum,
+/// * the optimum the full **swap-enabled** climb reaches.
+///
+/// This answers "which move type bridges the gap" before committing to swaps.
+/// Returns a human-readable report. Not used by the solver itself.
+pub fn diagnose_maximize_gap(
+    initial_state: &State,
+    metric: Metric,
+    floors: &Goal,
+    horizon_months: i32,
+    slim: bool,
+) -> String {
+    let objective = Objective::Maximize {
+        metric,
+        floors,
+        horizon_months,
+    };
+    let start = Instant::now();
+    let deadline = Duration::from_secs(30);
+    let mut nodes: u32 = 0;
+
+    let Some((seed_plan, seed_score)) =
+        choose_planet_set(initial_state, &objective, slim, start, deadline, &mut nodes)
+    else {
+        return "diagnose_maximize_gap: no feasible planet-set seed".to_string();
+    };
+    let seed_val = seed_score.value;
+
+    // Single-move best-improvement VND (bidirectional, no swaps).
+    let (single_plan, single_score) = hill_climb(
+        initial_state,
+        &objective,
+        slim,
+        seed_plan.clone(),
+        seed_score.clone(),
+        false,
+        start,
+        deadline,
+        &mut nodes,
+    );
+
+    // Best single-move and best swap reachable from the single-move optimum.
+    let best_of = |plans: Vec<SystemPlan>| -> f64 {
+        plans
+            .into_iter()
+            .map(|p| run_plan(initial_state, &objective, &p, slim))
+            .filter(|s| s.feasible)
+            .map(|s| s.value)
+            .fold(f64::NEG_INFINITY, f64::max)
+    };
+    let best_single_step = best_of(one_move_neighbors(initial_state, &single_plan));
+    let best_swap_step = best_of(swap_neighbors(initial_state, &single_plan));
+
+    // Full swap-enabled climb from the same seed.
+    let (_full_plan, full_score) = hill_climb(
+        initial_state,
+        &objective,
+        slim,
+        seed_plan,
+        seed_score,
+        true,
+        start,
+        deadline,
+        &mut nodes,
+    );
+
+    format!(
+        "maximize-gap diagnostic ({}, horizon {}):\n\
+         \x20 seed value ................... {seed_val:.0}\n\
+         \x20 single-move VND optimum ..... {:.0} (months {})\n\
+         \x20 best single move from it .... {best_single_step:.0} (delta {:+.0})\n\
+         \x20 best swap from it ........... {best_swap_step:.0} (delta {:+.0})\n\
+         \x20 full swap-enabled optimum ... {:.0} (months {})\n\
+         \x20 nodes evaluated ............. {nodes}",
+        metric.as_str(),
+        horizon_months,
+        single_score.value,
+        single_score.months,
+        best_single_step - single_score.value,
+        best_swap_step - single_score.value,
+        full_score.value,
+        full_score.months,
+    )
 }
