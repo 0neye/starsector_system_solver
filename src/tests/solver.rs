@@ -298,7 +298,7 @@ fn decomp_maximize_mia_bravos_escapes_local_optimum() {
     use crate::parser::load_game_data;
     use crate::solver::state::Balance;
 
-    let systems = load_game_data("Planets.csv", "Infrastructure.csv")
+    let systems = load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")
         .expect("game data CSVs load from the crate root during tests");
     let system = systems
         .get("Mia Bravos")

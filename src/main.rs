@@ -349,7 +349,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Special env-var modes bypass normal CLI parsing.
     if std::env::var_os("SYSTEM_SOLVER_AB").is_some() {
         println!("Loading game data...");
-        let systems = parser::load_game_data("Planets.csv", "Infrastructure.csv")?;
+        let systems = parser::load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")?;
         let budget_ms = std::env::var("SYSTEM_SOLVER_AB_MS")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
@@ -360,7 +360,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if std::env::var_os("SYSTEM_SOLVER_VERIFY").is_some() {
         println!("Loading game data...");
-        let systems = parser::load_game_data("Planets.csv", "Infrastructure.csv")?;
+        let systems = parser::load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")?;
         verify_decomp(&systems);
         return Ok(());
     }
@@ -370,7 +370,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // SYSTEM_SOLVER_DIAG=<system> overrides the system (default "Mia Bravos").
     if let Some(diag) = std::env::var_os("SYSTEM_SOLVER_DIAG") {
         println!("Loading game data...");
-        let systems = parser::load_game_data("Planets.csv", "Infrastructure.csv")?;
+        let systems = parser::load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")?;
         let sys_name = diag.to_str().filter(|s| !s.is_empty()).unwrap_or("Mia Bravos");
         let system = systems
             .get(sys_name)
@@ -396,7 +396,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     //   SYSTEM_SOLVER_PARETO_ALPHA     — starting alpha cores (default 1)
     //   SYSTEM_SOLVER_PARETO_ALL_ITEMS — add N of every colony item (default 0)
     if std::env::var_os("SYSTEM_SOLVER_PARETO").is_some() {
-        let systems = parser::load_game_data("Planets.csv", "Infrastructure.csv")?;
+        let systems = parser::load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")?;
         let horizon: i32 = std::env::var("SYSTEM_SOLVER_PARETO_HORIZON")
             .ok().and_then(|v| v.parse().ok()).unwrap_or(120);
         let time_limit: u32 = std::env::var("SYSTEM_SOLVER_PARETO_MS")
@@ -461,7 +461,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
     println!("Loading game data...");
-    let systems = parser::load_game_data("Planets.csv", "Infrastructure.csv")?;
+    let systems = parser::load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")?;
 
     let test_system = systems
         .get(&cli.system)

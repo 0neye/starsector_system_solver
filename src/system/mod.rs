@@ -21,6 +21,7 @@ pub struct System {
     name: String,
     planets: HashMap<u64, Planet, BuildNoHashHasher<u64>>,
     infrastructure: FxHashMap<String, Infrastructure>,
+    stable_points: u32,
 }
 
 impl Hash for System {
@@ -38,6 +39,7 @@ impl Hash for System {
             key.hash(state);
             value.hash(state);
         }
+        self.stable_points.hash(state);
     }
 }
 
@@ -47,6 +49,38 @@ impl System {
         self.infrastructure.values().any(|infra| {
             matches!(infra, Infrastructure::CommRelay { domain: _ })
         })
+    }
+
+    fn occupied_stable_points(&self) -> u32 {
+        self.infrastructure
+            .values()
+            .filter(|infra| {
+                matches!(
+                    infra,
+                    Infrastructure::CommRelay { .. }
+                        | Infrastructure::NavBuoy { .. }
+                        | Infrastructure::SensorArray { .. }
+                )
+            })
+            .count() as u32
+    }
+
+    pub fn stable_points(&self) -> u32 {
+        self.stable_points
+    }
+
+    pub fn set_stable_points(&mut self, stable_points: u32) {
+        self.stable_points = stable_points;
+    }
+
+    pub fn available_stable_points(&self) -> u32 {
+        self.stable_points.saturating_sub(self.occupied_stable_points())
+    }
+
+    /// Whether a makeshift comm relay can still be built: an unoccupied stable
+    /// point exists and the system has no comm relay yet.
+    pub fn can_build_makeshift_comm_relay(&self) -> bool {
+        self.available_stable_points() > 0 && !self.has_comm_relay()
     }
 
     /// System-wide stability from comm relay status, per wiki:
@@ -74,6 +108,7 @@ impl System {
             name,
             planets: HashMap::with_capacity_and_hasher(5, BuildNoHashHasher::default()), // usually never more than 5
             infrastructure: FxHashMap::with_capacity_and_hasher(5, FxBuildHasher::default()), // usually never more than 5
+            stable_points: 0,
         }
     }
 

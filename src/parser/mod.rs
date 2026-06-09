@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::error::Error;
-use std::fs::File;
 use std::path::Path;
 
 use csv;
@@ -138,13 +137,51 @@ pub fn parse_infrastructure_csv<P: AsRef<Path>>(
     Ok(())
 }
 
+pub fn parse_systems_csv<P: AsRef<Path>>(
+    path: P,
+    systems: &mut HashMap<String, System>,
+) -> Result<(), ParserError> {
+    let mut rdr = csv::Reader::from_path(path)?;
+    let headers = rdr.headers()?.clone();
+    let stable_points_idx = headers
+        .iter()
+        .position(|h| h.eq_ignore_ascii_case("Stable Points"))
+        .ok_or_else(|| ParserError::MissingColumn("Stable Points".to_string()))?;
+
+    for result in rdr.records() {
+        let record = result?;
+        let system_name = record
+            .get(0)
+            .ok_or_else(|| ParserError::MissingColumn("System Name".to_string()))?;
+        let stable_points = record
+            .get(stable_points_idx)
+            .unwrap_or("0")
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| {
+                ParserError::InvalidValue(format!(
+                    "invalid stable point count for system {system_name}"
+                ))
+            })?;
+
+        if let Some(system) = systems.get_mut(system_name) {
+            system.set_stable_points(stable_points);
+        }
+    }
+
+    Ok(())
+}
+
 /// Helper function to load all data from CSV files
 pub fn load_game_data<P: AsRef<Path>>(
     planets_path: P,
+    systems_path: P,
     infrastructure_path: P
 ) -> Result<HashMap<String, System>, ParserError> {
     // Load planets and systems from the planets CSV
     let (_planets, mut systems) = parse_planets_csv(planets_path)?;
+
+    parse_systems_csv(systems_path, &mut systems)?;
     
     // Add infrastructure
     parse_infrastructure_csv(infrastructure_path, &mut systems)?;

@@ -9,7 +9,7 @@ use crate::system::Infrastructure;
 /// so the system lost its nav buoy. (Regression: P2 nav-buoy parsing.)
 #[test]
 fn nav_buoy_csv_spelling_loads() {
-    let systems = load_game_data("Planets.csv", "Infrastructure.csv")
+    let systems = load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")
         .expect("game data CSVs load from the crate root during tests");
 
     let mia = systems
@@ -25,4 +25,16 @@ fn nav_buoy_csv_spelling_loads() {
         has_nav_buoy,
         "Mia Bravos should expose its NavBouy infrastructure after loading"
     );
+}
+
+#[test]
+fn systems_csv_stable_points_load() {
+    let systems = load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")
+        .expect("game data CSVs load from the crate root during tests");
+
+    let mia = systems
+        .get("Mia Bravos")
+        .expect("Mia Bravos is present in Planets.csv");
+
+    assert_eq!(mia.stable_points(), 3);
 }
