@@ -2,12 +2,14 @@ pub mod state;
 pub mod goal;
 pub mod decomp;
 pub mod pareto;
+pub mod bound;
 pub mod archive;
 
 pub use state::{State, Balance, Action};
 pub use goal::{AStarSearchResult, Goal, Metric};
 pub use decomp::{diagnose_maximize_gap, search_system_decomp, search_system_maximize};
 pub use pareto::solve_pareto;
+pub use bound::{credits_relaxed, BoundRow};
 
 /// Whether two states' planets disagree on which facilities exist. Used by the
 /// apply/undo consistency checker below.

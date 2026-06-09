@@ -100,6 +100,13 @@ const MAX_PLAN_MONTHS: i32 = 1_200;
 /// Guard against a plan that keeps acting/waiting without ever satisfying the
 /// goal (e.g. income asymptotes below the target).
 const MAX_SIM_ITERS: u32 = 5_000;
+/// Deterministic per-seed cap on plans evaluated by one hill-climb. This — not a
+/// wall-clock deadline — is what stops a climb, so the result is identical on
+/// every machine regardless of speed or load (the cause of the old maximize
+/// nondeterminism was the wall clock interrupting a climb mid-pass; see
+/// `OPTIMAL_SOLVER_BOUND.md`). Sized far above the ~20k a real climb needs to
+/// converge, so it only bites for pathological inputs, and then deterministically.
+const MAX_NODES_PER_SEED: u32 = 200_000;
 
 #[inline]
 fn is_wait(action: &Action) -> bool {
@@ -461,7 +468,7 @@ fn run_plan(initial_state: &State, objective: &Objective, plan: &SystemPlan, sli
         // action priority is only a tie-breaker here; for fixed-plan scheduling
         // we need to avoid building a generic multiplier (notably Commerce)
         // before the production it is supposed to multiply.
-        if let Some(action) = choose_plan_action(&state, objective, plan, &actions) {
+        if let Some(action) = choose_plan_action(&mut state, objective, plan, &actions) {
             state.apply_action_raw(&action, false);
             continue;
         }
@@ -515,14 +522,15 @@ fn run_plan(initial_state: &State, objective: &Objective, plan: &SystemPlan, sli
 }
 
 fn choose_plan_action(
-    state: &State,
+    state: &mut State,
     objective: &Objective,
     plan: &SystemPlan,
     actions: &[Action],
 ) -> Option<Action> {
-    // Score each candidate once (each score is a full state clone + simulate),
-    // then pick the max. `max_by` would call the comparator O(n) times and
-    // recompute both operands' scores on every call.
+    // Score each candidate once via reversible apply/undo on the live state (no
+    // per-candidate `State` clone — that clone was the run_plan hot-spot), then
+    // pick the max. `max_by` would call the comparator O(n) times and recompute
+    // both operands' scores on every call.
     actions
         .iter()
         .filter(|a| !is_wait(a) && plan.allows(a))
@@ -569,34 +577,46 @@ impl PartialOrd for ActionLookaheadScore {
     }
 }
 
+/// Score the state that *would* result from taking `action` (plus the build wait
+/// it naturally implies), then restore `state` exactly. Uses the reversible
+/// apply/undo path instead of cloning the whole `State` per candidate — the
+/// round-trip is the same one `_test_path_undo_consistency` enforces, so it
+/// leaves `state` byte-for-byte identical.
 fn action_lookahead_score(
-    state: &State,
+    state: &mut State,
     objective: &Objective,
     action: &Action,
 ) -> ActionLookaheadScore {
-    let mut trial = state.clone();
-    trial.apply_action_raw(action, false);
+    state.apply_action_raw(action, false);
 
     let wait_months = natural_action_wait(action).min(objective.horizon_months().max(0) as u32);
     if wait_months > 0 {
-        trial.apply_action_raw(&Action::Wait(wait_months), false);
+        state.apply_action_raw(&Action::Wait(wait_months), false);
     }
 
     let floors = objective.floors();
-    let violation = goal_violation(floors, &trial);
+    let violation = goal_violation(floors, state);
     let metric_value = objective
         .metric()
-        .map_or_else(|| -violation, |metric| metric.value(&trial));
+        .map_or_else(|| -violation, |metric| metric.value(state));
 
-    ActionLookaheadScore {
+    let score = ActionLookaheadScore {
         feasible: violation <= 0.0,
         objective_value: score_units(metric_value),
         floor_violation: score_units(violation),
-        income: score_units(trial.balance().net_income()),
-        stability: score_units(trial.system().avg_stability()),
-        defense: score_units(trial.system().avg_ground_defense()),
+        income: score_units(state.balance().net_income()),
+        stability: score_units(state.system().avg_stability()),
+        defense: score_units(state.system().avg_ground_defense()),
         earlier: -(wait_months as i32),
+    };
+
+    // Undo in the exact reverse order applied, restoring `state`.
+    if wait_months > 0 {
+        state.undo_last_action(false);
     }
+    state.undo_last_action(false);
+
+    score
 }
 
 fn natural_action_wait(action: &Action) -> u32 {
@@ -817,8 +837,7 @@ fn climb_from_seed(
     slim: bool,
     plan: SystemPlan,
     use_swaps: bool,
-    start: Instant,
-    deadline: Duration,
+    node_budget: u32,
 ) -> (SystemPlan, PlanScore, u32) {
     let mut nodes = 1;
     let score = run_plan(state, objective, &plan, slim);
@@ -829,8 +848,7 @@ fn climb_from_seed(
         plan,
         score,
         use_swaps,
-        start,
-        deadline,
+        node_budget,
         &mut nodes,
     );
     (plan, score, nodes)
@@ -1032,12 +1050,11 @@ fn hill_climb(
     mut best_plan: SystemPlan,
     mut best: PlanScore,
     use_swaps: bool,
-    start: Instant,
-    deadline: Duration,
+    node_budget: u32,
     nodes_searched: &mut u32,
 ) -> (SystemPlan, PlanScore) {
     loop {
-        if start.elapsed() >= deadline {
+        if *nodes_searched >= node_budget {
             break;
         }
 
@@ -1048,7 +1065,7 @@ fn hill_climb(
 
         let mut best_move: Option<(SystemPlan, PlanScore)> = None;
         for trial in neighbors {
-            if start.elapsed() >= deadline {
+            if *nodes_searched >= node_budget {
                 break;
             }
             *nodes_searched += 1;
@@ -1083,8 +1100,14 @@ fn hill_climb(
 /// First [`planet_set_seed_plans`] generates planet-set basins (a maximal
 /// "colonize everything" plan is often infeasible for a system-wide goal). Then
 /// each basin is hill-climbed independently, and the best finished basin wins.
-/// Bounded by `time_limit` (ms); returns the best plan found, or `None` if no
-/// refined seed satisfies the objective's floors.
+///
+/// **Determinism:** the climbs are bounded by a fixed [`MAX_NODES_PER_SEED`] node
+/// budget, *not* by the wall clock, so the result is identical on every machine
+/// and run. `time_limit` (ms) now bounds only the (cheap, deterministic-for-real-
+/// inputs) seed *generation*; for the small systems this solver targets the
+/// climbs converge well under the node budget, so the search always runs to the
+/// same converged optimum. Returns the best plan found, or `None` if no refined
+/// seed satisfies the objective's floors.
 fn decomp_search_objective(
     initial_state: &mut State,
     objective: &Objective,
@@ -1111,10 +1134,16 @@ fn decomp_search_objective(
         .collect();
     let climbed: Vec<_> = starts
         .into_par_iter()
-        .map(|(state, seed)| climb_from_seed(&state, objective, slim, seed, false, start, deadline))
+        .map(|(state, seed)| {
+            climb_from_seed(&state, objective, slim, seed, false, MAX_NODES_PER_SEED)
+        })
         .collect();
 
     let nodes_searched = climbed.iter().map(|(_, _, nodes)| *nodes).sum();
+    // A real cutoff is now a *deterministic* event: some seed exhausted the node
+    // budget before converging (pathological only). Wall-clock elapsed time no
+    // longer affects the result, so it must not be reported as a cutoff.
+    let cutoff_occurred = climbed.iter().any(|(_, _, nodes)| *nodes >= MAX_NODES_PER_SEED);
     let (_best_plan, best, _) = climbed.into_iter().reduce(|best, cand| {
         if is_better(objective, &cand.1, &cand.0, &best.1, &best.0) {
             cand
@@ -1133,7 +1162,7 @@ fn decomp_search_objective(
     Some(AStarSearchResult {
         solution: Some(best.log),
         cost: best.months,
-        cutoff_occurred: start.elapsed() >= deadline,
+        cutoff_occurred,
         nodes_searched,
         nodes_pruned_by_bound: 0,
     })
@@ -1232,7 +1261,9 @@ pub fn diagnose_maximize_gap(
     };
     let seed_val = seed_score.value;
 
-    // Single-move best-improvement VND (bidirectional, no swaps).
+    // Single-move best-improvement VND (bidirectional, no swaps). The diagnostic
+    // runs each climb to full convergence (`u32::MAX` budget); `nodes` is shared
+    // only to report a combined count.
     let (single_plan, single_score) = hill_climb(
         initial_state,
         &objective,
@@ -1240,8 +1271,7 @@ pub fn diagnose_maximize_gap(
         seed_plan.clone(),
         seed_score.clone(),
         false,
-        start,
-        deadline,
+        u32::MAX,
         &mut nodes,
     );
 
@@ -1265,8 +1295,7 @@ pub fn diagnose_maximize_gap(
         seed_plan,
         seed_score,
         true,
-        start,
-        deadline,
+        u32::MAX,
         &mut nodes,
     );
 

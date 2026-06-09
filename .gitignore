@@ -1,3 +1,7 @@
 /target
 out/
 tree_estimator.py
+MAXIMIZE_LOCAL_MINIMA.md
+OPTIMAL_SOLVER_BOUND.md
+bound_summary.txt
+bound_sweep.csv

@@ -4,3 +4,10 @@ Mia Bravos,NavBouy,false,false
 Mia Bravos,Gate,false,false
 Epsilon Gamma,CommRelay,false,false
 Epsilon Gamma,SensorArray,false,false
+Aster Crown,CommRelay,true,false
+Aster Crown,NavBouy,false,false
+Aster Crown,SensorArray,false,false
+Aster Crown,Gate,false,false
+Naraka Verge,NavBouy,false,false
+Naraka Verge,SensorArray,false,false
+Naraka Verge,Remnants,false,true

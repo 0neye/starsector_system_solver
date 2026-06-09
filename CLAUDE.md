@@ -20,6 +20,11 @@ SYSTEM_SOLVER_VERIFY=1 cargo run
 # Sample Pareto-frontier data (income vs stability/defense) as CSV, then plot it
 SYSTEM_SOLVER_PARETO=1 cargo run
 python plot_pareto_frontiers.py   # writes pareto_frontiers.png
+
+# Measure greedy income vs a credit-relaxed upper bound (how much headroom the
+# greedy leaves on the credit-timing axis). CSV to stdout, summary to stderr.
+SYSTEM_SOLVER_BOUND=1 cargo run
+SYSTEM_SOLVER_BOUND_MS=5000 cargo run   # budget per point. See OPTIMAL_SOLVER_BOUND.md
 ```
 
 Key CLI flags: `--income`, `--stability`, `--defense`, `--credits`, `--story-points`, `--alpha-cores`, `--item <NAME>` (repeatable), `--time-limit <MS>`.
