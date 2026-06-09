@@ -269,6 +269,12 @@ pub struct FacilityData {
     pub is_structure: bool,  // To differentiate between industries and structures
 }
 
+#[derive(Debug, Clone)]
+pub struct FacilityRequirements {
+    pub facilities: Vec<FacilityType>,
+    pub deposits: Vec<&'static str>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum ColonyItem {
@@ -1044,6 +1050,27 @@ lazy_static! {
         //     requirements: vec!["Blueprint gained from Story Mission"],
         //     is_structure: true,
         // });
+
+        map
+    };
+}
+
+lazy_static! {
+    pub static ref FACILITY_REQUIREMENTS: HashMap<FacilityType, FacilityRequirements, BuildNoHashHasher<u8>> = {
+        let mut map = HashMap::with_hasher(BuildNoHashHasher::default());
+
+        for (facility_type, data) in FACILITY_DATA.iter() {
+            let mut facilities = Vec::new();
+            let mut deposits = Vec::new();
+            for req in &data.requirements {
+                if let Some(req_facility) = FacilityType::from_str(req) {
+                    facilities.push(req_facility);
+                } else {
+                    deposits.push(*req);
+                }
+            }
+            map.insert(*facility_type, FacilityRequirements { facilities, deposits });
+        }
 
         map
     };

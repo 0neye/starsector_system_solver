@@ -1,18 +1,22 @@
 mod facility;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::hash::Hash;
 use std::hash::Hasher;
 
-use crate::constants::{FacilityData, FacilityType, MAX_FACILITIES, FACILITY_DATA};
+use crate::constants::{FacilityData, FacilityType, MAX_FACILITIES, FACILITY_DATA, FACILITY_REQUIREMENTS};
 use crate::constants::{AdminType, Resource};
 use crate::solver::Action;
 use crate::solver::Balance;
+use lazy_static::lazy_static;
+use nohash_hasher::BuildNoHashHasher;
 use rustc_hash::FxHashMap;
 
 pub use facility::Facility;
+use facility::DepositStatus;
 use rustc_hash::FxHashSet;
 use rustc_hash::FxHasher;
 
@@ -23,20 +27,78 @@ use rustc_hash::FxHasher;
 /// `star fortress` yields `[battle station, orbital station]` and `high command`
 /// yields `[military base, patrol hq]`. The bottom of a chain (or a facility
 /// with no facility prerequisite) yields an empty vec.
-pub fn upgrade_predecessors(facility_type: FacilityType) -> Vec<FacilityType> {
-    let mut chain = Vec::new();
-    let mut current = facility_type;
-    while let Some(data) = FACILITY_DATA.get(&current) {
-        let Some(prev) = data.requirements.iter().find_map(|req| FacilityType::from_str(req)) else {
-            break;
-        };
-        if chain.contains(&prev) {
-            break; // guard against malformed cyclic data
+pub fn upgrade_predecessors(facility_type: FacilityType) -> &'static [FacilityType] {
+    UPGRADE_PREDECESSORS
+        .get(&facility_type)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+lazy_static! {
+    static ref UPGRADE_PREDECESSORS: HashMap<FacilityType, Vec<FacilityType>, BuildNoHashHasher<u8>> = {
+        let mut map = HashMap::with_hasher(BuildNoHashHasher::default());
+
+        for facility_type in FACILITY_DATA.keys() {
+            let mut chain = Vec::new();
+            let mut current = *facility_type;
+            while let Some(reqs) = FACILITY_REQUIREMENTS.get(&current) {
+                let Some(prev) = reqs.facilities.first().copied() else {
+                    break;
+                };
+                if chain.contains(&prev) {
+                    break; // guard against malformed cyclic data
+                }
+                chain.push(prev);
+                current = prev;
+            }
+            map.insert(*facility_type, chain);
         }
-        chain.push(prev);
-        current = prev;
+
+        map
+    };
+}
+
+#[derive(Debug, Clone)]
+struct PlanetPropertyCache {
+    ore: Option<f64>,
+    transplutonic_ore: Option<f64>,
+    volatiles: Option<f64>,
+    organics: Option<f64>,
+    farmland: Option<f64>,
+    water: bool,
+    habitable: bool,
+    accessibility_percent: f64,
+}
+
+impl PlanetPropertyCache {
+    fn new(properties: &FxHashMap<String, f64>) -> Self {
+        Self {
+            ore: properties.get("ores").copied(),
+            transplutonic_ore: properties.get("rare ores").copied(),
+            volatiles: properties.get("volatiles").copied(),
+            organics: properties.get("organics").copied(),
+            farmland: properties.get("farmland").copied(),
+            water: properties.get("water").copied().unwrap_or(0.0) > 0.0,
+            habitable: properties.get("habitable").is_some(),
+            accessibility_percent: properties.get("accessibility percent").copied().unwrap_or(0.0),
+        }
     }
-    chain
+
+    fn deposit_status(&self, resource: Resource) -> DepositStatus {
+        match resource {
+            Resource::Ore => self.ore.map_or(DepositStatus::Absent, DepositStatus::Present),
+            Resource::TransplutonicOre => self.transplutonic_ore.map_or(DepositStatus::Absent, DepositStatus::Present),
+            Resource::Volatiles => self.volatiles.map_or(DepositStatus::Absent, DepositStatus::Present),
+            Resource::Organics => self.organics.map_or(DepositStatus::Absent, DepositStatus::Present),
+            Resource::Food => match (self.farmland, self.water) {
+                (None, false) => DepositStatus::Absent,
+                (Some(m), false) => DepositStatus::Present(m),
+                (None, true) => DepositStatus::Present(0.0),
+                (Some(m), true) => DepositStatus::Present(m.max(0.0)),
+            },
+            _ => DepositStatus::NotDeposit,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +106,7 @@ pub struct Planet {
     name: String,
     name_hash: u64,
     properties: FxHashMap<String, f64>,
+    property_cache: PlanetPropertyCache,
     facilities: Vec<Facility>,
     hazard_rating: f64,
     is_free_port: bool,
@@ -56,6 +119,11 @@ pub struct Planet {
     stability: i32,
     admin: AdminType,
     system_stability_bonus: i32,
+    /// Cached `(gross_income, total_upkeep)` for the current planet state.
+    /// Purely derived data: every mutator that can affect income invalidates it
+    /// (and `get_facility_mut` invalidates pessimistically, since the caller may
+    /// mutate the facility). Excluded from `Hash`/`PartialEq`.
+    income_cache: RefCell<Option<(f64, f64)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +194,7 @@ impl Planet {
             .cloned()
             .expect("Planet must have a hazard rating");
         let size = properties.get("size").cloned().unwrap_or(0.0) as u32;
+        let property_cache = PlanetPropertyCache::new(&properties);
 
         let mut facilities = Vec::with_capacity(MAX_FACILITIES);
 
@@ -143,6 +212,7 @@ impl Planet {
             name,   
             name_hash,
             properties,
+            property_cache,
             facilities,
             hazard_rating,
             is_free_port: false,
@@ -155,7 +225,27 @@ impl Planet {
             stability: 5, // Default stability
             admin: AdminType::Base,
             system_stability_bonus: 0,
+            income_cache: RefCell::new(None),
         }
+    }
+
+    /// Drop the cached income/upkeep pair. Must be called by every mutation
+    /// that can affect either value; cheap enough to call pessimistically.
+    #[inline]
+    fn invalidate_income_cache(&self) {
+        *self.income_cache.borrow_mut() = None;
+    }
+
+    /// The cached `(gross_income, total_upkeep)` pair, computing and storing it
+    /// on miss. Both are derived from the same planet state, so they share one
+    /// validity flag.
+    fn income_and_upkeep(&self) -> (f64, f64) {
+        if let Some(cached) = *self.income_cache.borrow() {
+            return cached;
+        }
+        let pair = (self.compute_gross_income(), self.compute_total_upkeep());
+        *self.income_cache.borrow_mut() = Some(pair);
+        pair
     }
 
     /// Get the name of this planet
@@ -190,6 +280,9 @@ impl Planet {
 
     /// Get a facility by its type, mutable
     pub fn get_facility_mut(&mut self, facility_type: FacilityType) -> Option<&mut Facility> {
+        // Pessimistic: handing out &mut Facility means the caller may change
+        // anything income-relevant (improvements, cores, items, build days).
+        self.invalidate_income_cache();
         self.facilities.iter_mut().find(|f| f.facility_type() == &facility_type)
     }
 
@@ -227,16 +320,12 @@ impl Planet {
 
     /// Add a facility to this planet
     pub fn add_facility(&mut self, facility_type: FacilityType) -> bool {
+        self.invalidate_income_cache();
 
         // Check if this is an upgrade by looking at requirements
-        if let Some(data) = FACILITY_DATA.get(&facility_type) {
-            for req in data.requirements.iter() {
-                // If requirement matches an existing facility, this is an upgrade
-                let req_fac = FacilityType::from_str(req);
-                if req_fac.is_none() {
-                    continue;
-                }
-                if let Some(fac) = self.get_facility_mut(req_fac.unwrap()) {
+        if let (Some(data), Some(reqs)) = (FACILITY_DATA.get(&facility_type), FACILITY_REQUIREMENTS.get(&facility_type)) {
+            for req_facility in &reqs.facilities {
+                if let Some(fac) = self.get_facility_mut(*req_facility) {
                     _ = fac.swap_raw_w_data(facility_type, data, false);
                     return true;
                 }
@@ -259,14 +348,11 @@ impl Planet {
         if facility_type == FacilityType::Population || facility_type == FacilityType::Spaceport {
             return false; // Can't remove core facilities
         }
+        self.invalidate_income_cache();
 
-        if let Some(data) = FACILITY_DATA.get(&facility_type) {
-            for downgrade in data.requirements.iter() {
-                let down_type = FacilityType::from_str(downgrade);
-                if down_type.is_none() {
-                    continue;
-                }
-                let down_type = down_type.unwrap();
+        if let Some(reqs) = FACILITY_REQUIREMENTS.get(&facility_type) {
+            for down_type in &reqs.facilities {
+                let down_type = *down_type;
                 if let Some(fac) = self.get_facility_mut(facility_type) {
                     if fac.swap_raw_w_data(down_type, FACILITY_DATA.get(&down_type).unwrap(), true).is_some() {
                         return true;
@@ -286,6 +372,10 @@ impl Planet {
 
     /// Get the total upkeep of this planet
     pub fn total_upkeep(&self) -> f64 {
+        self.income_and_upkeep().1
+    }
+
+    fn compute_total_upkeep(&self) -> f64 {
         if !self.has_colony() {
             return 0.0;
         }
@@ -311,15 +401,12 @@ impl Planet {
     /// Set the admin type of this planet
     pub fn set_admin(&mut self, admin: AdminType) {
         self.admin = admin;
+        self.invalidate_income_cache();
     }
 
     /// Calculate the accessibility of this planet
     pub fn calculate_accessibility(&self) -> f64 {
-        let mut accessibility = self
-            .properties
-            .get("accessibility percent")
-            .unwrap_or(&0.0)
-            .clone();
+        let mut accessibility = self.property_cache.accessibility_percent;
 
         // Add accessibility bonuses from all facilities
         for facility in &self.facilities {
@@ -353,6 +440,7 @@ impl Planet {
     /// Set the free port status of this planet
     pub fn set_free_port(&mut self, is_free_port: bool) {
         self.is_free_port = is_free_port;
+        self.invalidate_income_cache();
     }
 
     /// Check if this planet has a free port
@@ -373,6 +461,7 @@ impl Planet {
     /// Set the hazard pay status of this planet
     pub fn set_hazard_pay(&mut self, enabled: bool) {
         self.has_hazard_pay = enabled;
+        self.invalidate_income_cache();
     }
 
     /// Check if this planet has decivilized
@@ -383,16 +472,19 @@ impl Planet {
     /// Set the decivilized status of this planet
     pub fn set_decivilized(&mut self, has_decivilized: bool) {
         self.has_decivilized = has_decivilized;
+        self.invalidate_income_cache();
     }
 
     /// Set the base stability of this planet
     pub fn set_base_stability(&mut self, stability: i32) {
         self.stability = stability;
+        self.invalidate_income_cache();
     }
 
     /// Set the system stability bonus of this planet
     pub fn set_system_stability_bonus(&mut self, bonus: i32) {
         self.system_stability_bonus = bonus;
+        self.invalidate_income_cache();
     }
 
     /// Get the stability of this planet
@@ -496,6 +588,7 @@ impl Planet {
         {
             facility.set_build_days_state(cur, total);
         }
+        self.invalidate_income_cache();
     }
 
     /// Set the has colony status of this planet
@@ -508,6 +601,7 @@ impl Planet {
             self.size = 0;
             self.growth_progress = 0.0;
         }
+        self.invalidate_income_cache();
     }
 
     /// Check if this planet has a colony
@@ -532,6 +626,7 @@ impl Planet {
         if self.size <= MIN_SIZE && days < 0 && self.growth_progress <= 0.0 {
             return;
         }
+        self.invalidate_income_cache();
 
         let is_undoing = days < 0;
         let mut remaining_days = days.abs() as u32;
@@ -655,7 +750,7 @@ impl Planet {
         }
 
         // Bonus for habitable property
-        if self.properties.get("habitable").is_some() {
+        if self.property_cache.habitable {
             points += (self.size - 1) as i32;
         }
 
@@ -781,6 +876,10 @@ impl Planet {
 
     /// Get the gross income of this planet (per month)
     pub fn get_gross_income(&self) -> f64 {
+        self.income_and_upkeep().0
+    }
+
+    fn compute_gross_income(&self) -> f64 {
         if !self.has_colony() {
             return 0.0;
         }
@@ -863,8 +962,12 @@ impl Planet {
                 facility.progress_build_days(30);
             }
 
+            // This month's mutations (free-port days, growth, build days) all
+            // potentially change income; drop the cache before reading it.
+            self.invalidate_income_cache();
+
             // Calculate monthly income
-            if i == 0 || 
+            if i == 0 ||
             (Self::free_port_bucket(last_free_port_days) != Self::free_port_bucket(self.free_port_days)) ||
             self.facilities.iter().zip(last_fac_build_days.iter()).any(|(fac, last)| fac.remaining_build_days() <= 0 && *last > 0) 
             || self.size != last_size {
@@ -953,6 +1056,10 @@ impl Planet {
                 self.free_port_days = self.free_port_days.saturating_sub(30);
             }
 
+            // This month's reversals (build days, growth, free-port days) all
+            // potentially change income; drop the cache for the next read.
+            self.invalidate_income_cache();
+
             if debug {
                 println!(
                     "UNDO WAIT - Gross: {:.2}, Net: {:.2}, Growth: {:.2}, Growth P: {}, Size: {}",
@@ -973,33 +1080,34 @@ impl Planet {
     /// Facility requirements (e.g. megaport needs a spaceport) are ALL required.
     /// Property/deposit requirements (e.g. mining lists ores/rare ores/volatiles/organics)
     /// are satisfied if ANY one of them is present on the planet.
-    fn meets_facility_requirements(&self, requirements: &[&str]) -> bool {
-        let mut has_deposit_req = false;
-        let mut deposit_satisfied = false;
+    fn meets_facility_requirements(&self, facility_type: FacilityType) -> bool {
+        let Some(requirements) = FACILITY_REQUIREMENTS.get(&facility_type) else {
+            return true;
+        };
 
-        for req in requirements {
-            if FacilityType::from_str(req).is_some() {
-                // Facility requirement: must be present (these are AND'd together).
-                if !self.facilities.iter().any(|f| f.name() == *req) {
-                    return false;
-                }
-            } else {
-                // Property/deposit requirement: any one being present is enough (OR).
-                // A deposit counts as present if its column exists at all (its abundance
-                // modifier may be 0 or -1); `water` is a boolean condition, so it must be true.
-                has_deposit_req = true;
-                let present = if *req == "water" {
-                    self.properties.get(*req).copied().unwrap_or(0.0) > 0.0
-                } else {
-                    self.properties.contains_key(*req)
-                };
-                if present {
-                    deposit_satisfied = true;
-                }
+        for req in &requirements.facilities {
+            // Facility requirement: must be present (these are AND'd together).
+            if self.get_facility(*req).is_none() {
+                return false;
             }
         }
 
-        !has_deposit_req || deposit_satisfied
+        let mut deposit_satisfied = false;
+        for req in &requirements.deposits {
+            // Property/deposit requirement: any one being present is enough (OR).
+            // A deposit counts as present if its column exists at all (its abundance
+            // modifier may be 0 or -1); `water` is a boolean condition, so it must be true.
+            let present = if *req == "water" {
+                self.property_cache.water
+            } else {
+                self.properties.contains_key(*req)
+            };
+            if present {
+                deposit_satisfied = true;
+            }
+        }
+
+        requirements.deposits.is_empty() || deposit_satisfied
     }
 
     /// Get all possible actions for this planet
@@ -1036,7 +1144,7 @@ impl Planet {
             }
 
             // Check if we meet the requirements for this facility
-            if !self.meets_facility_requirements(&facility.requirements) {
+            if !self.meets_facility_requirements(*facility_type) {
                 continue;
             }
 
@@ -1044,11 +1152,9 @@ impl Planet {
             // play with linear simulator; farming seems to disapear
 
             // Check if this is an upgrade (any requirement matches an existing facility)
-            let upgrade_from = facility
-                .requirements
-                .iter()
-                .find(|req| self.facilities.iter().any(|f| f.name() == **req))
-                .and_then(|name| self.get_facility(FacilityType::from_str(name).unwrap()));
+            let upgrade_from = FACILITY_REQUIREMENTS
+                .get(facility_type)
+                .and_then(|reqs| reqs.facilities.iter().find_map(|req| self.get_facility(*req)));
 
             // Check if we already have an upgrade of this facility. This must
             // follow the *whole* chain: a star fortress upgrades from a battle

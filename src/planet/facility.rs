@@ -754,6 +754,7 @@ impl Facility {
 /// to the base (size-derived) production. A deposit with a modifier of -1 or 0 is still
 /// present and still produces. In the data, a *missing* column means "no deposit", while
 /// a present column (even with value 0 or -1) means the deposit exists with that modifier.
+#[derive(Clone, Copy)]
 pub enum DepositStatus {
     /// Not tied to a planetary deposit (manufacturing); produce normally, no bonus.
     NotDeposit,
@@ -764,35 +765,7 @@ pub enum DepositStatus {
 }
 
 pub fn deposit_status(resource: Resource, planet: &dyn PlanetConditionChecker) -> DepositStatus {
-    let prop = match resource {
-        Resource::Ore => "ores",
-        Resource::TransplutonicOre => "rare ores",
-        Resource::Volatiles => "volatiles",
-        Resource::Organics => "organics",
-        Resource::Food => {
-            // Farming uses a Farmland deposit (modifier may be <= 0); Aquaculture uses a
-            // Water-covered world (a boolean condition with no abundance modifier).
-            let farmland = if planet.has_property("farmland") {
-                Some(planet.get_property("farmland"))
-            } else {
-                None
-            };
-            let water = planet.get_property("water") > 0.0;
-            return match (farmland, water) {
-                (None, false) => DepositStatus::Absent,
-                (Some(m), false) => DepositStatus::Present(m),
-                (None, true) => DepositStatus::Present(0.0),
-                (Some(m), true) => DepositStatus::Present(m.max(0.0)),
-            };
-        }
-        _ => return DepositStatus::NotDeposit,
-    };
-
-    if planet.has_property(prop) {
-        DepositStatus::Present(planet.get_property(prop))
-    } else {
-        DepositStatus::Absent
-    }
+    planet.deposit_status(resource)
 }
 
 pub trait PlanetConditionChecker {
@@ -804,6 +777,37 @@ pub trait PlanetConditionChecker {
     fn accessibility(&self) -> f64;
     fn improvements(&self) -> u32;
     fn is_free_port(&self) -> bool;
+    fn deposit_status(&self, resource: Resource) -> DepositStatus {
+        let prop = match resource {
+            Resource::Ore => "ores",
+            Resource::TransplutonicOre => "rare ores",
+            Resource::Volatiles => "volatiles",
+            Resource::Organics => "organics",
+            Resource::Food => {
+                // Farming uses a Farmland deposit (modifier may be <= 0); Aquaculture uses a
+                // Water-covered world (a boolean condition with no abundance modifier).
+                let farmland = if self.has_property("farmland") {
+                    Some(self.get_property("farmland"))
+                } else {
+                    None
+                };
+                let water = self.get_property("water") > 0.0;
+                return match (farmland, water) {
+                    (None, false) => DepositStatus::Absent,
+                    (Some(m), false) => DepositStatus::Present(m),
+                    (None, true) => DepositStatus::Present(0.0),
+                    (Some(m), true) => DepositStatus::Present(m.max(0.0)),
+                };
+            }
+            _ => return DepositStatus::NotDeposit,
+        };
+
+        if self.has_property(prop) {
+            DepositStatus::Present(self.get_property(prop))
+        } else {
+            DepositStatus::Absent
+        }
+    }
 }
 
 impl PlanetConditionChecker for super::Planet {
@@ -837,5 +841,9 @@ impl PlanetConditionChecker for super::Planet {
 
     fn is_free_port(&self) -> bool {
         self.is_free_port()
+    }
+
+    fn deposit_status(&self, resource: Resource) -> DepositStatus {
+        self.property_cache.deposit_status(resource)
     }
 }

@@ -35,9 +35,11 @@
 //! resource sharing and forced schedule are shared verbatim.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
+use rustc_hash::FxHashMap;
 
 use crate::constants::{FacilityType, FACILITY_DATA};
 use crate::planet::upgrade_predecessors;
@@ -407,7 +409,7 @@ fn run_plan(initial_state: &State, objective: &Objective, plan: &SystemPlan, sli
     // mode accumulates the highest-value one across the horizon.
     let mut best_value = f64::NEG_INFINITY;
     let mut best_months = 0;
-    let mut best_log: Option<Vec<Action>> = None;
+    let mut best_log_len: Option<usize> = None;
 
     let infeasible = |months: i32, violation: f64| PlanScore {
         feasible: false,
@@ -443,13 +445,13 @@ fn run_plan(initial_state: &State, objective: &Objective, plan: &SystemPlan, sli
                 }
                 Some(metric) => {
                     let value = metric.value(&state);
-                    if best_log.is_none()
+                    if best_log_len.is_none()
                         || value > best_value
                         || (value == best_value && total_months < best_months)
                     {
                         best_value = value;
                         best_months = total_months;
-                        best_log = Some(state.action_log().clone());
+                        best_log_len = Some(state.action_log().len());
                     }
                 }
             }
@@ -462,7 +464,7 @@ fn run_plan(initial_state: &State, objective: &Objective, plan: &SystemPlan, sli
             break;
         }
 
-        let actions = state.get_ordered_possible_actions(slim);
+        let actions = state.get_possible_actions(slim);
 
         // 1) Take the best immediately-applicable plan action. The static
         // action priority is only a tie-breaker here; for fixed-plan scheduling
@@ -509,13 +511,13 @@ fn run_plan(initial_state: &State, objective: &Objective, plan: &SystemPlan, sli
         }
     }
 
-    match best_log {
-        Some(log) => PlanScore {
+    match best_log_len {
+        Some(len) => PlanScore {
             feasible: true,
             months: best_months,
             violation: 0.0,
             value: best_value,
-            log,
+            log: state.action_log()[..len].to_vec(),
         },
         None => infeasible(total_months, min_violation),
     }
@@ -827,6 +829,60 @@ fn planet_set_seed_plans(
     seeds
 }
 
+/// Canonical encoding of a [`SystemPlan`] for memoization: per planet, one u64
+/// packing the seven toggles (bits 0..7) and the facility set (bit `7 + ft as
+/// u64` per facility — 22 facility types fit comfortably), sorted by planet
+/// hash. Two plans encode equal iff they permit exactly the same actions, so a
+/// memo keyed on this is exact.
+type PlanKey = (Vec<(u64, u64)>, bool);
+
+/// Shared memo of plan -> simulated score for one solve. [`run_plan`] is a pure
+/// deterministic function of `(initial_state, objective, plan, slim)`, and all
+/// climbs in one [`decomp_search_objective`] call share the same state and
+/// objective, so a cached score is bit-identical to a fresh simulation. The
+/// seeds' climbs overlap heavily (they converge into similar plans), which is
+/// where the hits come from.
+type PlanCache = Mutex<FxHashMap<PlanKey, PlanScore>>;
+
+fn plan_key(plan: &SystemPlan) -> PlanKey {
+    let mut planets: Vec<(u64, u64)> = plan
+        .planets
+        .iter()
+        .map(|(hash, p)| {
+            let mut bits: u64 = 0;
+            for (i, toggle) in Toggle::ALL.iter().enumerate() {
+                if toggle.get(p) {
+                    bits |= 1 << i;
+                }
+            }
+            for ft in &p.facilities {
+                bits |= 1 << (7 + *ft as u64);
+            }
+            (*hash, bits)
+        })
+        .collect();
+    planets.sort_unstable_by_key(|(hash, _)| *hash);
+    (planets, plan.makeshift_comm_relay)
+}
+
+/// [`run_plan`] through the shared memo. Hits still count as searched nodes at
+/// the call sites, so budget-bound decisions are unchanged.
+fn run_plan_cached(
+    state: &State,
+    objective: &Objective,
+    plan: &SystemPlan,
+    slim: bool,
+    cache: &PlanCache,
+) -> PlanScore {
+    let key = plan_key(plan);
+    if let Some(score) = cache.lock().unwrap().get(&key) {
+        return score.clone();
+    }
+    let score = run_plan(state, objective, plan, slim);
+    cache.lock().unwrap().insert(key, score.clone());
+    score
+}
+
 /// Simulate `plan` and replace `best` if its score is better (see [`is_better`]).
 /// Unlike a feasible-only filter, infeasible plans are retained and ranked by
 /// violation, so the seed search hands the climb the *least-infeasible* plan when
@@ -838,9 +894,10 @@ fn climb_from_seed(
     plan: SystemPlan,
     use_swaps: bool,
     node_budget: u32,
+    cache: &PlanCache,
 ) -> (SystemPlan, PlanScore, u32) {
     let mut nodes = 1;
-    let score = run_plan(state, objective, &plan, slim);
+    let score = run_plan_cached(state, objective, &plan, slim, cache);
     let (plan, score) = hill_climb(
         state,
         objective,
@@ -850,6 +907,7 @@ fn climb_from_seed(
         use_swaps,
         node_budget,
         &mut nodes,
+        cache,
     );
     (plan, score, nodes)
 }
@@ -970,7 +1028,7 @@ fn one_move_neighbors(state: &State, plan: &SystemPlan) -> Vec<SystemPlan> {
             let tp = trial.planets.get_mut(&h).unwrap();
             tp.facilities.insert(*ft);
             for pre in upgrade_predecessors(*ft) {
-                tp.facilities.insert(pre);
+                tp.facilities.insert(*pre);
             }
             out.push(trial);
         }
@@ -1024,7 +1082,7 @@ fn swap_neighbors(state: &State, plan: &SystemPlan) -> Vec<SystemPlan> {
                 tp.facilities.remove(drop);
                 tp.facilities.insert(*add);
                 for pre in upgrade_predecessors(*add) {
-                    tp.facilities.insert(pre);
+                    tp.facilities.insert(*pre);
                 }
                 out.push(trial);
             }
@@ -1052,6 +1110,7 @@ fn hill_climb(
     use_swaps: bool,
     node_budget: u32,
     nodes_searched: &mut u32,
+    cache: &PlanCache,
 ) -> (SystemPlan, PlanScore) {
     loop {
         if *nodes_searched >= node_budget {
@@ -1069,7 +1128,7 @@ fn hill_climb(
                 break;
             }
             *nodes_searched += 1;
-            let cand = run_plan(state, objective, &trial, slim);
+            let cand = run_plan_cached(state, objective, &trial, slim, cache);
             // Must beat the incumbent, then be the steepest such move this pass.
             if !is_better(objective, &cand, &trial, &best, &best_plan) {
                 continue;
@@ -1132,10 +1191,11 @@ fn decomp_search_objective(
         .into_iter()
         .map(|seed| (initial_state.clone(), seed))
         .collect();
+    let cache: PlanCache = Mutex::new(FxHashMap::default());
     let climbed: Vec<_> = starts
         .into_par_iter()
         .map(|(state, seed)| {
-            climb_from_seed(&state, objective, slim, seed, false, MAX_NODES_PER_SEED)
+            climb_from_seed(&state, objective, slim, seed, false, MAX_NODES_PER_SEED, &cache)
         })
         .collect();
 
@@ -1253,6 +1313,7 @@ pub fn diagnose_maximize_gap(
     let start = Instant::now();
     let deadline = Duration::from_secs(30);
     let mut nodes: u32 = 0;
+    let cache: PlanCache = Mutex::new(FxHashMap::default());
 
     let Some((seed_plan, seed_score)) =
         choose_planet_set(initial_state, &objective, slim, start, deadline, &mut nodes)
@@ -1273,6 +1334,7 @@ pub fn diagnose_maximize_gap(
         false,
         u32::MAX,
         &mut nodes,
+        &cache,
     );
 
     // Best single-move and best swap reachable from the single-move optimum.
@@ -1297,6 +1359,7 @@ pub fn diagnose_maximize_gap(
         true,
         u32::MAX,
         &mut nodes,
+        &cache,
     );
 
     format!(

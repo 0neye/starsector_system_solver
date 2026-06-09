@@ -215,19 +215,31 @@ impl System {
     }
 
     pub fn avg_stability(&self) -> f64 {
-        let colonized: Vec<_> = self.planets.values().filter(|p| p.has_colony()).collect();
-        if colonized.is_empty() {
+        let (sum, count) = self
+            .planets
+            .values()
+            .filter(|p| p.has_colony())
+            .fold((0, 0), |(sum, count), planet| {
+                (sum + planet.stability(), count + 1)
+            });
+        if count == 0 {
             return 0.0;
         }
-        colonized.iter().map(|planet| planet.stability()).sum::<i32>() as f64 / colonized.len() as f64
+        sum as f64 / count as f64
     }
 
     pub fn avg_ground_defense(&self) -> f64 {
-        let colonized: Vec<_> = self.planets.values().filter(|p| p.has_colony()).collect();
-        if colonized.is_empty() {
+        let (sum, count) = self
+            .planets
+            .values()
+            .filter(|p| p.has_colony())
+            .fold((0.0, 0), |(sum, count), planet| {
+                (sum + planet.ground_defense_strength(), count + 1)
+            });
+        if count == 0 {
             return 0.0;
         }
-        colonized.iter().map(|planet| planet.ground_defense_strength()).sum::<f64>() / colonized.len() as f64
+        sum / count as f64
     }
 
     pub fn get_possible_actions(&self, balance: &Balance, slim: bool) -> Vec<Action> {
