@@ -48,8 +48,8 @@ pub struct ParetoSolve {
     pub recommendation: Option<ParetoPoint>,
 }
 
-const STABILITY_FLOORS: [i32; 6] = [5, 6, 7, 8, 9, 10];
-const DEFENSE_FLOORS: [f64; 5] = [0.0, 250.0, 500.0, 750.0, 1000.0];
+pub(crate) const STABILITY_FLOORS: [i32; 6] = [5, 6, 7, 8, 9, 10];
+pub(crate) const DEFENSE_FLOORS: [f64; 5] = [0.0, 250.0, 500.0, 750.0, 1000.0];
 const SCORE_INCOME_UNIT: f64 = 1_000.0;
 
 pub fn solve_pareto(
@@ -120,7 +120,7 @@ pub fn solve_pareto(
     }
 }
 
-fn measure_point(
+pub(crate) fn measure_point(
     system: &System,
     balance: &Balance,
     kind: FrontierKind,
@@ -181,22 +181,13 @@ fn pareto_frontier(points: Vec<ParetoPoint>) -> Vec<ParetoPoint> {
             .then_with(|| a.months.cmp(&b.months))
     });
 
-    let mut deduped: Vec<ParetoPoint> = Vec::new();
-    for point in frontier {
-        if let Some(last) = deduped.last_mut() {
-            if last.kind == point.kind && last.frontier_x() == point.frontier_x() {
-                if point.income > last.income
-                    || (point.income == last.income && point.months < last.months)
-                {
-                    *last = point;
-                }
-                continue;
-            }
-        }
-        deduped.push(point);
-    }
+    // The dominated-filter above leaves at most one income per x (a higher-income
+    // same-x point would have dominated the other), so any same-x survivors are
+    // exact income ties. The sort already orders the min-months one first, so
+    // keep the first of each (kind, x) group.
+    frontier.dedup_by(|a, b| a.kind == b.kind && a.frontier_x() == b.frontier_x());
 
-    deduped
+    frontier
 }
 
 fn normalized_auc(frontier: &[ParetoPoint], kind: FrontierKind) -> f64 {

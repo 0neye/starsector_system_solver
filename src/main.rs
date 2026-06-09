@@ -422,36 +422,48 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut names: Vec<&String> = systems.keys().collect();
         names.sort();
 
-        let measure = |system: &System, floors: &Goal| -> Option<(f64, f64, f64)> {
-            let mut state = State::new(base_balance.clone(), system.clone());
-            let base = state.clone();
-            let results =
-                search_system_maximize(&mut state, Metric::Income, floors, horizon, time_limit, true);
-            let result = results.into_iter().next()?;
-            let mut replay = base;
-            for a in result.solution.iter().flatten() {
-                replay.apply_action_raw(a, false);
-            }
-            Some((
-                replay.balance().net_income(),
-                replay.system().avg_stability(),
-                replay.system().avg_ground_defense(),
-            ))
-        };
+        // Reuse the maximize-then-replay measurement and floor grids from the
+        // Pareto library so the CSV sweep and `--solve` can't drift apart. The
+        // sweep emits every raw sample (the Python plotter derives its own
+        // frontier), so it calls `measure_point` per floor rather than
+        // `solve_pareto`, which would only return frontier points.
+        use solver::pareto::{measure_point, FrontierKind, DEFENSE_FLOORS, STABILITY_FLOORS};
 
         println!("system,kind,floor,income,stability,defense");
         for name in names {
             let system = &systems[name];
-            for stab in 5..=10 {
+            for stab in STABILITY_FLOORS {
                 let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stab));
-                if let Some((inc, st, def)) = measure(system, &floors) {
-                    println!("{name},stability,{stab},{inc:.1},{st:.3},{def:.3}");
+                if let Some(p) = measure_point(
+                    system,
+                    &base_balance,
+                    FrontierKind::Stability,
+                    stab as f64,
+                    &floors,
+                    horizon,
+                    time_limit,
+                ) {
+                    println!(
+                        "{name},stability,{:.0},{:.1},{:.3},{:.3}",
+                        p.floor, p.income, p.stability, p.defense
+                    );
                 }
             }
-            for def_floor in [0.0, 250.0, 500.0, 750.0, 1000.0] {
+            for def_floor in DEFENSE_FLOORS {
                 let floors = Goal::new(f64::NEG_INFINITY, Some(def_floor), Some(0));
-                if let Some((inc, st, def)) = measure(system, &floors) {
-                    println!("{name},defense,{def_floor:.0},{inc:.1},{st:.3},{def:.3}");
+                if let Some(p) = measure_point(
+                    system,
+                    &base_balance,
+                    FrontierKind::Defense,
+                    def_floor,
+                    &floors,
+                    horizon,
+                    time_limit,
+                ) {
+                    println!(
+                        "{name},defense,{:.0},{:.1},{:.3},{:.3}",
+                        p.floor, p.income, p.stability, p.defense
+                    );
                 }
             }
         }
