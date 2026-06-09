@@ -345,8 +345,148 @@ fn verify_decomp(systems: &HashMap<String, System>) {
     println!("------------------------------------------------------------------------\n");
 }
 
+/// Measure, for every loaded system, how much income the greedy maximize solver
+/// leaves on the table relative to a **budget-relaxed upper bound** (the same
+/// search run from an unlimited starting balance — see [`solver::bound`]). For
+/// each stability and defense floor it prints a CSV row of greedy vs bound income
+/// and the gap, then a summary of the worst gaps. This is the measurement that
+/// decides whether an exact/branch-and-bound solver is worth building: small gaps
+/// everywhere mean the greedy is already near-optimal on the budget axis.
+/// Triggered by `SYSTEM_SOLVER_BOUND=1`; horizon/budget via
+/// `SYSTEM_SOLVER_BOUND_HORIZON` / `SYSTEM_SOLVER_BOUND_MS`.
+fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
+    use solver::pareto::{measure_point, FrontierKind, DEFENSE_FLOORS, STABILITY_FLOORS};
+    use solver::{credits_relaxed, BoundRow};
+
+    // The same scenario the Pareto sweep and A/B harness use, so numbers line up.
+    let base = ab_balance();
+    let relaxed = credits_relaxed(&base);
+
+    let measure = |system: &System, balance: &Balance, kind, floor, floors: &Goal| {
+        measure_point(system, balance, kind, floor, floors, horizon, time_limit)
+    };
+
+    let mut names: Vec<&String> = systems.keys().collect();
+    names.sort();
+
+    let mut rows: Vec<BoundRow> = Vec::new();
+
+    eprintln!(
+        "Computing greedy-vs-bound gaps (horizon {horizon} months, {time_limit}ms/point, {} systems)...",
+        names.len()
+    );
+    println!("system,kind,floor,greedy_income,bound_income,gap,gap_pct,greedy_months,bound_months");
+
+    for name in &names {
+        let system = &systems[*name];
+
+        let mut push = |kind: FrontierKind, floor: f64, floors: &Goal| {
+            let greedy = measure(system, &base, kind, floor, floors);
+            let bound = measure(system, &relaxed, kind, floor, floors);
+            let row = BoundRow {
+                system: (*name).clone(),
+                kind: kind.as_str(),
+                floor,
+                greedy_income: greedy.as_ref().map(|p| p.income),
+                bound_income: bound.as_ref().map(|p| p.income),
+                greedy_months: greedy.as_ref().map(|p| p.months),
+                bound_months: bound.as_ref().map(|p| p.months),
+            };
+            let fmt_f = |v: Option<f64>| v.map_or("--".to_string(), |x| format!("{x:.0}"));
+            let fmt_i = |v: Option<i32>| v.map_or("--".to_string(), |x| x.to_string());
+            println!(
+                "{},{},{:.0},{},{},{},{},{},{}",
+                row.system,
+                row.kind,
+                row.floor,
+                fmt_f(row.greedy_income),
+                fmt_f(row.bound_income),
+                fmt_f(row.gap()),
+                row.gap_pct().map_or("--".to_string(), |p| format!("{p:.1}")),
+                fmt_i(row.greedy_months),
+                fmt_i(row.bound_months),
+            );
+            rows.push(row);
+        };
+
+        for stab in STABILITY_FLOORS {
+            let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stab));
+            push(FrontierKind::Stability, stab as f64, &floors);
+        }
+        for def_floor in DEFENSE_FLOORS {
+            let floors = Goal::new(f64::NEG_INFINITY, Some(def_floor), Some(0));
+            push(FrontierKind::Defense, def_floor, &floors);
+        }
+    }
+
+    // ----- Summary -----
+    let mut gaps: Vec<(&BoundRow, f64)> = rows
+        .iter()
+        .filter_map(|r| r.gap_pct().map(|p| (r, p)))
+        .collect();
+    gaps.sort_by(|a, b| b.1.total_cmp(&a.1));
+
+    let comparable = gaps.len();
+    let greedy_infeasible = rows
+        .iter()
+        .filter(|r| r.greedy_income.is_none() && r.bound_income.is_some())
+        .count();
+
+    eprintln!("\n================ greedy-vs-bound summary ================");
+    if comparable == 0 {
+        eprintln!("No comparable (both-feasible, positive-greedy) points.");
+    } else {
+        let mean = gaps.iter().map(|(_, p)| *p).sum::<f64>() / comparable as f64;
+        let median = gaps[comparable / 2].1;
+        let over_5 = gaps.iter().filter(|(_, p)| *p > 5.0).count();
+        let over_15 = gaps.iter().filter(|(_, p)| *p > 15.0).count();
+        // The bound is itself a heuristic VND run (relaxed credits), so it can
+        // land below greedy. The most-negative gap is the measurement's noise
+        // floor: only gaps clear of it are real credit-timing headroom. (A true
+        // bound is max(greedy, relaxed); a negative raw value just reflects the
+        // bound search's own suboptimality, not headroom.)
+        let noise_floor = gaps.iter().map(|(_, p)| *p).fold(f64::INFINITY, f64::min);
+        eprintln!("comparable points : {comparable}");
+        eprintln!("mean gap          : {mean:.1}%");
+        eprintln!("median gap        : {median:.1}%");
+        eprintln!("points >5% gap    : {over_5}");
+        eprintln!("points >15% gap   : {over_15}");
+        eprintln!("noise floor (min) : {noise_floor:.1}%  (bound-search suboptimality; treat |gap| below this as zero)");
+        eprintln!("\nworst 10 gaps (bound is an *upper* estimate of headroom):");
+        for (r, p) in gaps.iter().take(10) {
+            eprintln!(
+                "  {:>5.1}%  {:<16} {}>={:<5.0}  greedy={:>9.0}  bound={:>9.0}",
+                p,
+                r.system,
+                r.kind,
+                r.floor,
+                r.greedy_income.unwrap_or(f64::NAN),
+                r.bound_income.unwrap_or(f64::NAN),
+            );
+        }
+    }
+    if greedy_infeasible > 0 {
+        eprintln!(
+            "\nnote: {greedy_infeasible} point(s) where the budget-relaxed search found a \
+             floor-feasible plan but the real-budget greedy did not (budget was the blocker)."
+        );
+    }
+    eprintln!("========================================================\n");
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     // Special env-var modes bypass normal CLI parsing.
+    if std::env::var_os("SYSTEM_SOLVER_BOUND").is_some() {
+        eprintln!("Loading game data...");
+        let systems = parser::load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")?;
+        let horizon: i32 = std::env::var("SYSTEM_SOLVER_BOUND_HORIZON")
+            .ok().and_then(|v| v.parse().ok()).unwrap_or(120);
+        let time_limit: u32 = std::env::var("SYSTEM_SOLVER_BOUND_MS")
+            .ok().and_then(|v| v.parse().ok()).unwrap_or(2_000);
+        run_bound(&systems, horizon, time_limit);
+        return Ok(());
+    }
+
     if std::env::var_os("SYSTEM_SOLVER_AB").is_some() {
         println!("Loading game data...");
         let systems = parser::load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")?;
