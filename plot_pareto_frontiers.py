@@ -81,31 +81,34 @@ def main():
         print("No data rows found.", file=sys.stderr)
         sys.exit(1)
 
-    # samples[system] = [(income, stability, defense), ...]
+    # samples[system][kind] = [(income, stability, defense), ...]
     samples = defaultdict(list)
     for row in rows:
-        samples[row["system"]].append((
+        samples[(row["system"], row["kind"])].append((
             float(row["income"]),
             float(row["stability"]),
             float(row["defense"]),
         ))
 
-    systems = sorted(samples.keys())
+    systems = sorted({system for system, _ in samples.keys()})
     colors = {name: f"C{i}" for i, name in enumerate(systems)}
 
     fig, (ax_stab, ax_def) = plt.subplots(1, 2, figsize=(15, 6))
     fig.suptitle(args.title, fontsize=16, fontweight="bold")
 
     for system in systems:
-        pts = samples[system]
         color = colors[system]
 
-        stab_front = pareto_frontier([(stab, inc) for inc, stab, _ in pts])
+        stab_front = pareto_frontier(
+            [(stab, inc) for inc, stab, _ in samples[(system, "stability")]]
+        )
         if stab_front:
             xs, ys = zip(*stab_front)
             ax_stab.plot(xs, ys, marker="o", color=color, label=system)
 
-        def_front = pareto_frontier([(dfn, inc) for inc, _, dfn in pts])
+        def_front = pareto_frontier(
+            [(dfn, inc) for inc, _, dfn in samples[(system, "defense")]]
+        )
         if def_front:
             xs, ys = zip(*def_front)
             ax_def.plot(xs, ys, marker="s", color=color, label=system)
