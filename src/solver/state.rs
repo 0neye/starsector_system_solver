@@ -13,6 +13,7 @@ pub enum Action {
     SetFreePort(u64, bool),        // planet name hash, is_free_port
     SetHazardPay(u64, bool),       // planet name hash, has_hazard_pay
     UpgradeAdmin(u64),  // Upgrade from Base to AlphaCore; planet name hash
+    BuildMakeshiftCommRelay,       // system-wide stable-point development
     Colonize(u64),                 // planet name hash
     Wait(u32),                     // number of months
 }
@@ -33,8 +34,9 @@ impl Action {
             Action::SetFreePort(..) => 5,
             Action::SetHazardPay(..) => 6,
             Action::UpgradeAdmin(..) => 7,
-            Action::Colonize(..) => 8,
-            Action::Wait(..) => 9,
+            Action::BuildMakeshiftCommRelay => 8,
+            Action::Colonize(..) => 9,
+            Action::Wait(..) => 10,
         };
 
         let hash = match self {
@@ -52,6 +54,7 @@ impl Action {
                 planet_hash.wrapping_mul(PRIME3) ^ ((*has_hazard_pay as u64) << 8),
             Action::UpgradeAdmin(planet_hash) => 
                 planet_hash.wrapping_mul(PRIME3),
+            Action::BuildMakeshiftCommRelay => PRIME3,
             Action::Colonize(planet_hash) => 
                 planet_hash.wrapping_mul(PRIME3),
             Action::Wait(months) => 
@@ -85,6 +88,7 @@ impl Action {
             Action::AddImprovement(_, _) => 500,
             Action::SetHazardPay(_, true) => 400,
             Action::SetFreePort(_, true) => 300,
+            Action::BuildMakeshiftCommRelay => 250,
             Action::Colonize(_) => 200,
 
             // Lowest priority: Disabling bonuses
@@ -370,6 +374,9 @@ impl State {
                 self.balance_mut().spend_alpha_cores(1);
                 self.system.get_planet_mut_by_hash(*planet_hash).unwrap().set_admin(AdminType::AlphaCore);
             }
+            Action::BuildMakeshiftCommRelay => {
+                self.system.add_makeshift_comm_relay();
+            }
             Action::Colonize(planet_hash) => {
                 self.balance.spend_credits(125000.0);
                 self.system.get_planet_mut_by_hash(*planet_hash).unwrap().set_has_colony(true);
@@ -434,6 +441,9 @@ impl State {
             Action::UpgradeAdmin(planet_hash) => {
                 self.system.get_planet_mut_by_hash(planet_hash).unwrap().set_admin(AdminType::Base);
                 self.balance_mut().add_alpha_cores(1);
+            },
+            Action::BuildMakeshiftCommRelay => {
+                self.system.remove_makeshift_comm_relay();
             },
             Action::Colonize(planet_hash) => {
                 self.system.get_planet_mut_by_hash(planet_hash).unwrap().set_has_colony(false);

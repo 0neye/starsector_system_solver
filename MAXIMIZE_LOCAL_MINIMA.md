@@ -4,6 +4,17 @@ Status: **resolved** — Tier 1/2 fix implemented in `src/solver/decomp.rs`. The
 sections below are the original design note; see **Resolution** immediately after
 the TL;DR for what shipped and the measured outcome.
 
+> **Note (data correction):** The original income figures below (Mia Bravos
+> local optimum 277797 / 281547, escape to 303737) were measured against the
+> pre-correction game data. After the colony/economy constants were corrected to
+> match the wiki (Fuel Production cost/build/upkeep/output, Farming improvement,
+> Cryoarithmetic Engine, comm-relay & stability-clamp rules), Mia Bravos's
+> income-maximize landscape changed: under a stability-6 floor it now reaches a
+> deterministic 271797 with **no** swap-bridgeable gap (single-move VND = swap =
+> full climb). The regression test
+> `decomp_maximize_mia_bravos_escapes_local_optimum` was re-pinned accordingly.
+> The historical numbers below are retained for design context.
+
 ## Resolution (implemented)
 
 A best-improvement Variable-Neighborhood-Descent replaced the old drop-only,

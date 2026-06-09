@@ -4,7 +4,8 @@
 use crate::constants::FacilityType;
 use crate::planet::Planet;
 use crate::solver::decomp::{
-    decomp_search, decomp_search_maximize, simulate_plan, simulate_plan_maximize, SystemPlan,
+    decomp_search, decomp_search_maximize, simulate_plan, simulate_plan_maximize,
+    simulate_plan_maximize_with_log, SystemPlan,
 };
 use crate::solver::goal::{Goal, Metric};
 use crate::solver::state::{get_action_sequence_hash, Action, State};
@@ -280,6 +281,39 @@ fn decomp_maximize_longer_horizon_is_no_worse_for_fixed_plan() {
     );
 }
 
+/// For a fixed plan, scheduling must not blindly follow `Action::priority`.
+/// Commerce is a multiplier, so building it before any productive industry can
+/// waste the first industry slot and depress maximize/Pareto samples.
+#[test]
+fn decomp_maximize_schedules_production_before_commerce_multiplier() {
+    let (colonized, _hash) = colonized_state(
+        PlanetBuilder::new("Ore World")
+            .deposit("ores", 2.0)
+            .deposit("rare ores", 1.0)
+            .build(),
+    );
+
+    let plan = SystemPlan::permit_all(&colonized);
+    let floors = Goal::new(f64::NEG_INFINITY, None, None);
+    let (_income, _months, log) =
+        simulate_plan_maximize_with_log(&colonized, Metric::Income, &floors, 12, &plan, true)
+            .expect("income is maximizable with no floor");
+
+    let first_facility = log
+        .iter()
+        .find_map(|action| match action {
+            Action::AddFacility(_, facility) => Some(*facility),
+            _ => None,
+        })
+        .expect("fixed all-actions plan should build at least one facility");
+
+    assert_ne!(
+        first_facility,
+        FacilityType::Commerce,
+        "commerce should not be scheduled before productive facilities exist"
+    );
+}
+
 /// Regression for the maximize climb on `Mia Bravos` (see `MAXIMIZE_LOCAL_MINIMA.md`).
 ///
 /// Maximizing income under a stability-6 floor, the climb deterministically
@@ -331,6 +365,42 @@ fn decomp_maximize_mia_bravos_escapes_local_optimum() {
     // The sorted neighbourhood must make repeated identical runs identical.
     let (income2, _) = run();
     assert_eq!(income, income2, "maximize result must be deterministic run to run");
+}
+
+/// Regression for the Pareto cliff where the income maximizer selected a
+/// two-planet `Mia Bravos` seed at stability 8 and never revisited colonization.
+/// The parallel multi-start climb must keep the three-planet basin alive.
+#[test]
+fn decomp_maximize_mia_bravos_stability_8_keeps_three_planet_basin() {
+    use crate::parser::load_game_data;
+    use crate::solver::state::Balance;
+
+    let systems = load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")
+        .expect("game data CSVs load from the crate root during tests");
+    let system = systems
+        .get("Mia Bravos")
+        .expect("Mia Bravos is present in Planets.csv")
+        .clone();
+
+    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(8));
+    let mut state = State::new(Balance::new(5_000_000.0, 5, 1), system.clone());
+    let result = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 15_000, true)
+        .expect("Mia Bravos can hold stability 8 while earning income");
+    let log = result.solution.expect("a successful result carries a solution");
+
+    let mut replay = State::new(Balance::new(5_000_000.0, 5, 1), system);
+    apply_all(&mut replay, &log);
+
+    let income = replay.balance().net_income();
+    let stability = replay.system().avg_stability();
+    assert!(
+        stability >= 8.0,
+        "maximize must hold the stability-8 floor, got {stability}"
+    );
+    assert!(
+        income > 500_000.0,
+        "income {income} regressed toward the old two-planet Pareto cliff (~401849)"
+    );
 }
 
 /// A fresh, uncolonized two-planet system.

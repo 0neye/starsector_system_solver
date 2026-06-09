@@ -37,6 +37,8 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+use rayon::prelude::*;
+
 use crate::constants::{FacilityType, FACILITY_DATA};
 use crate::planet::upgrade_predecessors;
 use crate::solver::goal::{AStarSearchResult, Goal, Metric};
@@ -144,6 +146,7 @@ impl PlanetPlan {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SystemPlan {
     planets: HashMap<u64, PlanetPlan>,
+    makeshift_comm_relay: bool,
 }
 
 impl SystemPlan {
@@ -161,6 +164,7 @@ impl SystemPlan {
             Action::SetFreePort(h, true) => self.planets.get(h).is_some_and(|p| p.free_port),
             Action::SetHazardPay(h, true) => self.planets.get(h).is_some_and(|p| p.hazard_pay),
             Action::UpgradeAdmin(h) => self.planets.get(h).is_some_and(|p| p.upgrade_admin),
+            Action::BuildMakeshiftCommRelay => self.makeshift_comm_relay,
             Action::Colonize(h) => self.planets.get(h).is_some_and(|p| p.colonize),
             // The plan never deliberately disables a bonus.
             Action::SetFreePort(_, false) | Action::SetHazardPay(_, false) => false,
@@ -170,7 +174,8 @@ impl SystemPlan {
 
     /// Total number of decisions across all planets.
     fn size(&self) -> usize {
-        self.planets.values().map(PlanetPlan::size).sum()
+        self.planets.values().map(PlanetPlan::size).sum::<usize>()
+            + usize::from(self.makeshift_comm_relay)
     }
 
     /// A plan that permits every action on every planet (all facilities, all
@@ -195,7 +200,10 @@ impl SystemPlan {
                 },
             );
         }
-        SystemPlan { planets }
+        SystemPlan {
+            planets,
+            makeshift_comm_relay: true,
+        }
     }
 }
 
@@ -345,6 +353,27 @@ pub(crate) fn simulate_plan_maximize(
     score.feasible.then_some((score.value, score.months))
 }
 
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn simulate_plan_maximize_with_log(
+    initial_state: &State,
+    metric: Metric,
+    floors: &Goal,
+    horizon_months: i32,
+    plan: &SystemPlan,
+    slim: bool,
+) -> Option<(f64, i32, Vec<Action>)> {
+    let objective = Objective::Maximize {
+        metric,
+        floors,
+        horizon_months,
+    };
+    let score = run_plan(initial_state, &objective, plan, slim);
+    score
+        .feasible
+        .then_some((score.value, score.months, score.log))
+}
+
 /// Forced forward simulation of a fixed plan, returning a full [`PlanScore`].
 ///
 /// Reach and maximize modes share the build-ASAP/wait-to-next-event schedule and
@@ -428,13 +457,11 @@ fn run_plan(initial_state: &State, objective: &Objective, plan: &SystemPlan, sli
 
         let actions = state.get_ordered_possible_actions(slim);
 
-        // 1) Take any immediately-applicable plan action first (the list is
-        //    already sorted by the action priority used elsewhere).
-        if let Some(action) = actions
-            .iter()
-            .find(|a| !is_wait(a) && plan.allows(a))
-            .cloned()
-        {
+        // 1) Take the best immediately-applicable plan action. The static
+        // action priority is only a tie-breaker here; for fixed-plan scheduling
+        // we need to avoid building a generic multiplier (notably Commerce)
+        // before the production it is supposed to multiply.
+        if let Some(action) = choose_plan_action(&state, objective, plan, &actions) {
             state.apply_action_raw(&action, false);
             continue;
         }
@@ -485,6 +512,105 @@ fn run_plan(initial_state: &State, objective: &Objective, plan: &SystemPlan, sli
         },
         None => infeasible(total_months, min_violation),
     }
+}
+
+fn choose_plan_action(
+    state: &State,
+    objective: &Objective,
+    plan: &SystemPlan,
+    actions: &[Action],
+) -> Option<Action> {
+    // Score each candidate once (each score is a full state clone + simulate),
+    // then pick the max. `max_by` would call the comparator O(n) times and
+    // recompute both operands' scores on every call.
+    actions
+        .iter()
+        .filter(|a| !is_wait(a) && plan.allows(a))
+        .map(|a| (action_lookahead_score(state, objective, a), a.clone()))
+        .max_by(|(a_score, a), (b_score, b)| {
+            a_score
+                .cmp(b_score)
+                // Preserve the old deterministic ordering as a final tie-break.
+                .then_with(|| b.cmp(a))
+                .then_with(|| b.get_hash().cmp(&a.get_hash()))
+        })
+        .map(|(_, a)| a)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ActionLookaheadScore {
+    feasible: bool,
+    objective_value: i64,
+    floor_violation: i64,
+    income: i64,
+    stability: i64,
+    defense: i64,
+    earlier: i32,
+}
+
+impl Ord for ActionLookaheadScore {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.feasible
+            .cmp(&other.feasible)
+            .then_with(|| self.objective_value.cmp(&other.objective_value))
+            // Smaller violation is better.
+            .then_with(|| other.floor_violation.cmp(&self.floor_violation))
+            .then_with(|| self.income.cmp(&other.income))
+            .then_with(|| self.stability.cmp(&other.stability))
+            .then_with(|| self.defense.cmp(&other.defense))
+            // Smaller lookahead delay is better.
+            .then_with(|| self.earlier.cmp(&other.earlier))
+    }
+}
+
+impl PartialOrd for ActionLookaheadScore {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+fn action_lookahead_score(
+    state: &State,
+    objective: &Objective,
+    action: &Action,
+) -> ActionLookaheadScore {
+    let mut trial = state.clone();
+    trial.apply_action_raw(action, false);
+
+    let wait_months = natural_action_wait(action).min(objective.horizon_months().max(0) as u32);
+    if wait_months > 0 {
+        trial.apply_action_raw(&Action::Wait(wait_months), false);
+    }
+
+    let floors = objective.floors();
+    let violation = goal_violation(floors, &trial);
+    let metric_value = objective
+        .metric()
+        .map_or_else(|| -violation, |metric| metric.value(&trial));
+
+    ActionLookaheadScore {
+        feasible: violation <= 0.0,
+        objective_value: score_units(metric_value),
+        floor_violation: score_units(violation),
+        income: score_units(trial.balance().net_income()),
+        stability: score_units(trial.system().avg_stability()),
+        defense: score_units(trial.system().avg_ground_defense()),
+        earlier: -(wait_months as i32),
+    }
+}
+
+fn natural_action_wait(action: &Action) -> u32 {
+    match action {
+        Action::AddFacility(_, ft) => FACILITY_DATA
+            .get(ft)
+            .map(|data| (data.build_time as f64 / 30.0).ceil() as u32)
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn score_units(value: f64) -> i64 {
+    (value * 1_000.0).round() as i64
 }
 
 /// Months of waiting needed to afford the cheapest pending plan target
@@ -587,7 +713,10 @@ fn build_system_plan(state: &State, active: &HashSet<u64>, free_port: bool) -> S
         };
         planets.insert(*hash, pplan);
     }
-    SystemPlan { planets }
+    SystemPlan {
+        planets,
+        makeshift_comm_relay: state.system().can_build_makeshift_comm_relay(),
+    }
 }
 
 /// Free-port seed values to try for the maximal plan. With no stability/defense
@@ -605,19 +734,17 @@ fn seed_free_ports(goal: &Goal) -> &'static [bool] {
 /// Pick which planets to develop. A maximal "colonize everything" plan is often
 /// infeasible for a system-wide goal: colonizing a weak planet drags down
 /// average stability (and early net income) so the goal can never be met. So we
-/// search over *which* planets to develop and return the cheapest feasible set
-/// (with its simulated outcome), to seed the facility-level hill-climb.
+/// search over *which* planets to develop and keep multiple seed plans alive for
+/// the facility-level hill-climb.
 ///
 /// For a small number of optional (uncolonized) planets we enumerate all
-/// subsets; beyond that we fall back to greedily dropping one planet at a time.
-fn choose_planet_set(
+/// subsets; beyond that we seed the all-planet set plus every one-planet drop.
+fn planet_set_seed_plans(
     state: &State,
     objective: &Objective,
-    slim: bool,
     start: Instant,
     deadline: Duration,
-    nodes_searched: &mut u32,
-) -> Option<(SystemPlan, PlanScore)> {
+) -> Vec<SystemPlan> {
     let forced: HashSet<u64> = state
         .system()
         .planets()
@@ -633,7 +760,7 @@ fn choose_planet_set(
         .map(|(h, _)| *h)
         .collect();
 
-    let mut best: Option<(SystemPlan, PlanScore)> = None;
+    let mut seeds = Vec::new();
 
     let free_ports = seed_free_ports(objective.floors());
 
@@ -654,75 +781,81 @@ fn choose_planet_set(
                 continue; // nothing colonized can't meet a positive goal
             }
             for &fp in free_ports {
-                let plan = build_system_plan(state, &active, fp);
-                consider_plan(state, objective, slim, plan, &mut best, nodes_searched);
+                seeds.push(build_system_plan(state, &active, fp));
             }
         }
     } else {
-        // Greedy fallback: start from all planets and drop the one whose removal
-        // improves the result, until no further improvement.
-        let mut active: HashSet<u64> = forced.iter().copied().chain(optional.clone()).collect();
+        let active: HashSet<u64> = forced.iter().copied().chain(optional.clone()).collect();
         for &fp in free_ports {
-            let plan = build_system_plan(state, &active, fp);
-            consider_plan(state, objective, slim, plan, &mut best, nodes_searched);
+            seeds.push(build_system_plan(state, &active, fp));
         }
-        loop {
+        for &h in &optional {
             if start.elapsed() >= deadline {
                 break;
             }
-            let mut dropped = None;
-            for &h in &optional {
-                if !active.contains(&h) {
-                    continue;
-                }
-                let mut trial_active = active.clone();
-                trial_active.remove(&h);
-                if trial_active.is_empty() {
-                    continue;
-                }
-                let before = best.as_ref().map(|(_, o)| (o.feasible, o.months, o.violation));
-                for &fp in free_ports {
-                    let plan = build_system_plan(state, &trial_active, fp);
-                    consider_plan(state, objective, slim, plan, &mut best, nodes_searched);
-                }
-                let after = best.as_ref().map(|(_, o)| (o.feasible, o.months, o.violation));
-                if after != before {
-                    dropped = Some(h);
-                    break;
-                }
+            let mut trial_active = active.clone();
+            trial_active.remove(&h);
+            if trial_active.is_empty() {
+                continue;
             }
-            match dropped {
-                Some(h) => {
-                    active.remove(&h);
-                }
-                None => break,
+            for &fp in free_ports {
+                seeds.push(build_system_plan(state, &trial_active, fp));
             }
         }
     }
 
-    best
+    seeds
 }
 
 /// Simulate `plan` and replace `best` if its score is better (see [`is_better`]).
 /// Unlike a feasible-only filter, infeasible plans are retained and ranked by
 /// violation, so the seed search hands the climb the *least-infeasible* plan when
 /// nothing is outright feasible — the climb can then repair it.
-fn consider_plan(
+fn climb_from_seed(
     state: &State,
     objective: &Objective,
     slim: bool,
     plan: SystemPlan,
-    best: &mut Option<(SystemPlan, PlanScore)>,
-    nodes: &mut u32,
-) {
-    *nodes += 1;
+    use_swaps: bool,
+    start: Instant,
+    deadline: Duration,
+) -> (SystemPlan, PlanScore, u32) {
+    let mut nodes = 1;
     let score = run_plan(state, objective, &plan, slim);
-    let better = best
-        .as_ref()
-        .map_or(true, |(bp, bo)| is_better(objective, &score, &plan, bo, bp));
-    if better {
-        *best = Some((plan, score));
+    let (plan, score) = hill_climb(
+        state,
+        objective,
+        slim,
+        plan,
+        score,
+        use_swaps,
+        start,
+        deadline,
+        &mut nodes,
+    );
+    (plan, score, nodes)
+}
+
+fn choose_planet_set(
+    state: &State,
+    objective: &Objective,
+    slim: bool,
+    start: Instant,
+    deadline: Duration,
+    nodes_searched: &mut u32,
+) -> Option<(SystemPlan, PlanScore)> {
+    let mut best: Option<(SystemPlan, PlanScore)> = None;
+    for plan in planet_set_seed_plans(state, objective, start, deadline) {
+        *nodes_searched += 1;
+        let score = run_plan(state, objective, &plan, slim);
+        let better = best
+            .as_ref()
+            .map_or(true, |(bp, bo)| is_better(objective, &score, &plan, bo, bp));
+        if better {
+            best = Some((plan, score));
+        }
     }
+    best
 }
 
 /// Ranking between two plan scores (better wins):
@@ -780,6 +913,12 @@ fn plan_develops(state: &State, plan: &SystemPlan, hash: u64) -> bool {
 /// improvement climb is reproducible run to run.
 fn one_move_neighbors(state: &State, plan: &SystemPlan) -> Vec<SystemPlan> {
     let mut out = Vec::new();
+    if state.system().available_stable_points() > 0 || plan.makeshift_comm_relay {
+        let mut trial = plan.clone();
+        trial.makeshift_comm_relay = !trial.makeshift_comm_relay;
+        out.push(trial);
+    }
+
     let mut hashes: Vec<u64> = plan.planets.keys().copied().collect();
     hashes.sort_unstable();
 
@@ -941,12 +1080,11 @@ fn hill_climb(
 /// Level 1 (outer): two-level decomposition solve over the given state's planets
 /// on a single shared timeline, optimizing `objective`.
 ///
-/// First [`choose_planet_set`] decides *which* planets to develop (a maximal
+/// First [`planet_set_seed_plans`] generates planet-set basins (a maximal
 /// "colonize everything" plan is often infeasible for a system-wide goal). Then
-/// the hill-climb refines that set by dropping per-planet facilities and turning
-/// per-planet toggles off, accepting any change [`is_better`] approves under the
-/// objective. Bounded by `time_limit` (ms); returns the best plan found, or
-/// `None` if no subset of planets satisfies the objective's floors.
+/// each basin is hill-climbed independently, and the best finished basin wins.
+/// Bounded by `time_limit` (ms); returns the best plan found, or `None` if no
+/// refined seed satisfies the objective's floors.
 fn decomp_search_objective(
     initial_state: &mut State,
     objective: &Objective,
@@ -955,11 +1093,11 @@ fn decomp_search_objective(
 ) -> Option<AStarSearchResult> {
     let start = Instant::now();
     let deadline = Duration::from_millis(time_limit as u64);
-    let mut nodes_searched: u32 = 0;
 
-    // First decide which planets to develop, then refine facilities/toggles.
-    let (seed_plan, seed_score) =
-        choose_planet_set(initial_state, objective, slim, start, deadline, &mut nodes_searched)?;
+    let seed_plans = planet_set_seed_plans(initial_state, objective, start, deadline);
+    if seed_plans.is_empty() {
+        return None;
+    }
 
     // Best-improvement VND over a bidirectional neighbourhood (add/drop/toggle
     // either way). Swaps are *off*: the maximize-gap diagnostic
@@ -967,17 +1105,23 @@ fn decomp_search_objective(
     // the old drop-only trap (Mia Bravos income 277797 → 303737) and that swaps
     // add nothing from that optimum, so they are not worth the quadratic
     // neighbourhood. See `MAXIMIZE_LOCAL_MINIMA.md`.
-    let (_best_plan, best) = hill_climb(
-        initial_state,
-        objective,
-        slim,
-        seed_plan,
-        seed_score,
-        false,
-        start,
-        deadline,
-        &mut nodes_searched,
-    );
+    let starts: Vec<_> = seed_plans
+        .into_iter()
+        .map(|seed| (initial_state.clone(), seed))
+        .collect();
+    let climbed: Vec<_> = starts
+        .into_par_iter()
+        .map(|(state, seed)| climb_from_seed(&state, objective, slim, seed, false, start, deadline))
+        .collect();
+
+    let nodes_searched = climbed.iter().map(|(_, _, nodes)| *nodes).sum();
+    let (_best_plan, best, _) = climbed.into_iter().reduce(|best, cand| {
+        if is_better(objective, &cand.1, &cand.0, &best.1, &best.0) {
+            cand
+        } else {
+            best
+        }
+    })?;
 
     // The climb may have started from an infeasible seed and failed to repair it
     // (the goal is genuinely unreachable for any plan it reached). Only report a
@@ -989,7 +1133,7 @@ fn decomp_search_objective(
     Some(AStarSearchResult {
         solution: Some(best.log),
         cost: best.months,
-        cutoff_occurred: false,
+        cutoff_occurred: start.elapsed() >= deadline,
         nodes_searched,
         nodes_pruned_by_bound: 0,
     })

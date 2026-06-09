@@ -163,6 +163,31 @@ impl System {
         self.update_infrastructure_bonuses();
     }
 
+    pub fn add_makeshift_comm_relay(&mut self) -> bool {
+        if !self.can_build_makeshift_comm_relay() {
+            return false;
+        }
+        self.add_infrastructure(
+            format!("{}-MakeshiftCommRelay", self.name),
+            Infrastructure::CommRelay { domain: false },
+        );
+        true
+    }
+
+    pub fn remove_makeshift_comm_relay(&mut self) -> bool {
+        let Some(name) = self
+            .infrastructure
+            .iter()
+            .find_map(|(name, infra)| match infra {
+                Infrastructure::CommRelay { domain: false } => Some(name.clone()),
+                _ => None,
+            })
+        else {
+            return false;
+        };
+        self.remove_infrastructure(&name).is_some()
+    }
+
     pub fn remove_infrastructure(&mut self, name: &str) -> Option<Infrastructure> {
         let infra = self.infrastructure.remove(name);
         self.update_infrastructure_bonuses();
@@ -207,6 +232,10 @@ impl System {
 
     pub fn get_possible_actions(&self, balance: &Balance, slim: bool) -> Vec<Action> {
         let mut actions = Vec::new();
+
+        if self.can_build_makeshift_comm_relay() {
+            actions.push(Action::BuildMakeshiftCommRelay);
+        }
         
         // First, check for uncolonized planets that we can colonize
         for (name, planet) in &self.planets {

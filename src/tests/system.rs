@@ -23,3 +23,57 @@ fn averages_ignore_uncolonized_planets() {
     let only = sys.get_planet_by_hash(h1).unwrap().stability() as f64;
     assert_eq!(sys.avg_stability(), only, "avg should be over colonized planets only");
 }
+
+#[test]
+fn makeshift_comm_relay_uses_stable_point_and_affects_all_colonies() {
+    let mut system = System::new("Test".to_string());
+    system.set_stable_points(1);
+    let a = PlanetBuilder::new("A");
+    let h1 = a.name_hash();
+    let b = PlanetBuilder::new("B");
+    let h2 = b.name_hash();
+    system.add_planet(a.build());
+    system.add_planet(b.build());
+
+    let mut state = State::new(Balance::new(10_000_000.0, 5, 5), system);
+    state.apply_action_raw(&Action::Colonize(h1), false);
+    state.apply_action_raw(&Action::Colonize(h2), false);
+
+    let before_a = state.system().get_planet_by_hash(h1).unwrap().stability();
+    let before_b = state.system().get_planet_by_hash(h2).unwrap().stability();
+
+    assert!(
+        state
+            .get_possible_actions(false)
+            .contains(&Action::BuildMakeshiftCommRelay)
+    );
+
+    state.apply_action_raw(&Action::BuildMakeshiftCommRelay, false);
+
+    assert_eq!(
+        state.system().get_planet_by_hash(h1).unwrap().stability(),
+        before_a + 2
+    );
+    assert_eq!(
+        state.system().get_planet_by_hash(h2).unwrap().stability(),
+        before_b + 2
+    );
+    assert_eq!(state.system().available_stable_points(), 0);
+    assert!(
+        !state
+            .get_possible_actions(false)
+            .contains(&Action::BuildMakeshiftCommRelay)
+    );
+
+    state.undo_last_action(false);
+
+    assert_eq!(
+        state.system().get_planet_by_hash(h1).unwrap().stability(),
+        before_a
+    );
+    assert_eq!(
+        state.system().get_planet_by_hash(h2).unwrap().stability(),
+        before_b
+    );
+    assert_eq!(state.system().available_stable_points(), 1);
+}
