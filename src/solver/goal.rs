@@ -46,7 +46,11 @@ pub struct Goal {
 }
 
 impl Goal {
-    pub fn new(min_net_income: f64, min_ground_defense: Option<f64>, min_stability: Option<i32>) -> Self {
+    pub fn new(
+        min_net_income: f64,
+        min_ground_defense: Option<f64>,
+        min_stability: Option<i32>,
+    ) -> Self {
         Self {
             min_net_income,
             min_ground_defense,
@@ -74,7 +78,10 @@ impl Goal {
         }
 
         println!("\nSatisfied with balance: {:?}", state.balance());
-        println!("Satisfied with ground defense: {}", system.avg_ground_defense());
+        println!(
+            "Satisfied with ground defense: {}",
+            system.avg_ground_defense()
+        );
         println!("Satisfied with stability: {}", system.avg_stability());
 
         true

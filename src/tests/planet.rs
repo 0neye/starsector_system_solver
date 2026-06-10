@@ -9,7 +9,11 @@ use crate::tests::support::{colonized_state, PlanetBuilder};
 /// when the planet has none. (Regression: audit #3 — was requiring *all*.)
 #[test]
 fn mining_requires_any_deposit_not_all() {
-    let (state, hash) = colonized_state(PlanetBuilder::new("Test 1").deposit("organics", 2.0).build());
+    let (state, hash) = colonized_state(
+        PlanetBuilder::new("Test 1")
+            .deposit("organics", 2.0)
+            .build(),
+    );
     let planet = state.system().get_planet_by_hash(hash).unwrap();
     let actions = planet.get_possible_actions(state.balance(), false);
     assert!(
@@ -31,8 +35,11 @@ fn mining_requires_any_deposit_not_all() {
 /// (Regression: audit #4.)
 #[test]
 fn extraction_adds_deposit_modifier_bonus() {
-    let (mut state, hash) =
-        colonized_state(PlanetBuilder::new("Test 1").deposit("organics", 2.0).build());
+    let (mut state, hash) = colonized_state(
+        PlanetBuilder::new("Test 1")
+            .deposit("organics", 2.0)
+            .build(),
+    );
     state.apply_action_raw(&Action::AddFacility(hash, FacilityType::Mining), false);
     state.apply_action_raw(&Action::Wait(3), false); // mining build_time 60d -> finishes
 

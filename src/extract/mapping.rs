@@ -35,7 +35,8 @@ pub fn map_save(raw: RawSave, game_data: &GameData) -> MappedOutput {
             if is_star_like(&planet.planet_type, game_data) {
                 continue;
             }
-            if let (Some((x, y)), Some(owner)) = (system.hyper_loc, planet.owner_faction.as_deref()) {
+            if let (Some((x, y)), Some(owner)) = (system.hyper_loc, planet.owner_faction.as_deref())
+            {
                 if planet.market_size > 0 && owner != "player" {
                     let weight = planet.market_size as f64;
                     com_weighted_sum.0 += x * weight;
@@ -47,11 +48,13 @@ pub fn map_save(raw: RawSave, game_data: &GameData) -> MappedOutput {
                 // Planetary-flagged conditions without procgen data (world types
                 // like `jungle`/`arid`) are known, they just contribute 0 hazard.
                 if !game_data.is_planetary_condition(condition) {
-                    let entry = unknown_conditions.entry(condition.clone()).or_insert_with(|| UnknownCondition {
-                        condition_id: condition.clone(),
-                        occurrences: 0,
-                        example_planet: planet.name.clone(),
-                    });
+                    let entry = unknown_conditions
+                        .entry(condition.clone())
+                        .or_insert_with(|| UnknownCondition {
+                            condition_id: condition.clone(),
+                            occurrences: 0,
+                            example_planet: planet.name.clone(),
+                        });
                     entry.occurrences += 1;
                 }
             }
@@ -59,7 +62,10 @@ pub fn map_save(raw: RawSave, game_data: &GameData) -> MappedOutput {
     }
 
     let com = if com_weight > 0.0 {
-        Some((com_weighted_sum.0 / com_weight, com_weighted_sum.1 / com_weight))
+        Some((
+            com_weighted_sum.0 / com_weight,
+            com_weighted_sum.1 / com_weight,
+        ))
     } else {
         None
     };
@@ -158,7 +164,11 @@ pub fn map_save(raw: RawSave, game_data: &GameData) -> MappedOutput {
     type_mappings.sort_by(|a, b| {
         a.modded_type
             .cmp(&b.modded_type)
-            .then_with(|| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| {
+                b.similarity
+                    .partial_cmp(&a.similarity)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| a.vanilla_type.cmp(&b.vanilla_type))
     });
 
@@ -226,7 +236,9 @@ fn build_type_profiles(raw: &RawSave, game_data: &GameData) -> HashMap<String, T
             if is_star_like(&planet.planet_type, game_data) {
                 continue;
             }
-            let entry = stats.entry(planet.planet_type.clone()).or_insert_with(TypeStats::new);
+            let entry = stats
+                .entry(planet.planet_type.clone())
+                .or_insert_with(TypeStats::new);
             entry.sample_count += 1;
             if planet.conditions.iter().any(|c| c == "habitable") {
                 entry.habitable_count += 1;
@@ -312,7 +324,10 @@ fn map_system(
     let y_ly = system.hyper_loc.map(|loc| loc.1 / LY_TO_RAW_UNITS);
     let stable_points = count_stable_points(&system);
     let remnant_state = remnant_state(&system);
-    let has_gate = system.entities.iter().any(|entity| entity.spec_id == "inactive_gate");
+    let has_gate = system
+        .entities
+        .iter()
+        .any(|entity| entity.spec_id == "inactive_gate");
 
     let mut infrastructure = Vec::new();
     for entity in &system.entities {
@@ -417,8 +432,8 @@ fn map_planet(
             }
         });
 
-    let accessibility_percent = dist_from_com_ly
-        .map(|dist| (100.0 * (1.0 - dist / 50.0)).round().max(0.0));
+    let accessibility_percent =
+        dist_from_com_ly.map(|dist| (100.0 * (1.0 - dist / 50.0)).round().max(0.0));
 
     let ruins = resource_value(
         &planet.conditions,
@@ -464,8 +479,8 @@ fn map_planet(
         "organics_abundant",
         "organics_plentiful",
     );
-    let water = has_condition(planet, "water_surface")
-        || mapped_vanilla_type.as_deref() == Some("water");
+    let water =
+        has_condition(planet, "water_surface") || mapped_vanilla_type.as_deref() == Some("water");
 
     PlanetRow {
         name: planet.name.clone(),
@@ -490,7 +505,8 @@ fn map_planet(
             .any(|condition| !game_data.is_planetary_condition(condition)),
         no_atmosphere: has_condition(planet, "no_atmosphere"),
         very_hot: has_condition(planet, "very_hot"),
-        gas_giant: planet.tags.iter().any(|tag| tag == "gas_giant") || planet.planet_type == "gas_giant",
+        gas_giant: planet.tags.iter().any(|tag| tag == "gas_giant")
+            || planet.planet_type == "gas_giant",
         habitable: has_condition(planet, "habitable"),
         extreme_activity: has_condition(planet, "extreme_tectonic_activity"),
         water,
@@ -559,10 +575,18 @@ fn count_stable_points(system: &RawSystem) -> u32 {
 }
 
 fn remnant_state(system: &RawSystem) -> (bool, bool) {
-    if system.tags.iter().any(|tag| tag == "theme_remnant_resurgent") {
+    if system
+        .tags
+        .iter()
+        .any(|tag| tag == "theme_remnant_resurgent")
+    {
         return (true, false);
     }
-    if system.tags.iter().any(|tag| tag == "theme_remnant_suppressed") {
+    if system
+        .tags
+        .iter()
+        .any(|tag| tag == "theme_remnant_suppressed")
+    {
         return (true, true);
     }
     (false, false)
@@ -715,7 +739,13 @@ mod tests {
                     planets: vec![planet(
                         "B",
                         "mod_water",
-                        &["habitable", "water_surface", "ore_moderate", "rare_ore_rich", "very_hot"],
+                        &[
+                            "habitable",
+                            "water_surface",
+                            "ore_moderate",
+                            "rare_ore_rich",
+                            "very_hot",
+                        ],
                         true,
                     )],
                     entities: vec![RawEntity {
@@ -741,7 +771,10 @@ mod tests {
         assert!(beta.system.remnant_damaged);
         assert_eq!(beta.planets[0].ores, Some(0.0));
         assert_eq!(beta.planets[0].rare_ores, Some(2.0));
-        assert_eq!(beta.planets[0].mapped_vanilla_type.as_deref(), Some("water"));
+        assert_eq!(
+            beta.planets[0].mapped_vanilla_type.as_deref(),
+            Some("water")
+        );
         assert!(mapped
             .type_mappings
             .iter()

@@ -360,7 +360,9 @@ impl Db {
                     continue;
                 }
             }
-            if let Some(rank) = search_rank(&candidate.name, &query).or_else(|| search_rank(&candidate.display_name, &query)) {
+            if let Some(rank) = search_rank(&candidate.name, &query)
+                .or_else(|| search_rank(&candidate.display_name, &query))
+            {
                 rows.push((rank, candidate));
             }
         }
@@ -369,7 +371,11 @@ impl Db {
             a_rank
                 .cmp(b_rank)
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-                .then_with(|| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()))
+                .then_with(|| {
+                    a.display_name
+                        .to_lowercase()
+                        .cmp(&b.display_name.to_lowercase())
+                })
         });
 
         Ok(rows
@@ -404,7 +410,12 @@ impl Db {
         let system_filter: Option<HashSet<_>> = if system_names.is_empty() {
             None
         } else {
-            Some(system_names.iter().map(|name| name.to_lowercase()).collect())
+            Some(
+                system_names
+                    .iter()
+                    .map(|name| name.to_lowercase())
+                    .collect(),
+            )
         };
         let save_filter = save_dir_name.map(|s| s.to_lowercase());
 
@@ -476,7 +487,11 @@ impl Db {
         Ok(rows)
     }
 
-    pub(crate) fn fetch_planets(&self, system_id: i64, system_name: &str) -> Result<Vec<PlanetRowDb>> {
+    pub(crate) fn fetch_planets(
+        &self,
+        system_id: i64,
+        system_name: &str,
+    ) -> Result<Vec<PlanetRowDb>> {
         let mut stmt = self.conn.prepare(
             r#"
             SELECT id, name, internal_id, planet_type, mapped_vanilla_type, is_moon,
@@ -523,7 +538,11 @@ impl Db {
         Ok(rows)
     }
 
-    pub(crate) fn fetch_infrastructure(&self, system_id: i64, system_name: &str) -> Result<Vec<InfraRowDb>> {
+    pub(crate) fn fetch_infrastructure(
+        &self,
+        system_id: i64,
+        system_name: &str,
+    ) -> Result<Vec<InfraRowDb>> {
         let mut stmt = self.conn.prepare(
             r#"
             SELECT infrastructure_type, is_domain, is_damaged
@@ -717,7 +736,11 @@ fn split_csv(input: &str) -> Vec<String> {
     if input.trim().is_empty() {
         return Vec::new();
     }
-    input.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+    input
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -729,7 +752,10 @@ struct Rank {
 fn search_rank(text: &str, query: &str) -> Option<Rank> {
     let text = text.to_lowercase();
     if text.starts_with(query) {
-        return Some(Rank { category: 0, detail: 0 });
+        return Some(Rank {
+            category: 0,
+            detail: 0,
+        });
     }
     if let Some(pos) = text.find(query) {
         return Some(Rank {
@@ -774,7 +800,11 @@ fn levenshtein_limited(a: &str, b: &str, limit: usize) -> Option<u32> {
 }
 
 fn bool_to_i64(value: bool) -> i64 {
-    if value { 1 } else { 0 }
+    if value {
+        1
+    } else {
+        0
+    }
 }
 
 fn unix_seconds_string() -> String {
@@ -845,7 +875,12 @@ fn write_systems_csv(path: impl AsRef<Path>, rows: &[SystemRowDb]) -> Result<()>
 
 fn write_infrastructure_csv(path: impl AsRef<Path>, rows: &[InfraRowDb]) -> Result<()> {
     let mut writer = WriterBuilder::new().has_headers(false).from_path(path)?;
-    writer.write_record(["system_name", "infrastructure_type", "is_domain", "is_damaged"])?;
+    writer.write_record([
+        "system_name",
+        "infrastructure_type",
+        "is_domain",
+        "is_damaged",
+    ])?;
     for row in rows {
         // The existing Infrastructure.csv uses lowercase booleans, unlike the
         // other two files; mirror that exactly.
@@ -882,22 +917,31 @@ fn num(value: f64) -> String {
 }
 
 fn bool_str(value: bool) -> &'static str {
-    if value { "TRUE" } else { "FALSE" }
+    if value {
+        "TRUE"
+    } else {
+        "FALSE"
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::extract::gamedata::{ConditionSpec, GameData, PlanetTypeSpec};
-    use crate::extract::model::InfraRow;
     use crate::extract::mapping::map_save;
-    use crate::extract::model::{MappedOutput, MappedSystem, PlanetRow, RawEntity, RawPlanet, RawSave, RawSystem, SystemRow};
+    use crate::extract::model::InfraRow;
+    use crate::extract::model::{
+        MappedOutput, MappedSystem, PlanetRow, RawEntity, RawPlanet, RawSave, RawSystem, SystemRow,
+    };
     use std::collections::HashMap;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_db_path(name: &str) -> std::path::PathBuf {
-        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         std::env::temp_dir().join(format!("system_solver_db_{name}_{unique}.sqlite"))
     }
 

@@ -119,8 +119,11 @@ mod tests {
         assert_eq!(relaxed.story_points(), real.story_points());
         assert_eq!(relaxed.alpha_cores(), real.alpha_cores());
         assert_eq!(
-            relaxed.colony_items().get(&crate::constants::ColonyItem::CorruptedNanoforge),
-            real.colony_items().get(&crate::constants::ColonyItem::CorruptedNanoforge),
+            relaxed
+                .colony_items()
+                .get(&crate::constants::ColonyItem::CorruptedNanoforge),
+            real.colony_items()
+                .get(&crate::constants::ColonyItem::CorruptedNanoforge),
         );
     }
 

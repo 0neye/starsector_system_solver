@@ -37,7 +37,9 @@ pub struct GameData {
 
 impl GameData {
     pub fn condition_feature_key(&self, condition_id: &str) -> Option<&str> {
-        self.conditions.get(condition_id).map(|spec| spec.feature_key.as_str())
+        self.conditions
+            .get(condition_id)
+            .map(|spec| spec.feature_key.as_str())
     }
 
     pub fn condition_hazard(&self, condition_id: &str) -> Option<f64> {
@@ -45,7 +47,9 @@ impl GameData {
     }
 
     pub fn planet_type_source(&self, type_id: &str) -> Option<&str> {
-        self.planet_types.get(type_id).map(|spec| spec.source.as_str())
+        self.planet_types
+            .get(type_id)
+            .map(|spec| spec.source.as_str())
     }
 
     /// A condition counts as planetary when procgen defines it (condition_gen_data)
@@ -70,7 +74,10 @@ pub fn load_game_data(starsector_dir: impl AsRef<Path>) -> Result<GameData> {
     let mut game_data = GameData::default();
 
     load_condition_file(
-        &core_data.join("campaign").join("procgen").join("condition_gen_data.csv"),
+        &core_data
+            .join("campaign")
+            .join("procgen")
+            .join("condition_gen_data.csv"),
         "vanilla",
         &mut game_data.conditions,
         false,
@@ -108,13 +115,13 @@ pub fn load_game_data(starsector_dir: impl AsRef<Path>) -> Result<GameData> {
                 .join("procgen")
                 .join("condition_gen_data.csv");
             if condition_path.exists() {
-                if let Err(err) = load_condition_file(
-                    &condition_path,
-                    &mod_name,
-                    &mut game_data.conditions,
-                    true,
-                ) {
-                    eprintln!("warning: skipping bad mod condition file {:?}: {err}", condition_path);
+                if let Err(err) =
+                    load_condition_file(&condition_path, &mod_name, &mut game_data.conditions, true)
+                {
+                    eprintln!(
+                        "warning: skipping bad mod condition file {:?}: {err}",
+                        condition_path
+                    );
                 }
             }
 
@@ -142,7 +149,10 @@ pub fn load_game_data(starsector_dir: impl AsRef<Path>) -> Result<GameData> {
                     &mut game_data.planet_types,
                     true,
                 ) {
-                    eprintln!("warning: skipping bad mod planets file {:?}: {err}", planet_types_path);
+                    eprintln!(
+                        "warning: skipping bad mod planets file {:?}: {err}",
+                        planet_types_path
+                    );
                 }
             }
         }

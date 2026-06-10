@@ -21,7 +21,11 @@ fn averages_ignore_uncolonized_planets() {
     let sys = state.system();
     // Only the colonized planet should contribute; its stability equals its own value.
     let only = sys.get_planet_by_hash(h1).unwrap().stability() as f64;
-    assert_eq!(sys.avg_stability(), only, "avg should be over colonized planets only");
+    assert_eq!(
+        sys.avg_stability(),
+        only,
+        "avg should be over colonized planets only"
+    );
 }
 
 #[test]
@@ -42,11 +46,9 @@ fn makeshift_comm_relay_uses_stable_point_and_affects_all_colonies() {
     let before_a = state.system().get_planet_by_hash(h1).unwrap().stability();
     let before_b = state.system().get_planet_by_hash(h2).unwrap().stability();
 
-    assert!(
-        state
-            .get_possible_actions(false)
-            .contains(&Action::BuildMakeshiftCommRelay)
-    );
+    assert!(state
+        .get_possible_actions(false)
+        .contains(&Action::BuildMakeshiftCommRelay));
 
     state.apply_action_raw(&Action::BuildMakeshiftCommRelay, false);
 
@@ -59,11 +61,9 @@ fn makeshift_comm_relay_uses_stable_point_and_affects_all_colonies() {
         before_b + 2
     );
     assert_eq!(state.system().available_stable_points(), 0);
-    assert!(
-        !state
-            .get_possible_actions(false)
-            .contains(&Action::BuildMakeshiftCommRelay)
-    );
+    assert!(!state
+        .get_possible_actions(false)
+        .contains(&Action::BuildMakeshiftCommRelay));
 
     state.undo_last_action(false);
 

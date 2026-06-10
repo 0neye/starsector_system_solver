@@ -201,8 +201,7 @@ mod tests {
     #[test]
     fn resolve_uses_valid_env_var() {
         let install = fake_install();
-        let resolved =
-            resolve_with(None, Some(install.path().to_path_buf()), || None).unwrap();
+        let resolved = resolve_with(None, Some(install.path().to_path_buf()), || None).unwrap();
         assert_eq!(resolved, install.path());
     }
 

@@ -1,19 +1,19 @@
+use nohash_hasher::{BuildNoHashHasher, NoHashHasher};
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHasher};
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
-use rustc_hash::{FxBuildHasher, FxHashMap, FxHasher};
-use nohash_hasher::{NoHashHasher, BuildNoHashHasher};
 
-use crate::solver::{Action, Balance};
 use crate::planet::Planet;
+use crate::solver::{Action, Balance};
 
 // Additional infrastructure affecting the system
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum Infrastructure {
-    CommRelay {domain: bool}, // only one relevant for simulation; gives +2 stability
-    NavBuoy {domain: bool},
-    SensorArray {domain: bool},
+    CommRelay { domain: bool }, // only one relevant for simulation; gives +2 stability
+    NavBuoy { domain: bool },
+    SensorArray { domain: bool },
     Gate,
-    Remnants {damaged: bool}
+    Remnants { damaged: bool },
 }
 
 #[derive(Debug, Clone)]
@@ -46,9 +46,9 @@ impl Hash for System {
 impl System {
     // Add a method to check for comm relay
     pub fn has_comm_relay(&self) -> bool {
-        self.infrastructure.values().any(|infra| {
-            matches!(infra, Infrastructure::CommRelay { domain: _ })
-        })
+        self.infrastructure
+            .values()
+            .any(|infra| matches!(infra, Infrastructure::CommRelay { domain: _ }))
     }
 
     fn occupied_stable_points(&self) -> u32 {
@@ -74,7 +74,8 @@ impl System {
     }
 
     pub fn available_stable_points(&self) -> u32 {
-        self.stable_points.saturating_sub(self.occupied_stable_points())
+        self.stable_points
+            .saturating_sub(self.occupied_stable_points())
     }
 
     /// Whether a makeshift comm relay can still be built: an unoccupied stable
@@ -203,15 +204,24 @@ impl System {
     }
 
     pub fn get_gross_income(&self) -> f64 {
-        self.planets.values().map(|planet| planet.get_gross_income()).sum()
+        self.planets
+            .values()
+            .map(|planet| planet.get_gross_income())
+            .sum()
     }
 
     pub fn get_net_income(&self) -> f64 {
-        self.planets.values().map(|planet| planet.get_net_income()).sum()
+        self.planets
+            .values()
+            .map(|planet| planet.get_net_income())
+            .sum()
     }
 
     pub fn total_upkeep(&self) -> f64 {
-        self.planets.values().map(|planet| planet.total_upkeep()).sum()
+        self.planets
+            .values()
+            .map(|planet| planet.total_upkeep())
+            .sum()
     }
 
     pub fn avg_stability(&self) -> f64 {
@@ -248,27 +258,27 @@ impl System {
         if self.can_build_makeshift_comm_relay() {
             actions.push(Action::BuildMakeshiftCommRelay);
         }
-        
+
         // First, check for uncolonized planets that we can colonize
         for (name, planet) in &self.planets {
             if !planet.has_colony() && balance.credits() >= 125000.0 {
                 actions.push(Action::Colonize(name.clone()));
             }
         }
-        
+
         // Then get actions from each colonized planet
         for planet in self.planets.values() {
             if planet.has_colony() {
                 actions.extend(planet.get_possible_actions(balance, slim));
             }
         }
-        
+
         actions
     }
 
     pub fn _get_differences(&self, other: &System) -> Vec<String> {
         let mut differences = Vec::new();
-        
+
         for (name, other_planet) in &other.planets {
             if let Some(planet) = self.planets.get(name) {
                 let diffs = planet._get_differences(other_planet);
@@ -279,7 +289,7 @@ impl System {
                 differences.push(format!("Planet {} has been removed", name));
             }
         }
-        
+
         differences
     }
 

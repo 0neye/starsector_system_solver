@@ -1,8 +1,8 @@
+use core::hash::BuildHasherDefault;
 use lazy_static::lazy_static;
+use nohash_hasher::{BuildNoHashHasher, NoHashHasher};
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
-use core::hash::BuildHasherDefault;
-use nohash_hasher::{NoHashHasher, BuildNoHashHasher};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
@@ -23,7 +23,7 @@ pub enum Resource {
     Drugs,
     HarvestedOrgans,
     ShipHullsAndWeapons,
-    Crew,           // Special resources with no market value
+    Crew, // Special resources with no market value
     Marines,
 }
 
@@ -112,7 +112,6 @@ impl FacilityType {
 }
 
 impl Resource {
-
     #[inline(always)]
     pub fn base_price(&self) -> f64 {
         match self {
@@ -266,7 +265,7 @@ pub struct FacilityData {
     pub demands: Vec<ResourceAmount>,
     pub special_effects: Vec<&'static str>,
     pub requirements: Vec<&'static str>,
-    pub is_structure: bool,  // To differentiate between industries and structures
+    pub is_structure: bool, // To differentiate between industries and structures
 }
 
 #[derive(Debug, Clone)]
@@ -569,7 +568,7 @@ lazy_static! {
 lazy_static! {
     pub static ref FACILITY_DATA: HashMap<FacilityType, FacilityData, BuildNoHashHasher<u8>> = {
         let mut map = HashMap::with_hasher(BuildNoHashHasher::default());
-        
+
         // Population & Infrastructure (special case, always present)
         map.insert(FacilityType::Population, FacilityData {
             name: "population",
@@ -1069,7 +1068,13 @@ lazy_static! {
                     deposits.push(*req);
                 }
             }
-            map.insert(*facility_type, FacilityRequirements { facilities, deposits });
+            map.insert(
+                *facility_type,
+                FacilityRequirements {
+                    facilities,
+                    deposits,
+                },
+            );
         }
 
         map
@@ -1079,7 +1084,7 @@ lazy_static! {
 lazy_static! {
     pub static ref FACILITY_IMPROVEMENTS: HashMap<FacilityType, FacilityEffects, BuildNoHashHasher<u8>> = {
         let mut map = HashMap::with_hasher(BuildNoHashHasher::default());
-        
+
         // Commerce
         map.insert(FacilityType::Commerce, FacilityEffects {
             income_bonus: 0.25,  // +25% income
@@ -1158,7 +1163,7 @@ lazy_static! {
 
     pub static ref FACILITY_ALPHA_CORES: HashMap<FacilityType, FacilityEffects, BuildNoHashHasher<u8>> = {
         let mut map = HashMap::with_hasher(BuildNoHashHasher::default());
-        
+
         // Commerce
         map.insert(FacilityType::Commerce, FacilityEffects {
             income_bonus: 0.25,  // +25% income
@@ -1207,7 +1212,7 @@ lazy_static! {
 
 #[derive(Debug, Clone, Copy)]
 pub struct AdminBonuses {
-    pub accessibility: f64,  // +10%
+    pub accessibility: f64, // +10%
     pub fleet_size: f64,    // +20%
     pub defense: f64,       // +50%
     pub stability: i32,     // +1
@@ -1255,7 +1260,7 @@ pub const POSSIBLE_COLONY_ITEMS: [&str; 13] = [
     "fullerene spool",
     "fusion lamp",
     "drone replicator",
-    "dealmaker holosuite"
+    "dealmaker holosuite",
 ];
 
 // Possible facilities
@@ -1288,7 +1293,6 @@ pub const POSSIBLE_FACILITIES: [&str; 22] = [
 pub const MAX_FACILITIES: usize = 1 + 4 + 7;
 pub const MAX_PRODUCTION: usize = 4;
 pub const MAX_DEMANDS: usize = 6;
-
 
 // File paths for example files
 pub const PLANETS_PATH: &str = "planets.csv";

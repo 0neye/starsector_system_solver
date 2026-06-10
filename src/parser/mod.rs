@@ -5,10 +5,10 @@ use std::path::Path;
 use csv;
 use rustc_hash::FxHashMap;
 
+use crate::constants::AdminType;
 use crate::extract::db::Db;
 use crate::planet::Planet;
-use crate::system::{System, Infrastructure};
-use crate::constants::AdminType;
+use crate::system::{Infrastructure, System};
 
 #[derive(Debug)]
 pub enum ParserError {
@@ -51,24 +51,28 @@ impl From<crate::extract::ExtractError> for ParserError {
     }
 }
 
-pub fn parse_planets_csv<P: AsRef<Path>>(path: P) -> Result<(HashMap<String, Planet>, HashMap<String, System>), ParserError> {
+pub fn parse_planets_csv<P: AsRef<Path>>(
+    path: P,
+) -> Result<(HashMap<String, Planet>, HashMap<String, System>), ParserError> {
     let mut planets = HashMap::new();
     let mut systems = HashMap::new();
     let mut rdr = csv::Reader::from_path(path)?;
     let headers = rdr.headers()?.clone();
-    
+
     for result in rdr.records() {
         let record = result?;
-        let planet_name = record.get(0)
+        let planet_name = record
+            .get(0)
             .ok_or_else(|| ParserError::MissingColumn("Planet Name".to_string()))?
             .to_string();
-        let system_name = record.get(1)
+        let system_name = record
+            .get(1)
             .ok_or_else(|| ParserError::MissingColumn("System Name".to_string()))?
             .to_string();
-        
+
         // Parse properties from CSV columns
         let mut properties = FxHashMap::default();
-        
+
         // Skip the first two columns (planet name, system name) and parse the rest as properties
         for (i, value) in record.iter().skip(2).enumerate() {
             if let Some(header) = headers.get(i + 2) {
@@ -76,56 +80,60 @@ pub fn parse_planets_csv<P: AsRef<Path>>(path: P) -> Result<(HashMap<String, Pla
                 if value.trim().is_empty() {
                     continue;
                 }
-                
+
                 // Try parsing as float first
                 if let Ok(float_val) = value.parse::<f64>() {
                     properties.insert(header.to_lowercase(), float_val);
                     continue;
                 }
-                
+
                 // Try parsing as boolean
                 match value.to_uppercase().as_str() {
                     "TRUE" => properties.insert(header.to_lowercase(), 1.0),
                     "FALSE" => properties.insert(header.to_lowercase(), 0.0),
-                    _ => None
+                    _ => None,
                 };
             }
         }
-        
+
         // Create planet and add it to both collections
         let planet = Planet::new(planet_name.clone(), properties);
         planets.insert(planet_name.clone(), planet.clone());
-        
+
         let system = systems
             .entry(system_name.clone())
             .or_insert_with(|| System::new(system_name.clone()));
         system.add_planet(planet);
     }
-    
+
     Ok((planets, systems))
 }
 
 pub fn parse_infrastructure_csv<P: AsRef<Path>>(
     path: P,
-    systems: &mut HashMap<String, System>
+    systems: &mut HashMap<String, System>,
 ) -> Result<(), ParserError> {
     let mut rdr = csv::Reader::from_path(path)?;
-    
+
     for result in rdr.records() {
         let record = result?;
-        let system_name = record.get(0)
+        let system_name = record
+            .get(0)
             .ok_or_else(|| ParserError::MissingColumn("system_name".to_string()))?
             .to_string();
-        let infra_type = record.get(1)
+        let infra_type = record
+            .get(1)
             .ok_or_else(|| ParserError::MissingColumn("infrastructure_type".to_string()))?
             .to_string();
-        let is_domain = record.get(2)
+        let is_domain = record
+            .get(2)
             .map(|v| v.to_lowercase() == "true")
             .unwrap_or(false);
-        let is_damaged = record.get(3)
+        let is_damaged = record
+            .get(3)
             .map(|v| v.to_lowercase() == "true")
             .unwrap_or(false);
-        
+
         if let Some(system) = systems.get_mut(&system_name) {
             let infrastructure = match infra_type.as_str() {
                 "CommRelay" => Infrastructure::CommRelay { domain: is_domain },
@@ -135,14 +143,16 @@ pub fn parse_infrastructure_csv<P: AsRef<Path>>(
                 "NavBouy" | "NavBuoy" => Infrastructure::NavBuoy { domain: is_domain },
                 "SensorArray" => Infrastructure::SensorArray { domain: is_domain },
                 "Gate" => Infrastructure::Gate,
-                "Remnants" => Infrastructure::Remnants { damaged: is_damaged },
+                "Remnants" => Infrastructure::Remnants {
+                    damaged: is_damaged,
+                },
                 _ => continue, // Skip unknown infrastructure types
             };
-            
+
             system.add_infrastructure(format!("{}-{}", system_name, infra_type), infrastructure);
         }
     }
-    
+
     Ok(())
 }
 
@@ -257,7 +267,11 @@ pub fn load_game_data_from_db(
             insert_opt(&mut properties, "ores", planet.ores);
             insert_opt(&mut properties, "volatiles", planet.volatiles);
             insert_opt(&mut properties, "organics", planet.organics);
-            insert_opt(&mut properties, "accessibility percent", planet.accessibility_percent);
+            insert_opt(
+                &mut properties,
+                "accessibility percent",
+                planet.accessibility_percent,
+            );
             properties.insert("hazard percent".to_string(), planet.hazard_percent);
             insert_bool(&mut properties, "no atmosphere", planet.no_atmosphere);
             insert_bool(&mut properties, "very hot", planet.very_hot);
@@ -271,11 +285,19 @@ pub fn load_game_data_from_db(
 
         for infra in infrastructure {
             let infrastructure = match infra.infrastructure_type.as_str() {
-                "CommRelay" => Infrastructure::CommRelay { domain: infra.is_domain },
-                "NavBouy" | "NavBuoy" => Infrastructure::NavBuoy { domain: infra.is_domain },
-                "SensorArray" => Infrastructure::SensorArray { domain: infra.is_domain },
+                "CommRelay" => Infrastructure::CommRelay {
+                    domain: infra.is_domain,
+                },
+                "NavBouy" | "NavBuoy" => Infrastructure::NavBuoy {
+                    domain: infra.is_domain,
+                },
+                "SensorArray" => Infrastructure::SensorArray {
+                    domain: infra.is_domain,
+                },
                 "Gate" => Infrastructure::Gate,
-                "Remnants" => Infrastructure::Remnants { damaged: infra.is_damaged },
+                "Remnants" => Infrastructure::Remnants {
+                    damaged: infra.is_damaged,
+                },
                 _ => continue, // Skip unknown infrastructure types (CoronalTap, Cryosleeper, ...)
             };
             system.add_infrastructure(
@@ -292,15 +314,15 @@ pub fn load_game_data_from_db(
 pub fn load_game_data<P: AsRef<Path>>(
     planets_path: P,
     systems_path: P,
-    infrastructure_path: P
+    infrastructure_path: P,
 ) -> Result<HashMap<String, System>, ParserError> {
     // Load planets and systems from the planets CSV
     let (_planets, mut systems) = parse_planets_csv(planets_path)?;
 
     parse_systems_csv(systems_path, &mut systems)?;
-    
+
     // Add infrastructure
     parse_infrastructure_csv(infrastructure_path, &mut systems)?;
-    
+
     Ok(systems)
 }

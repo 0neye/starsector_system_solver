@@ -4,16 +4,16 @@
 //! [`crate::solver::goal`]; the IDA*-specific admissible-bound methods are
 //! attached here as a separate `impl Goal` block.
 
+use crate::constants::{AdminType, FacilityType, FACILITY_DATA};
+use crate::planet::Facility;
+use crate::solver::goal::{AStarSearchResult, Goal};
+use crate::solver::state::{Action, State};
+use crate::system::System;
+use nohash_hasher::{BuildNoHashHasher, NoHashHasher};
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::hash::BuildHasherDefault;
 use std::time::{Duration, Instant};
-use nohash_hasher::{BuildNoHashHasher, NoHashHasher};
-use rayon::prelude::*;
-use crate::constants::{AdminType, FacilityType, FACILITY_DATA};
-use crate::solver::goal::{AStarSearchResult, Goal};
-use crate::solver::state::{Action, State};
-use crate::planet::Facility;
-use crate::system::System;
 
 fn days_to_months_ceil(days: u32) -> i32 {
     ((days + 29) / 30) as i32
@@ -31,7 +31,11 @@ impl Goal {
     pub fn month_lower_bound(
         &self,
         state: &State,
-        precompute_map: &HashMap<u64, HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>, BuildNoHashHasher<u64>>,
+        precompute_map: &HashMap<
+            u64,
+            HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>,
+            BuildNoHashHasher<u64>,
+        >,
     ) -> i32 {
         // Gather all unbuilt facilities once
         let mut unbuilt_map = HashMap::with_hasher(BuildNoHashHasher::default());
@@ -56,9 +60,20 @@ impl Goal {
             0.0
         };
 
-        let ni_months = self.estimate_months_for_income(net_income_shortfall, state, precompute_map, &unbuilt_map);
-        let def_months = self.estimate_months_for_defense(defense_shortfall, state, precompute_map, &unbuilt_map);
-        let stab_months = self.estimate_months_for_stability(stab_shortfall, state, precompute_map, &unbuilt_map);
+        let ni_months = self.estimate_months_for_income(
+            net_income_shortfall,
+            state,
+            precompute_map,
+            &unbuilt_map,
+        );
+        let def_months = self.estimate_months_for_defense(
+            defense_shortfall,
+            state,
+            precompute_map,
+            &unbuilt_map,
+        );
+        let stab_months =
+            self.estimate_months_for_stability(stab_shortfall, state, precompute_map, &unbuilt_map);
 
         ni_months.max(def_months).max(stab_months)
     }
@@ -69,7 +84,11 @@ impl Goal {
         &self,
         income_shortfall: f64,
         state: &State,
-        precompute_map: &HashMap<u64, HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>, BuildNoHashHasher<u64>>,
+        precompute_map: &HashMap<
+            u64,
+            HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>,
+            BuildNoHashHasher<u64>,
+        >,
         unbuilt_map: &HashMap<u64, Vec<FacilityType>, BuildNoHashHasher<u64>>,
     ) -> i32 {
         if income_shortfall <= 0.0 {
@@ -112,7 +131,11 @@ impl Goal {
         &self,
         defense_shortfall: f64,
         state: &State,
-        precompute_map: &HashMap<u64, HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>, BuildNoHashHasher<u64>>,
+        precompute_map: &HashMap<
+            u64,
+            HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>,
+            BuildNoHashHasher<u64>,
+        >,
         unbuilt_map: &HashMap<u64, Vec<FacilityType>, BuildNoHashHasher<u64>>,
     ) -> i32 {
         if defense_shortfall <= 0.0 {
@@ -138,7 +161,8 @@ impl Goal {
                         if fac_data.defense_mult > 1.0 {
                             let delta = MAX_BASE_DEFENSE_STRENGTH * (fac_data.defense_mult - 1.0);
                             if delta > 0.0 {
-                                candidates_by_time.push((days_to_months_ceil(fac_data.build_time), delta));
+                                candidates_by_time
+                                    .push((days_to_months_ceil(fac_data.build_time), delta));
                             }
                         }
                     }
@@ -165,7 +189,11 @@ impl Goal {
         &self,
         stability_shortfall: f64,
         state: &State,
-        precompute_map: &HashMap<u64, HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>, BuildNoHashHasher<u64>>,
+        precompute_map: &HashMap<
+            u64,
+            HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>,
+            BuildNoHashHasher<u64>,
+        >,
         unbuilt_map: &HashMap<u64, Vec<FacilityType>, BuildNoHashHasher<u64>>,
     ) -> i32 {
         if stability_shortfall <= 0.0 {
@@ -211,7 +239,11 @@ impl Goal {
 /// 4. Collect them into a flat Vec.
 fn gather_facility_candidates_by_metric<'a, F>(
     system: &System,
-    precompute_map: &'a HashMap<u64, HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>, BuildNoHashHasher<u64>>,
+    precompute_map: &'a HashMap<
+        u64,
+        HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>,
+        BuildNoHashHasher<u64>,
+    >,
     predicate: F,
     unbuilt_map: &HashMap<u64, Vec<FacilityType>, BuildNoHashHasher<u64>>,
 ) -> Vec<&'a PrecomputedFacilityData>
@@ -240,7 +272,6 @@ where
     result
 }
 
-
 // A record of how valuable a facility might be on a particular planet
 #[derive(Debug, Clone)]
 pub struct PrecomputedFacilityData {
@@ -256,10 +287,18 @@ pub struct PrecomputedFacilityData {
 /// facilities for each planet. <br> We ignore facility-based `income_multiplier`
 /// (as requested), but *do* assume alpha cores/items/improvements that
 /// contribute stability, defense, or flat income, etc.
-pub fn precompute_facility_candidates(state: &State) 
-    -> HashMap<u64, HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>, BuildNoHashHasher<u64>> 
-{
-    let mut result: HashMap<u64, HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>, BuildNoHashHasher<u64>> = HashMap::with_hasher(BuildNoHashHasher::default());
+pub fn precompute_facility_candidates(
+    state: &State,
+) -> HashMap<
+    u64,
+    HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>,
+    BuildNoHashHasher<u64>,
+> {
+    let mut result: HashMap<
+        u64,
+        HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>,
+        BuildNoHashHasher<u64>,
+    > = HashMap::with_hasher(BuildNoHashHasher::default());
     let mut system = state.system().clone();
 
     // Optimistic: assume we can achieve the best available income multiplier eventually.
@@ -282,11 +321,14 @@ pub fn precompute_facility_candidates(state: &State)
         // If the planet can build new facilities
         let unbuilt_fac_types = planet.unbuilt_facilities(false);
 
-        let mut facility_map: HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>> = HashMap::with_hasher(BuildNoHashHasher::default());
+        let mut facility_map: HashMap<
+            FacilityType,
+            PrecomputedFacilityData,
+            BuildNoHashHasher<u8>,
+        > = HashMap::with_hasher(BuildNoHashHasher::default());
 
         // For each unbuilt facility type
         for fac_type in unbuilt_fac_types {
-
             let mut facility = match Facility::new(fac_type) {
                 Some(fac) => fac,
                 None => continue, // skip if something invalid
@@ -302,7 +344,6 @@ pub fn precompute_facility_candidates(state: &State)
 
             let build_time = facility_data.build_time;
 
-
             // Apply all bonuses
             facility.add_improvements();
             facility.add_alpha_core();
@@ -316,7 +357,8 @@ pub fn precompute_facility_candidates(state: &State)
             // From megaport, fullerene spool, improvements, alpha core
             let max_access = planet.calculate_accessibility() + 20.0 + 30.0 + 20.0 + 20.0;
 
-            let fac_gross_income = facility.calculate_gross_income(planet.size(), planet, max_access);
+            let fac_gross_income =
+                facility.calculate_gross_income(planet.size(), planet, max_access);
             let fac_upkeep = facility.calculate_upkeep(planet.hazard_rating(), planet.size());
             let fac_net_income = fac_gross_income * max_income_mult - fac_upkeep;
 
@@ -333,7 +375,7 @@ pub fn precompute_facility_candidates(state: &State)
                     stability_bonus: fac_stability_bonus,
                     defense_mult: fac_defense_mult,
                     build_time,
-                }
+                },
             );
         }
 
@@ -345,7 +387,6 @@ pub fn precompute_facility_candidates(state: &State)
     result
 }
 
-
 fn action_cost(action: &Action) -> i32 {
     match action {
         Action::Wait(months) => *months as i32,
@@ -353,7 +394,12 @@ fn action_cost(action: &Action) -> i32 {
     }
 }
 
-fn ida_star(initial_state: &mut State, goal: &Goal, time_limit: u32, slim: bool) -> Option<AStarSearchResult> {
+fn ida_star(
+    initial_state: &mut State,
+    goal: &Goal,
+    time_limit: u32,
+    slim: bool,
+) -> Option<AStarSearchResult> {
     println!("Starting IDA* search with time limit: {} ms", time_limit);
     let start_time = Instant::now();
     let precompute_map = precompute_facility_candidates(initial_state);
@@ -365,8 +411,16 @@ fn ida_star(initial_state: &mut State, goal: &Goal, time_limit: u32, slim: bool)
     let debug = std::env::var_os("SYSTEM_SOLVER_IDASTAR_DEBUG").is_some();
 
     loop {
-        let root_hash_before = if debug { Some(initial_state.get_deep_hash()) } else { None };
-        let root_credits_before = if debug { Some(initial_state.balance().credits()) } else { None };
+        let root_hash_before = if debug {
+            Some(initial_state.get_deep_hash())
+        } else {
+            None
+        };
+        let root_credits_before = if debug {
+            Some(initial_state.balance().credits())
+        } else {
+            None
+        };
 
         println!("Current bound: {:?}", bound);
         let iteration_start = Instant::now();
@@ -375,7 +429,12 @@ fn ida_star(initial_state: &mut State, goal: &Goal, time_limit: u32, slim: bool)
 
         if debug {
             let actions_len = initial_state.get_possible_actions(slim).len();
-            let colonized = initial_state.system().planets().values().filter(|p| p.has_colony()).count();
+            let colonized = initial_state
+                .system()
+                .planets()
+                .values()
+                .filter(|p| p.has_colony())
+                .count();
             println!(
                 "[ida*] root credits: {:.0}, planets: {}, colonized: {}, actions: {}",
                 initial_state.balance().credits(),
@@ -385,7 +444,15 @@ fn ida_star(initial_state: &mut State, goal: &Goal, time_limit: u32, slim: bool)
             );
         }
 
-        let result = depth_limited_search(initial_state, goal, 0, bound, &mut visited, &precompute_map, slim);
+        let result = depth_limited_search(
+            initial_state,
+            goal,
+            0,
+            bound,
+            &mut visited,
+            &precompute_map,
+            slim,
+        );
         total_nodes_searched += result.nodes_searched;
         total_nodes_pruned += result.nodes_pruned_by_bound;
 
@@ -404,13 +471,13 @@ fn ida_star(initial_state: &mut State, goal: &Goal, time_limit: u32, slim: bool)
                 );
             }
         }
-        
+
         let elapsed = iteration_start.elapsed();
         if elapsed >= Duration::from_secs(1) {
             let nodes_per_sec = visited.len() as f64 / elapsed.as_secs_f64();
             println!("Unique nodes/sec: {:.2}", nodes_per_sec);
         }
-        
+
         if result.solution.is_some() {
             println!("Solution found!");
             println!("Total nodes searched: {}", total_nodes_searched);
@@ -424,11 +491,17 @@ fn ida_star(initial_state: &mut State, goal: &Goal, time_limit: u32, slim: bool)
                 nodes_pruned_by_bound: total_nodes_pruned,
             });
         }
-        
+
         if result.cutoff_occurred {
             println!("Cutoff occurred. Increasing bound to {:?}", result.cost);
-            println!("Nodes searched in this iteration: {}", result.nodes_searched);
-            println!("Nodes pruned by bound in this iteration: {}", result.nodes_pruned_by_bound);
+            println!(
+                "Nodes searched in this iteration: {}",
+                result.nodes_searched
+            );
+            println!(
+                "Nodes pruned by bound in this iteration: {}",
+                result.nodes_pruned_by_bound
+            );
             println!("Unique positions in this iteration: {}", visited.len());
             bound = result.cost;
         } else {
@@ -438,7 +511,7 @@ fn ida_star(initial_state: &mut State, goal: &Goal, time_limit: u32, slim: bool)
             println!("Total unique positions searched: {}", visited.len());
             return None;
         }
-        
+
         if start_time.elapsed() > Duration::from_millis(time_limit as u64) {
             println!("Time limit of {} ms exceeded", time_limit);
             println!("Total nodes searched: {}", total_nodes_searched);
@@ -455,8 +528,12 @@ fn depth_limited_search(
     g: i32,
     bound: i32,
     visited: &mut HashMap<u64, i32, BuildHasherDefault<NoHashHasher<u64>>>,
-    precompute_map: &HashMap<u64, HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>, BuildNoHashHasher<u64>>,
-    slim: bool
+    precompute_map: &HashMap<
+        u64,
+        HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>,
+        BuildNoHashHasher<u64>,
+    >,
+    slim: bool,
 ) -> AStarSearchResult {
     if goal.is_satisfied(state) {
         return AStarSearchResult {
@@ -481,12 +558,12 @@ fn depth_limited_search(
             nodes_pruned_by_bound: 1,
         };
     }
-    
+
     let mut nodes_searched = 1; // current node
     let mut nodes_pruned_by_bound = 0;
     let mut cutoff_occurred = false;
     let mut best_next_bound = i32::MAX;
-    
+
     for action in state.get_ordered_possible_actions(slim) {
         let cost = action_cost(&action);
         state.apply_action_raw(&action, false);
@@ -501,9 +578,10 @@ fn depth_limited_search(
         }
         visited.insert(next_hash, next_g);
 
-        let result = depth_limited_search(state, goal, next_g, bound, visited, precompute_map, slim);
+        let result =
+            depth_limited_search(state, goal, next_g, bound, visited, precompute_map, slim);
         state.undo_last_action(false);
-        
+
         if result.solution.is_some() {
             return AStarSearchResult {
                 solution: result.solution,
@@ -513,7 +591,7 @@ fn depth_limited_search(
                 nodes_pruned_by_bound: nodes_pruned_by_bound + result.nodes_pruned_by_bound,
             };
         }
-        
+
         nodes_searched += result.nodes_searched;
         nodes_pruned_by_bound += result.nodes_pruned_by_bound;
 
@@ -522,7 +600,7 @@ fn depth_limited_search(
         }
         best_next_bound = best_next_bound.min(result.cost);
     }
-    
+
     AStarSearchResult {
         solution: None,
         cost: best_next_bound,
@@ -532,16 +610,21 @@ fn depth_limited_search(
     }
 }
 
-pub fn search_all_planets(initial_state: &mut State, goal: &Goal, time_limit: u32, slim: bool) -> Vec<AStarSearchResult> {
+pub fn search_all_planets(
+    initial_state: &mut State,
+    goal: &Goal,
+    time_limit: u32,
+    slim: bool,
+) -> Vec<AStarSearchResult> {
     // Split state into per-planet states
     let planet_states = initial_state.to_vec_by_planet();
-    
+
     // Search each planet in parallel
-    planet_states.into_par_iter()
+    planet_states
+        .into_par_iter()
         .filter_map(|mut state| ida_star(&mut state, goal, time_limit, slim))
         .collect()
 }
-
 
 /*
 TODOS:

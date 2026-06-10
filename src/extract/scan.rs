@@ -23,13 +23,13 @@ pub fn scan_save(xml_text: &str) -> Result<RawSave> {
                 if let Some(system_z) = resolve_owner_system_z(&doc, node_idx) {
                     if let Some(&idx) = index.get(&system_z) {
                         if let Some(system) = systems.get_mut(idx) {
-                        if let Some(planet) = parse_planet(&doc, node_idx, node) {
-                            if planet.tags.iter().any(|tag| tag == "star") {
-                                system.star_types.push(planet.planet_type);
-                            } else {
-                                system.planets.push(planet);
+                            if let Some(planet) = parse_planet(&doc, node_idx, node) {
+                                if planet.tags.iter().any(|tag| tag == "star") {
+                                    system.star_types.push(planet.planet_type);
+                                } else {
+                                    system.planets.push(planet);
+                                }
                             }
-                        }
                         }
                     }
                 }
@@ -38,9 +38,9 @@ pub fn scan_save(xml_text: &str) -> Result<RawSave> {
                 if let Some(system_z) = resolve_owner_system_z(&doc, node_idx) {
                     if let Some(&idx) = index.get(&system_z) {
                         if let Some(system) = systems.get_mut(idx) {
-                        if let Some(entity) = parse_entity(&doc, node_idx, node) {
-                            system.entities.push(entity);
-                        }
+                            if let Some(entity) = parse_entity(&doc, node_idx, node) {
+                                system.entities.push(entity);
+                            }
                         }
                     }
                 }
@@ -50,7 +50,10 @@ pub fn scan_save(xml_text: &str) -> Result<RawSave> {
     }
 
     Ok(RawSave {
-        systems: systems.into_iter().map(|system| system.into_raw()).collect(),
+        systems: systems
+            .into_iter()
+            .map(|system| system.into_raw())
+            .collect(),
     })
 }
 
@@ -140,7 +143,9 @@ fn extract_system_internal_id(doc: &XmlDoc, node: &XmlNode, z: i64) -> String {
 fn extract_hyper_loc(doc: &XmlDoc, node: &XmlNode) -> Option<(f64, f64)> {
     let h_a = node.child_by_tag(doc, "hA")?;
     let resolved = h_a.resolve(doc);
-    let loc = resolved.child_by_tag(doc, "loc").or_else(|| h_a.child_by_tag(doc, "loc"))?;
+    let loc = resolved
+        .child_by_tag(doc, "loc")
+        .or_else(|| h_a.child_by_tag(doc, "loc"))?;
     let text = loc.text().trim();
     let (x, y) = text.split_once('|')?;
     Some((x.parse().ok()?, y.parse().ok()?))
@@ -159,7 +164,10 @@ fn parse_planet(doc: &XmlDoc, _node_idx: usize, node: &XmlNode) -> Option<RawPla
     let json: Value = serde_json::from_str(j0.text()).ok()?;
     let name = json.get("f0").and_then(json_value_to_string)?.to_string();
     let planet_type = node.child_by_tag(doc, "type")?.text().trim().to_string();
-    let internal_id = json.get("f4").and_then(json_value_to_string).map(|s| s.to_string());
+    let internal_id = json
+        .get("f4")
+        .and_then(json_value_to_string)
+        .map(|s| s.to_string());
     let radius = node
         .child_by_tag(doc, "radius")
         .and_then(|n| n.text().trim().parse::<f64>().ok())
@@ -191,7 +199,10 @@ fn parse_entity(doc: &XmlDoc, _node_idx: usize, node: &XmlNode) -> Option<RawEnt
     let j0 = node.child_by_tag(doc, "j0")?;
     let json: Value = serde_json::from_str(j0.text()).ok()?;
     let spec_id = json.get("f3").and_then(json_value_to_string)?.to_string();
-    let name = json.get("f0").and_then(json_value_to_string).map(|s| s.to_string());
+    let name = json
+        .get("f0")
+        .and_then(json_value_to_string)
+        .map(|s| s.to_string());
 
     Some(RawEntity { spec_id, name })
 }
@@ -239,7 +250,11 @@ fn market_size(doc: &XmlDoc, node: &XmlNode) -> u32 {
         _ => market
             .child_by_tag(doc, "size")
             .and_then(|n| n.text().trim().parse::<u32>().ok())
-            .or_else(|| market.attr("size").and_then(|value| value.parse::<u32>().ok()))
+            .or_else(|| {
+                market
+                    .attr("size")
+                    .and_then(|value| value.parse::<u32>().ok())
+            })
             .unwrap_or(0),
     }
 }
@@ -416,7 +431,10 @@ mod tests {
         assert_eq!(system.planets[0].owner_faction.as_deref(), Some("hegemony"));
         // Mini Planet orbits the star, so it is not a moon; Mini Moon orbits it.
         assert!(!system.planets[0].is_moon);
-        assert_eq!(system.planets[0].conditions, vec!["ore_abundant", "volatiles_trace"]);
+        assert_eq!(
+            system.planets[0].conditions,
+            vec!["ore_abundant", "volatiles_trace"]
+        );
         assert_eq!(system.planets[1].name, "Mini Moon");
         assert!(system.planets[1].is_moon);
         assert_eq!(system.entities.len(), 1);
@@ -446,11 +464,16 @@ mod tests {
         let save = scan_save(&xml).unwrap();
         let system_count = save.systems.len();
         let planet_count: usize = save.systems.iter().map(|system| system.planets.len()).sum();
-        let entity_count: usize = save.systems.iter().map(|system| system.entities.len()).sum();
-        let comm_relay = save
+        let entity_count: usize = save
             .systems
             .iter()
-            .any(|system| system.entities.iter().any(|entity| entity.spec_id == "comm_relay" || entity.spec_id == "comm_relay_makeshift"));
+            .map(|system| system.entities.len())
+            .sum();
+        let comm_relay = save.systems.iter().any(|system| {
+            system.entities.iter().any(|entity| {
+                entity.spec_id == "comm_relay" || entity.spec_id == "comm_relay_makeshift"
+            })
+        });
 
         eprintln!(
             "systems={system_count} planets={planet_count} entities={entity_count} comm_relay={comm_relay}"

@@ -1,13 +1,13 @@
 pub mod constants;
-pub mod utils;
+pub mod extract;
+pub mod parser;
+pub mod planet;
+pub mod solver;
+pub mod system;
 #[cfg(test)]
 mod tests;
-pub mod planet;
-pub mod system;
-pub mod solver;
-pub mod parser;
-pub mod extract;
+pub mod utils;
 
-pub use planet::{Planet, Facility};
+pub use planet::{Facility, Planet};
 pub use solver::state::Action;
 pub use system::System;

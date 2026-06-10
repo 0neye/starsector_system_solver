@@ -244,6 +244,13 @@ mod tests {
         assert_eq!(thing.child_by_tag(&doc, "name").unwrap().text(), "def");
         let child = thing.child_by_tag(&doc, "child").unwrap();
         assert_eq!(child.resolve(&doc).attr("z"), Some("3"));
-        assert_eq!(child.resolve(&doc).child_by_tag(&doc, "name").unwrap().text(), "ref target");
+        assert_eq!(
+            child
+                .resolve(&doc)
+                .child_by_tag(&doc, "name")
+                .unwrap()
+                .text(),
+            "ref target"
+        );
     }
 }

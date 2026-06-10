@@ -1,4 +1,3 @@
-
 #[derive(Clone, PartialEq)]
 enum Token {
     Number(f32),
@@ -95,7 +94,7 @@ pub fn calculate_formula(formula: &str, size: u32) -> f32 {
                     }
                     apply_op(&mut output, op);
                 }
-            },
+            }
             Token::Operator(op) => {
                 while let Some(Token::Operator(top)) = operators.last() {
                     if op.precedence() <= top.precedence() {
@@ -105,7 +104,7 @@ pub fn calculate_formula(formula: &str, size: u32) -> f32 {
                     }
                 }
                 operators.push(Token::Operator(op));
-            },
+            }
         }
     }
 
@@ -114,5 +113,4 @@ pub fn calculate_formula(formula: &str, size: u32) -> f32 {
     }
 
     output.pop().unwrap()
-
 }

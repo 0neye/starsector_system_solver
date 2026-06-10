@@ -91,7 +91,8 @@ pub fn search(initial_state: &State, time_limit: u32, slim: bool) -> SearchResul
         let current_time = std::time::Instant::now();
         let elapsed = current_time.duration_since(last_print_time);
         if elapsed >= std::time::Duration::from_secs(1) {
-            let unique_nodes_per_sec = (tt.len() as f64 - last_unique_nodes as f64) / elapsed.as_secs_f64();
+            let unique_nodes_per_sec =
+                (tt.len() as f64 - last_unique_nodes as f64) / elapsed.as_secs_f64();
             println!("Unique nodes/sec: {:.2}", unique_nodes_per_sec);
             last_print_time = current_time;
             last_unique_nodes = tt.len() as u32;
@@ -105,8 +106,15 @@ pub fn search(initial_state: &State, time_limit: u32, slim: bool) -> SearchResul
         }
     }
 
-    println!("Search completed. Best score: {}, Total nodes explored: {}", best_score, nodes_explored);
-    println!("Ending State: {:#?}\n{:#?}", info.state.balance(), info.state.action_log());
+    println!(
+        "Search completed. Best score: {}, Total nodes explored: {}",
+        best_score, nodes_explored
+    );
+    println!(
+        "Ending State: {:#?}\n{:#?}",
+        info.state.balance(),
+        info.state.action_log()
+    );
     SearchResult {
         score: best_score,
         nodes_explored,
@@ -114,7 +122,13 @@ pub fn search(initial_state: &State, time_limit: u32, slim: bool) -> SearchResul
     }
 }
 
-fn dfs(info: &mut SearchInfo, depth: u32, alpha: f64, tt: &mut HashSet<u64, BuildNoHashHasher<u64>>, slim: bool) -> Option<SearchResult> {
+fn dfs(
+    info: &mut SearchInfo,
+    depth: u32,
+    alpha: f64,
+    tt: &mut HashSet<u64, BuildNoHashHasher<u64>>,
+    slim: bool,
+) -> Option<SearchResult> {
     if info.is_time_up() {
         return None;
     }
@@ -219,11 +233,25 @@ pub fn simulate_linear(initial_state: &State, num_turns: u32) -> SearchInfo {
         println!("\nColony Status:");
         for (name, planet) in info.state.system().planets().iter() {
             if planet.has_colony() {
-                println!("\n  {} - Income: {} - Size: {}", name, planet.get_net_income(), planet.size());
+                println!(
+                    "\n  {} - Income: {} - Size: {}",
+                    name,
+                    planet.get_net_income(),
+                    planet.size()
+                );
                 println!("    Facility Status:");
                 for facility in planet.facilities().iter() {
                     let name = facility.name();
-                    println!("    {} - Income: {} - Prod: {:#?}", name, facility.calculate_net_income(planet.size(), planet, planet.calculate_accessibility()), facility.get_resource_production(planet.size(), 0.0, planet.is_free_port()));
+                    println!(
+                        "    {} - Income: {} - Prod: {:#?}",
+                        name,
+                        facility.calculate_net_income(
+                            planet.size(),
+                            planet,
+                            planet.calculate_accessibility()
+                        ),
+                        facility.get_resource_production(planet.size(), 0.0, planet.is_free_port())
+                    );
                 }
             }
         }

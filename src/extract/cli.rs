@@ -9,9 +9,9 @@ use clap::Subcommand;
 
 use crate::extract::db::Db;
 use crate::extract::gamedata::load_game_data;
+use crate::extract::locate;
 use crate::extract::mapping::map_save;
 use crate::extract::model::{MappedOutput, SaveInfo};
-use crate::extract::locate;
 use crate::extract::save::{discover_saves, load_campaign_xml};
 use crate::extract::scan::scan_save;
 use crate::extract::{ExtractError, Result};
@@ -123,7 +123,11 @@ pub fn run(command: ExtractCommand) -> Result<()> {
     Ok(())
 }
 
-fn select_save<'a>(saves: &'a [SaveInfo], needle: Option<&str>, latest: bool) -> Result<&'a SaveInfo> {
+fn select_save<'a>(
+    saves: &'a [SaveInfo],
+    needle: Option<&str>,
+    latest: bool,
+) -> Result<&'a SaveInfo> {
     if saves.is_empty() {
         return Err(ExtractError::NotFound("no saves found".to_string()));
     }
@@ -152,7 +156,11 @@ fn print_saves(saves: &[SaveInfo]) {
     for save in saves {
         println!(
             "{}\t{}\t{}\t{}\t{}",
-            save.dir_name, save.character_name, save.character_level, save.save_date, save.game_version
+            save.dir_name,
+            save.character_name,
+            save.character_level,
+            save.save_date,
+            save.game_version
         );
     }
 }
@@ -207,7 +215,9 @@ fn filter_mapped_output(mut mapped: MappedOutput, systems: &[String]) -> MappedO
     mapped.systems.retain(|system| {
         let name = system.system.name.to_lowercase();
         let display_name = system.system.display_name.to_lowercase();
-        filters.iter().any(|filter| name == *filter || display_name == *filter)
+        filters
+            .iter()
+            .any(|filter| name == *filter || display_name == *filter)
     });
     mapped
 }

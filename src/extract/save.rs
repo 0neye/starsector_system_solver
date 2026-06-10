@@ -91,9 +91,9 @@ pub fn load_campaign_xml(save: &SaveInfo) -> Result<String> {
     if save.compressed {
         let mut decoder = GzDecoder::new(file);
         let mut xml = String::new();
-        decoder
-            .read_to_string(&mut xml)
-            .map_err(|err| ExtractError::BadSave(format!("failed to decompress {}: {err}", path.display())))?;
+        decoder.read_to_string(&mut xml).map_err(|err| {
+            ExtractError::BadSave(format!("failed to decompress {}: {err}", path.display()))
+        })?;
         return Ok(xml);
     }
 
@@ -224,17 +224,11 @@ fn parse_utc_timestamp(raw: &str) -> Option<i128> {
     let hour = time_iter.next()?.parse::<u32>().ok()?;
     let minute = time_iter.next()?.parse::<u32>().ok()?;
     let second_part = time_iter.next()?;
-    let second = second_part
-        .split('.')
-        .next()?
-        .parse::<u32>()
-        .ok()?;
+    let second = second_part.split('.').next()?.parse::<u32>().ok()?;
 
     let days = days_from_civil(year, month, day)?;
-    let seconds = days * 86_400
-        + i64::from(hour) * 3_600
-        + i64::from(minute) * 60
-        + i64::from(second);
+    let seconds =
+        days * 86_400 + i64::from(hour) * 3_600 + i64::from(minute) * 60 + i64::from(second);
     Some(i128::from(seconds) * 1_000_000_000)
 }
 

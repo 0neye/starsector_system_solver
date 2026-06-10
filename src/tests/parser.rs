@@ -52,7 +52,10 @@ fn db_loader_matches_csv_semantics() {
     };
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let db_path = std::env::temp_dir().join(format!("system_solver_parser_db_{unique}.sqlite"));
 
     let save = SaveInfo {

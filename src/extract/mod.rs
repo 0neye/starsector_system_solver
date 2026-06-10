@@ -1,14 +1,14 @@
 //! Save-game extraction layer. See SAVE_EXTRACTION_DESIGN.md for the full spec.
 
-pub mod model;
-pub mod xml;
-pub mod save;
-pub mod scan;
+pub mod cli;
+pub mod db;
 pub mod gamedata;
 pub mod locate;
 pub mod mapping;
-pub mod db;
-pub mod cli;
+pub mod model;
+pub mod save;
+pub mod scan;
+pub mod xml;
 
 use std::fmt;
 
