@@ -10,8 +10,8 @@ mod utils;
 use clap::{Parser, Subcommand};
 use planet::Planet;
 use solver::{
-    diagnose_maximize_gap, search_system_decomp, search_system_maximize, solve_pareto, Balance,
-    Goal, Metric, State,
+    diagnose_maximize_gap, search_system_decomp, search_system_maximize, solve_pareto,
+    solve_pareto_quick, Balance, Goal, Metric, State,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -77,6 +77,21 @@ struct Cli {
     /// Solver time budget in milliseconds
     #[arg(long, default_value_t = 25_000)]
     time_limit: u32,
+
+    /// Rank systems by quick Pareto score (sparse floors, reduced search; see
+    /// QUICK_RANKING_DESIGN.md). Ranks every system in the DB unless
+    /// `--rank-system` filters are given. Ignores `--system`.
+    #[arg(long)]
+    rank: bool,
+
+    /// Substring filter for `--rank` (repeatable; case-insensitive, any match)
+    #[arg(long = "rank-system")]
+    rank_systems: Vec<String>,
+
+    /// Emit `--rank` results as CSV (system,score,peak_income,seconds) instead
+    /// of the human-readable table — used by the rank-validation harness.
+    #[arg(long)]
+    rank_csv: bool,
 
     /// Maximize one metric instead of reaching a fixed goal. The maximized
     /// metric's own threshold is ignored; the other two `--income/--stability/
@@ -218,6 +233,83 @@ fn run_solve(system_name: &str, system: &System, balance: &Balance, horizon: i32
     } else {
         println!("\nNo feasible Pareto point found within the time budget.");
     }
+}
+
+/// `--rank`: score every selected system with the quick Pareto sweep
+/// (`solve_pareto_quick`) and print them best-first. Deterministic; quick
+/// scores are lower bounds on full-sweep scores and are meant for *ordering*
+/// systems, not as final numbers — `--solve` on the chosen system gives the
+/// real frontier. See QUICK_RANKING_DESIGN.md.
+fn run_rank(
+    systems: &HashMap<String, System>,
+    balance: &Balance,
+    filters: &[String],
+    horizon: i32,
+    time_limit: u32,
+    csv: bool,
+) {
+    let mut names: Vec<&String> = systems.keys().collect();
+    names.sort();
+    if !filters.is_empty() {
+        let needles: Vec<String> = filters.iter().map(|f| f.to_lowercase()).collect();
+        names.retain(|n| {
+            let lower = n.to_lowercase();
+            needles.iter().any(|needle| lower.contains(needle))
+        });
+        if names.is_empty() {
+            eprintln!("error: no system matches the --rank-system filter(s)");
+            std::process::exit(1);
+        }
+    }
+
+    eprintln!(
+        "Ranking {} systems (quick profile, horizon {horizon} months)...",
+        names.len()
+    );
+
+    let mut ranked: Vec<(&String, solver::pareto::ParetoSolve, f64)> = Vec::new();
+    for name in names {
+        let t0 = std::time::Instant::now();
+        let solve = solve_pareto_quick(&systems[name], balance, horizon, time_limit);
+        let secs = t0.elapsed().as_secs_f64();
+        eprintln!("  [{name}] score {:.1} in {secs:.1}s", solve.score);
+        ranked.push((name, solve, secs));
+    }
+    // Best first; name breaks exact ties so the order is total and reproducible.
+    ranked.sort_by(|a, b| b.1.score.total_cmp(&a.1.score).then_with(|| a.0.cmp(b.0)));
+
+    let peak_income = |solve: &solver::pareto::ParetoSolve| {
+        solve
+            .stability_frontier
+            .iter()
+            .chain(solve.defense_frontier.iter())
+            .map(|p| p.income)
+            .fold(0.0_f64, f64::max)
+    };
+
+    if csv {
+        println!("system,score,peak_income,seconds");
+        for (name, solve, secs) in &ranked {
+            println!("{name},{:.3},{:.0},{secs:.2}", solve.score, peak_income(solve));
+        }
+        return;
+    }
+
+    println!("\n#   {:<24} {:>8}  {:>12}  {:>7}", "system", "score", "peak income", "time");
+    for (i, (name, solve, secs)) in ranked.iter().enumerate() {
+        println!(
+            "{:<3} {:<24} {:>8.1}  {:>12.0}  {:>6.1}s",
+            i + 1,
+            name,
+            solve.score,
+            peak_income(solve),
+            secs,
+        );
+    }
+    println!(
+        "\nQuick scores are deterministic lower bounds meant for ordering; run\n\
+         --solve --system <NAME> on the system you pick for the real frontier."
+    );
 }
 
 /// Build the standard A/B starting balance: generous credits plus a couple of
@@ -391,7 +483,7 @@ fn verify_decomp(systems: &HashMap<String, System>) {
 /// `SYSTEM_SOLVER_BOUND_HORIZON` / `SYSTEM_SOLVER_BOUND_MS`;
 /// `SYSTEM_SOLVER_BOUND_SYSTEM=<substring>` limits the sweep to one system.
 fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
-    use solver::decomp::SystemPlan;
+    use solver::decomp::{SearchProfile, SystemPlan};
     use solver::pareto::{
         measure_point_seeded, FrontierKind, ParetoPoint, DEFENSE_FLOORS, STABILITY_FLOORS,
     };
@@ -429,6 +521,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
             time_limit,
             warm_greedy,
             &[],
+            SearchProfile::FULL,
         );
         let cross: Vec<SystemPlan> = warm_greedy.iter().cloned().collect();
         let bound = measure_point_seeded(
@@ -441,6 +534,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
             time_limit,
             warm_bound,
             &cross,
+            SearchProfile::FULL,
         );
         (greedy, bound)
     }
@@ -901,8 +995,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    println!("Loading game data...");
+    // stderr: `--rank --rank-csv` writes machine-readable CSV to stdout.
+    eprintln!("Loading game data...");
     let systems = parser::load_game_data_from_db(&cli.db, cli.save.as_deref())?;
+
+    let mut initial_balance = Balance::new(cli.credits, cli.story_points, cli.alpha_cores);
+    for item in cli.items {
+        initial_balance.add_colony_item(item);
+    }
+
+    if cli.rank {
+        run_rank(
+            &systems,
+            &initial_balance,
+            &cli.rank_systems,
+            cli.horizon,
+            cli.time_limit,
+            cli.rank_csv,
+        );
+        return Ok(());
+    }
 
     let test_system = systems
         .get(&cli.system)
@@ -919,11 +1031,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             std::process::exit(1);
         })
         .clone();
-
-    let mut initial_balance = Balance::new(cli.credits, cli.story_points, cli.alpha_cores);
-    for item in cli.items {
-        initial_balance.add_colony_item(item);
-    }
 
     let state = State::new(initial_balance, test_system);
 

@@ -1,4 +1,4 @@
-use crate::solver::decomp::{search_system_maximize_seeded, SystemPlan};
+use crate::solver::decomp::{search_system_maximize_seeded, SearchProfile, SystemPlan};
 use crate::solver::goal::{Goal, Metric};
 use crate::solver::state::{Action, Balance, State};
 use crate::system::System;
@@ -50,6 +50,11 @@ pub struct ParetoSolve {
 
 pub(crate) const STABILITY_FLOORS: [i32; 6] = [5, 6, 7, 8, 9, 10];
 pub(crate) const DEFENSE_FLOORS: [f64; 5] = [0.0, 250.0, 500.0, 750.0, 1000.0];
+/// Sparse grids for the quick-ranking sweep. They share the full grids'
+/// endpoints, so [`frontier_bounds`] normalizes both sweeps over the same
+/// domain and the scores stay comparable.
+pub(crate) const QUICK_STABILITY_FLOORS: [i32; 3] = [5, 8, 10];
+pub(crate) const QUICK_DEFENSE_FLOORS: [f64; 2] = [0.0, 1000.0];
 const SCORE_INCOME_UNIT: f64 = 1_000.0;
 
 pub fn solve_pareto(
@@ -133,6 +138,112 @@ pub fn solve_pareto(
     samples.append(&mut stability_tail);
     samples.append(&mut defense_samples);
 
+    assemble_solve(samples)
+}
+
+/// Quick-ranking variant of [`solve_pareto`]: a sparse floor grid (3 stability
+/// + 2 defense points instead of 11), a reduced-effort anchor solve, and
+/// node-capped repair climbs warm-started along each chain. Deterministic, and
+/// shares the frontier/AUC/score code with the full sweep so the two can't
+/// drift. Every search budget is a strict reduction of the full sweep's, so
+/// the returned score is a lower bound on the full-sweep score. See
+/// `QUICK_RANKING_DESIGN.md`.
+pub fn solve_pareto_quick(
+    system: &System,
+    balance: &Balance,
+    horizon: i32,
+    time_limit: u32,
+) -> ParetoSolve {
+    let mut samples = Vec::new();
+
+    // Anchor: the stability-5 point, searched with full seeding but only the
+    // top-2 seed climbs. Its plan warm-starts everything else.
+    let mut stability_warm = None;
+    let first_stability = QUICK_STABILITY_FLOORS[0];
+    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(first_stability));
+    if let Some(point) = measure_point_seeded(
+        system,
+        balance,
+        FrontierKind::Stability,
+        first_stability as f64,
+        &floors,
+        horizon,
+        time_limit,
+        &mut stability_warm,
+        &[],
+        SearchProfile::QUICK,
+    ) {
+        samples.push(point);
+    }
+    let mut defense_warm = stability_warm.clone();
+
+    // Repairs: sequential capped climbs from the chain's warm plan. Ranking
+    // runs many systems, so there is no per-system chain concurrency here; the
+    // rayon pool stays busy inside the anchor solves.
+    //
+    // The quick chains take bigger floor steps than the full sweep (5→8→10 vs
+    // 5→6→…→10), and on large systems a capped repair climb can fail to bridge
+    // one — an *infeasible* point. Dropping it would zero out real AUC area
+    // (the catastrophic error mode for ranking), so feasibility failures fall
+    // back to a fresh reduced-effort search; mere suboptimality does not.
+    let mut measure = |kind: FrontierKind,
+                       x: f64,
+                       floors: &Goal,
+                       warm: &mut Option<SystemPlan>|
+     -> Option<ParetoPoint> {
+        measure_point_seeded(
+            system,
+            balance,
+            kind,
+            x,
+            floors,
+            horizon,
+            time_limit,
+            warm,
+            &[],
+            SearchProfile::QUICK_REPAIR,
+        )
+        .or_else(|| {
+            measure_point_seeded(
+                system,
+                balance,
+                kind,
+                x,
+                floors,
+                horizon,
+                time_limit,
+                warm,
+                &[],
+                SearchProfile::QUICK,
+            )
+        })
+    };
+
+    for stability in QUICK_STABILITY_FLOORS.iter().copied().skip(1) {
+        let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stability));
+        if let Some(point) = measure(
+            FrontierKind::Stability,
+            stability as f64,
+            &floors,
+            &mut stability_warm,
+        ) {
+            samples.push(point);
+        }
+    }
+    for defense in QUICK_DEFENSE_FLOORS {
+        let floors = Goal::new(f64::NEG_INFINITY, Some(defense), Some(0));
+        if let Some(point) = measure(FrontierKind::Defense, defense, &floors, &mut defense_warm) {
+            samples.push(point);
+        }
+    }
+
+    assemble_solve(samples)
+}
+
+/// Shared back half of [`solve_pareto`] / [`solve_pareto_quick`]: frontier
+/// filtering, AUC scoring and the balanced recommendation. Both modes must go
+/// through this so quick scores stay comparable with full scores.
+fn assemble_solve(samples: Vec<ParetoPoint>) -> ParetoSolve {
     let stability_frontier = pareto_frontier(
         samples
             .iter()
@@ -174,7 +285,16 @@ pub(crate) fn measure_point_chained(
     warm: &mut Option<SystemPlan>,
 ) -> Option<ParetoPoint> {
     measure_point_seeded(
-        system, balance, kind, floor, floors, horizon, time_limit, warm, &[],
+        system,
+        balance,
+        kind,
+        floor,
+        floors,
+        horizon,
+        time_limit,
+        warm,
+        &[],
+        SearchProfile::FULL,
     )
 }
 
@@ -194,6 +314,7 @@ pub(crate) fn measure_point_seeded(
     time_limit: u32,
     warm: &mut Option<SystemPlan>,
     extra_seeds: &[SystemPlan],
+    profile: SearchProfile,
 ) -> Option<ParetoPoint> {
     let mut state = State::new(balance.clone(), system.clone());
     let base = state.clone();
@@ -207,6 +328,7 @@ pub(crate) fn measure_point_seeded(
         time_limit,
         true,
         &seeds,
+        profile,
     );
     *warm = best_plan;
     let result = results.into_iter().next()?;

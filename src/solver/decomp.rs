@@ -112,6 +112,46 @@ const MAX_SIM_ITERS: u32 = 5_000;
 const MAX_NODES_PER_SEED: u32 = 200_000;
 const TOP_SEED_CLIMBS: usize = 8;
 
+/// Search-effort profile: how many ranked seeds get climbed and how many plans
+/// one climb may evaluate. Budgets are node counts, never wall-clock, so every
+/// profile is deterministic. `FULL` reproduces the production search exactly;
+/// the `QUICK_*` profiles trade quality for speed in the ranking mode and are
+/// a strict *reduction* of `FULL` (same seed generation and queue order, lower
+/// caps), so their scores are lower bounds on the full search's. See
+/// `QUICK_RANKING_DESIGN.md`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SearchProfile {
+    pub top_seed_climbs: usize,
+    pub max_nodes_per_seed: u32,
+    /// Repair mode: when extra (warm) seeds are supplied, skip planet-set seed
+    /// generation and climb only from them. Falls back to full generation when
+    /// no warm seed exists (e.g. a chain's first point).
+    pub warm_seeds_only: bool,
+}
+
+impl SearchProfile {
+    pub const FULL: Self = Self {
+        top_seed_climbs: TOP_SEED_CLIMBS,
+        max_nodes_per_seed: MAX_NODES_PER_SEED,
+        warm_seeds_only: false,
+    };
+    /// Quick-ranking anchor point: full seeding, but only the best 2 seeds are
+    /// climbed (the report showed most seeds converge into the same basins).
+    pub const QUICK: Self = Self {
+        top_seed_climbs: 2,
+        max_nodes_per_seed: 50_000,
+        warm_seeds_only: false,
+    };
+    /// Quick-ranking repair point: climb only the warm plan from the previous
+    /// floor, with a small node cap — most floored optima differ from the
+    /// anchor by a few toggles/swaps.
+    pub const QUICK_REPAIR: Self = Self {
+        top_seed_climbs: 1,
+        max_nodes_per_seed: 2_000,
+        warm_seeds_only: true,
+    };
+}
+
 /// Static facts about the search instance, computed once per solve and threaded
 /// through seed generation and neighbor enumeration. Everything here is
 /// immutable during a solve, so pruning on it is exact: a facility type outside
@@ -2254,12 +2294,17 @@ fn decomp_search_objective(
     time_limit: u32,
     slim: bool,
     extra_seeds: &[SystemPlan],
+    profile: SearchProfile,
 ) -> (Option<AStarSearchResult>, Option<SystemPlan>) {
     let start = Instant::now();
     let deadline = Duration::from_millis(time_limit as u64);
 
     let ctx = SearchContext::new(initial_state);
-    let mut seed_plans = planet_set_seed_plans(initial_state, &ctx, objective, start, deadline);
+    let mut seed_plans = if profile.warm_seeds_only && !extra_seeds.is_empty() {
+        Vec::new()
+    } else {
+        planet_set_seed_plans(initial_state, &ctx, objective, start, deadline)
+    };
     seed_plans.extend(extra_seeds.iter().cloned());
     if seed_plans.is_empty() {
         return (None, None);
@@ -2309,7 +2354,7 @@ fn decomp_search_objective(
         }
         true
     });
-    ranked.truncate(TOP_SEED_CLIMBS);
+    ranked.truncate(profile.top_seed_climbs);
     let mut selected_keys: HashSet<PlanKey> =
         ranked.iter().map(|(plan, _)| plan_key(plan)).collect();
     for (plan, score) in warm_scored {
@@ -2338,7 +2383,7 @@ fn decomp_search_objective(
                 objective,
                 slim,
                 seed,
-                MAX_NODES_PER_SEED,
+                profile.max_nodes_per_seed,
                 &cache,
             )
         })
@@ -2346,11 +2391,12 @@ fn decomp_search_objective(
 
     let nodes_searched = seed_evals + climbed.iter().map(|(_, _, nodes)| *nodes).sum::<u32>();
     // A real cutoff is now a *deterministic* event: some seed exhausted the node
-    // budget before converging (pathological only). Wall-clock elapsed time no
-    // longer affects the result, so it must not be reported as a cutoff.
+    // budget before converging (pathological only for FULL; routine for the
+    // capped QUICK_* profiles). Wall-clock elapsed time no longer affects the
+    // result, so it must not be reported as a cutoff.
     let cutoff_occurred = climbed
         .iter()
-        .any(|(_, _, nodes)| *nodes >= MAX_NODES_PER_SEED);
+        .any(|(_, _, nodes)| *nodes >= profile.max_nodes_per_seed);
     let (best_plan, best, _) = match climbed.into_iter().reduce(|best, cand| {
         if is_better(objective, &cand.1, &cand.0, &best.1, &best.0) {
             cand
@@ -2394,6 +2440,7 @@ pub fn decomp_search(
         time_limit,
         slim,
         &[],
+        SearchProfile::FULL,
     )
     .0
 }
@@ -2418,10 +2465,12 @@ pub fn decomp_search_maximize(
         time_limit,
         slim,
         &[],
+        SearchProfile::FULL,
     )
     .0
 }
 
+#[allow(clippy::too_many_arguments)] // threaded search context
 pub(crate) fn decomp_search_maximize_seeded(
     initial_state: &mut State,
     metric: Metric,
@@ -2430,13 +2479,21 @@ pub(crate) fn decomp_search_maximize_seeded(
     time_limit: u32,
     slim: bool,
     extra_seeds: &[SystemPlan],
+    profile: SearchProfile,
 ) -> (Option<AStarSearchResult>, Option<SystemPlan>) {
     let objective = Objective::Maximize {
         metric,
         floors,
         horizon_months,
     };
-    decomp_search_objective(initial_state, &objective, time_limit, slim, extra_seeds)
+    decomp_search_objective(
+        initial_state,
+        &objective,
+        time_limit,
+        slim,
+        extra_seeds,
+        profile,
+    )
 }
 
 /// Joint solve: optimize one combined plan over the whole system on a shared
@@ -2478,6 +2535,7 @@ pub fn search_system_maximize(
 /// Seeded maximize-mode joint solve. Extra plans are scored/ranked with the
 /// generated seeds, then the best climbed plan is returned for Pareto warm-start
 /// chaining.
+#[allow(clippy::too_many_arguments)] // threaded search context
 pub(crate) fn search_system_maximize_seeded(
     initial_state: &mut State,
     metric: Metric,
@@ -2486,6 +2544,7 @@ pub(crate) fn search_system_maximize_seeded(
     time_limit: u32,
     slim: bool,
     extra_seeds: &[SystemPlan],
+    profile: SearchProfile,
 ) -> (Vec<AStarSearchResult>, Option<SystemPlan>) {
     let (result, best_plan) = decomp_search_maximize_seeded(
         initial_state,
@@ -2495,6 +2554,7 @@ pub(crate) fn search_system_maximize_seeded(
         time_limit,
         slim,
         extra_seeds,
+        profile,
     );
     (result.into_iter().collect(), best_plan)
 }

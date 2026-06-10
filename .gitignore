@@ -19,3 +19,6 @@ bound_benchmark.csv
 bound_benchmark_chained.csv
 bound_benchmark_chained_summary.txt
 QUICK_RANKING_DESIGN.md
+rank_validation.py
+rank_quick.csv
+rank_quick_log.txt

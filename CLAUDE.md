@@ -40,6 +40,15 @@ SYSTEM_SOLVER_BOUND_MS=5000 cargo run   # budget per point. See OPTIMAL_SOLVER_B
 
 Key CLI flags: `--income`, `--stability`, `--defense`, `--credits`, `--story-points`, `--alpha-cores`, `--item <NAME>` (repeatable), `--time-limit <MS>`.
 
+```bash
+# Quick ranking: score every system with a reduced deterministic sweep (sparse
+# floors + capped repair climbs; see QUICK_RANKING_DESIGN.md), print best-first.
+cargo run --release -- --db system_benchmark.db --rank
+cargo run --release -- --rank --rank-system askonia --rank-system corvus  # filter
+cargo run --release -- --rank --rank-csv > rank.csv  # machine-readable
+python rank_validation.py final_sweep.csv rank.csv   # rank-agreement gate vs full sweep
+```
+
 ### Game data source
 
 All solver modes (CLI and env-var modes) load game data from the save-extraction
