@@ -1,20 +1,24 @@
 mod constants;
-mod utils;
-mod planet;
-mod system;
-mod solver;
-mod parser;
+mod cpu_affinity;
 mod extract;
+mod parser;
+mod planet;
+mod solver;
+mod system;
+mod utils;
 
-use std::error::Error;
-use std::collections::HashMap;
-use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use planet::Planet;
-use solver::{diagnose_maximize_gap, search_system_decomp, search_system_maximize, solve_pareto, Goal, Metric, Balance, State};
+use solver::{
+    diagnose_maximize_gap, search_system_decomp, search_system_maximize, solve_pareto, Balance,
+    Goal, Metric, State,
+};
+use std::collections::HashMap;
+use std::error::Error;
+use std::path::PathBuf;
 // Archived solvers, kept reachable for benchmarking/comparison:
-use solver::archive::{astar::search_all_planets, split::search_all_planets_decomp};
 use constants::{ColonyItem, FacilityType};
+use solver::archive::{astar::search_all_planets, split::search_all_planets_decomp};
 use solver::Action;
 use system::System;
 
@@ -103,14 +107,12 @@ fn load_systems_from_env() -> Result<HashMap<String, System>, Box<dyn Error>> {
 
 /// Run the maximize-mode solver and report the best plan plus the metric values
 /// it actually achieves (by replaying the solution onto a fresh copy of `state`).
-fn test_maximize(
-    mut state: State,
-    metric: Metric,
-    floors: &Goal,
-    horizon: i32,
-    time_limit: u32,
-) {
-    println!("\nStarting maximize solver ({}, horizon {} months)...", metric.as_str(), horizon);
+fn test_maximize(mut state: State, metric: Metric, floors: &Goal, horizon: i32, time_limit: u32) {
+    println!(
+        "\nStarting maximize solver ({}, horizon {} months)...",
+        metric.as_str(),
+        horizon
+    );
 
     let replay_base = state.clone();
     let results = search_system_maximize(&mut state, metric, floors, horizon, time_limit, true);
@@ -176,18 +178,20 @@ fn run_solve(system_name: &str, system: &System, balance: &Balance, horizon: i32
     let solution = solve_pareto(system, balance, horizon, time_limit);
 
     println!("\nSystem score: {:.1}", solution.score);
-    println!("  stability normalized AUC: {:.0} credits/month", solution.stability_auc);
-    println!("  defense normalized AUC:   {:.0} credits/month", solution.defense_auc);
+    println!(
+        "  stability normalized AUC: {:.0} credits/month",
+        solution.stability_auc
+    );
+    println!(
+        "  defense normalized AUC:   {:.0} credits/month",
+        solution.defense_auc
+    );
 
     println!("\nStability frontier:");
     for point in &solution.stability_frontier {
         println!(
             "  floor {:>4.0} -> income={:>9.0}, stability={:>4.1}, defense={:>7.1}, month={}",
-            point.floor,
-            point.income,
-            point.stability,
-            point.defense,
-            point.months,
+            point.floor, point.income, point.stability, point.defense, point.months,
         );
     }
 
@@ -195,11 +199,7 @@ fn run_solve(system_name: &str, system: &System, balance: &Balance, horizon: i32
     for point in &solution.defense_frontier {
         println!(
             "  floor {:>4.0} -> income={:>9.0}, stability={:>4.1}, defense={:>7.1}, month={}",
-            point.floor,
-            point.income,
-            point.stability,
-            point.defense,
-            point.months,
+            point.floor, point.income, point.stability, point.defense, point.months,
         );
     }
 
@@ -431,7 +431,8 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
                 fmt_f(row.greedy_income),
                 fmt_f(row.bound_income),
                 fmt_f(row.gap()),
-                row.gap_pct().map_or("--".to_string(), |p| format!("{p:.1}")),
+                row.gap_pct()
+                    .map_or("--".to_string(), |p| format!("{p:.1}")),
                 fmt_i(row.greedy_months),
                 fmt_i(row.bound_months),
             );
@@ -504,14 +505,20 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    cpu_affinity::prefer_performance_cores();
+
     // Special env-var modes bypass normal CLI parsing.
     if std::env::var_os("SYSTEM_SOLVER_BOUND").is_some() {
         eprintln!("Loading game data...");
         let systems = load_systems_from_env()?;
         let horizon: i32 = std::env::var("SYSTEM_SOLVER_BOUND_HORIZON")
-            .ok().and_then(|v| v.parse().ok()).unwrap_or(120);
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(120);
         let time_limit: u32 = std::env::var("SYSTEM_SOLVER_BOUND_MS")
-            .ok().and_then(|v| v.parse().ok()).unwrap_or(2_000);
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2_000);
         run_bound(&systems, horizon, time_limit);
         return Ok(());
     }
@@ -540,7 +547,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(diag) = std::env::var_os("SYSTEM_SOLVER_DIAG") {
         println!("Loading game data...");
         let systems = load_systems_from_env()?;
-        let sys_name = diag.to_str().filter(|s| !s.is_empty()).unwrap_or("Mia Bravos");
+        let sys_name = diag
+            .to_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Mia Bravos");
         let system = systems
             .get(sys_name)
             .unwrap_or_else(|| panic!("diagnostic system {sys_name:?} not found"))
@@ -548,7 +558,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Match the CLI defaults so the diagnostic reproduces the real repro.
         let state = State::new(Balance::new(5_000_000.0, 5, 1), system);
         let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(6));
-        println!("{}", diagnose_maximize_gap(&state, Metric::Income, &floors, 120, true));
+        println!(
+            "{}",
+            diagnose_maximize_gap(&state, Metric::Income, &floors, 120, true)
+        );
         return Ok(());
     }
 
@@ -567,17 +580,29 @@ fn main() -> Result<(), Box<dyn Error>> {
     if std::env::var_os("SYSTEM_SOLVER_PARETO").is_some() {
         let systems = load_systems_from_env()?;
         let horizon: i32 = std::env::var("SYSTEM_SOLVER_PARETO_HORIZON")
-            .ok().and_then(|v| v.parse().ok()).unwrap_or(120);
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(120);
         let time_limit: u32 = std::env::var("SYSTEM_SOLVER_PARETO_MS")
-            .ok().and_then(|v| v.parse().ok()).unwrap_or(5_000);
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5_000);
         let credits: f64 = std::env::var("SYSTEM_SOLVER_PARETO_CREDITS")
-            .ok().and_then(|v| v.parse().ok()).unwrap_or(5_000_000.0);
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5_000_000.0);
         let sp: u32 = std::env::var("SYSTEM_SOLVER_PARETO_SP")
-            .ok().and_then(|v| v.parse().ok()).unwrap_or(5);
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5);
         let alpha: u32 = std::env::var("SYSTEM_SOLVER_PARETO_ALPHA")
-            .ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
         let all_items_count: u32 = std::env::var("SYSTEM_SOLVER_PARETO_ALL_ITEMS")
-            .ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
 
         let mut base_balance = Balance::new(credits, sp, alpha);
         if all_items_count > 0 {
@@ -590,50 +615,137 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         let mut names: Vec<&String> = systems.keys().collect();
         names.sort();
+        // Optional substring filter so a single system can be benchmarked.
+        if let Ok(filter) = std::env::var("SYSTEM_SOLVER_PARETO_SYSTEM") {
+            if !filter.is_empty() {
+                let needle = filter.to_lowercase();
+                names.retain(|n| n.to_lowercase().contains(&needle));
+            }
+        }
+        let show_stats = std::env::var_os("SYSTEM_SOLVER_STATS").is_some();
 
         // Reuse the maximize-then-replay measurement and floor grids from the
         // Pareto library so the CSV sweep and `--solve` can't drift apart. The
         // sweep emits every raw sample (the Python plotter derives its own
         // frontier), so it calls `measure_point` per floor rather than
         // `solve_pareto`, which would only return frontier points.
-        use solver::pareto::{measure_point, FrontierKind, DEFENSE_FLOORS, STABILITY_FLOORS};
+        use solver::decomp_stats;
+        use solver::pareto::{
+            measure_point_chained, FrontierKind, DEFENSE_FLOORS, STABILITY_FLOORS,
+        };
 
-        println!("system,kind,floor,income,stability,defense");
+        let report = |name: &str,
+                      kind: &str,
+                      floor: f64,
+                      point: Option<&solver::pareto::ParetoPoint>,
+                      secs: f64| {
+            if let Some(p) = point {
+                println!(
+                    "{name},{kind},{:.0},{:.1},{:.3},{:.3}",
+                    p.floor, p.income, p.stability, p.defense
+                );
+            }
+            if show_stats {
+                eprintln!("STATS {name} {kind} {floor:.0} {secs:.2}s");
+            }
+        };
+
         for name in names {
             let system = &systems[name];
-            for stab in STABILITY_FLOORS {
-                let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stab));
-                if let Some(p) = measure_point(
-                    system,
-                    &base_balance,
-                    FrontierKind::Stability,
-                    stab as f64,
-                    &floors,
-                    horizon,
-                    time_limit,
-                ) {
-                    println!(
-                        "{name},stability,{:.0},{:.1},{:.3},{:.3}",
-                        p.floor, p.income, p.stability, p.defense
-                    );
-                }
+            decomp_stats::reset();
+            let system_start = std::time::Instant::now();
+
+            let mut stability_warm = None;
+            let first_stability = STABILITY_FLOORS[0];
+            let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(first_stability));
+            let t0 = std::time::Instant::now();
+            let first_point = measure_point_chained(
+                system,
+                &base_balance,
+                FrontierKind::Stability,
+                first_stability as f64,
+                &floors,
+                horizon,
+                time_limit,
+                &mut stability_warm,
+            );
+            let first_elapsed = t0.elapsed().as_secs_f64();
+            let defense_initial_warm = stability_warm.clone();
+
+            let stability_system = system.clone();
+            let stability_balance = base_balance.clone();
+            let defense_system = system.clone();
+            let defense_balance = base_balance.clone();
+            let (stability_tail, defense_points) = std::thread::scope(|scope| {
+                let stability_handle = scope.spawn(move || {
+                    let mut warm = stability_warm;
+                    let mut points = Vec::new();
+                    for stab in STABILITY_FLOORS.iter().copied().skip(1) {
+                        let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stab));
+                        let t0 = std::time::Instant::now();
+                        let point = measure_point_chained(
+                            &stability_system,
+                            &stability_balance,
+                            FrontierKind::Stability,
+                            stab as f64,
+                            &floors,
+                            horizon,
+                            time_limit,
+                            &mut warm,
+                        );
+                        points.push((stab as f64, point, t0.elapsed().as_secs_f64()));
+                    }
+                    points
+                });
+
+                let defense_handle = scope.spawn(move || {
+                    let mut warm = defense_initial_warm;
+                    let mut points = Vec::new();
+                    for def_floor in DEFENSE_FLOORS {
+                        let floors = Goal::new(f64::NEG_INFINITY, Some(def_floor), Some(0));
+                        let t0 = std::time::Instant::now();
+                        let point = measure_point_chained(
+                            &defense_system,
+                            &defense_balance,
+                            FrontierKind::Defense,
+                            def_floor,
+                            &floors,
+                            horizon,
+                            time_limit,
+                            &mut warm,
+                        );
+                        points.push((def_floor, point, t0.elapsed().as_secs_f64()));
+                    }
+                    points
+                });
+
+                (
+                    stability_handle.join().expect("stability chain panicked"),
+                    defense_handle.join().expect("defense chain panicked"),
+                )
+            });
+
+            report(
+                name,
+                "stability",
+                first_stability as f64,
+                first_point.as_ref(),
+                first_elapsed,
+            );
+            for (floor, point, secs) in stability_tail {
+                report(name, "stability", floor, point.as_ref(), secs);
             }
-            for def_floor in DEFENSE_FLOORS {
-                let floors = Goal::new(f64::NEG_INFINITY, Some(def_floor), Some(0));
-                if let Some(p) = measure_point(
-                    system,
-                    &base_balance,
-                    FrontierKind::Defense,
-                    def_floor,
-                    &floors,
-                    horizon,
-                    time_limit,
-                ) {
-                    println!(
-                        "{name},defense,{:.0},{:.1},{:.3},{:.3}",
-                        p.floor, p.income, p.stability, p.defense
-                    );
-                }
+            for (floor, point, secs) in defense_points {
+                report(name, "defense", floor, point.as_ref(), secs);
+            }
+
+            if show_stats {
+                let total_elapsed = system_start.elapsed().as_secs_f64();
+                let (calls, hits, steps, cands, score_passes, reuse_steps, seeds) =
+                    decomp_stats::snapshot();
+                eprintln!(
+                    "STATS-TOTAL {name} {total_elapsed:.2}s run_plan={calls} cache_hits={hits} sim_steps={steps} cand_scores={cands} score_passes={score_passes} reuse_steps={reuse_steps} seeds={seeds}"
+                );
             }
         }
         return Ok(());
@@ -657,7 +769,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_else(|| {
             let mut names: Vec<&String> = systems.keys().collect();
             names.sort();
-            eprintln!("error: system \"{}\" not found. Available systems:", cli.system);
+            eprintln!(
+                "error: system \"{}\" not found. Available systems:",
+                cli.system
+            );
             for n in &names {
                 eprintln!("  {n}");
             }
@@ -673,7 +788,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let state = State::new(initial_balance, test_system);
 
     if cli.solve {
-        run_solve(&cli.system, state.system(), state.balance(), cli.horizon, cli.time_limit);
+        run_solve(
+            &cli.system,
+            state.system(),
+            state.balance(),
+            cli.horizon,
+            cli.time_limit,
+        );
         return Ok(());
     }
 
@@ -692,9 +813,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         let stability_floor = cli.stability.unwrap_or(7);
         let defense_floor = cli.defense.unwrap_or(0.0);
         let floors = match metric {
-            Metric::Income => {
-                Goal::new(f64::NEG_INFINITY, Some(defense_floor), Some(stability_floor))
-            }
+            Metric::Income => Goal::new(
+                f64::NEG_INFINITY,
+                Some(defense_floor),
+                Some(stability_floor),
+            ),
             Metric::Defense => Goal::new(income_floor, None, Some(stability_floor)),
             Metric::Stability => Goal::new(income_floor, Some(defense_floor), None),
         };
@@ -727,8 +850,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!(
         "Goal: income >= {:.0}{}{}",
         income,
-        cli.stability.map_or(String::new(), |s| format!(", stability >= {s}")),
-        cli.defense.map_or(String::new(), |d| format!(", defense >= {d}")),
+        cli.stability
+            .map_or(String::new(), |s| format!(", stability >= {s}")),
+        cli.defense
+            .map_or(String::new(), |d| format!(", defense >= {d}")),
     );
 
     test_solver(state, &goal, cli.time_limit);
@@ -736,7 +861,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Test growth update
     // Apply actions to set up the initial state
-    let terran_1_hash = 1160120806187968324;//Planet::_get_planet_name_hash("Terran 1");
+    let terran_1_hash = 1160120806187968324; //Planet::_get_planet_name_hash("Terran 1");
     let action_sequence = vec![
         Action::Colonize(terran_1_hash),
         Action::Wait(1),
@@ -748,7 +873,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         Action::SetHazardPay(terran_1_hash, true),
         Action::SetFreePort(terran_1_hash, true),
         Action::Wait(3),
-        Action::InstallItem(terran_1_hash, FacilityType::LightIndustry, ColonyItem::BiofactoryEmbryo),
+        Action::InstallItem(
+            terran_1_hash,
+            FacilityType::LightIndustry,
+            ColonyItem::BiofactoryEmbryo,
+        ),
         Action::Wait(2),
     ];
 
@@ -777,7 +906,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         state.apply_action_raw(action, true);
     }
 
-
     // Undo test actions
     for _ in 0..test_action_sequence.len() {
         state.undo_last_action(true);
@@ -799,10 +927,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     crate::solver::_test_path_undo_consistency(&state);
 
-
     Ok(())
 }
-
 
 /*
 TODOS:

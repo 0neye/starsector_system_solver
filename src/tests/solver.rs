@@ -4,8 +4,8 @@
 use crate::constants::FacilityType;
 use crate::planet::Planet;
 use crate::solver::decomp::{
-    decomp_search, decomp_search_maximize, simulate_plan, simulate_plan_maximize,
-    simulate_plan_maximize_with_log, SystemPlan,
+    assert_factored_lookahead_matches_reference, decomp_search, decomp_search_maximize,
+    simulate_plan, simulate_plan_maximize, simulate_plan_maximize_with_log, SystemPlan,
 };
 use crate::solver::goal::{Goal, Metric};
 use crate::solver::state::{get_action_sequence_hash, Action, State};
@@ -23,8 +23,14 @@ use crate::tests::support::{
 fn action_sequence_hash_properties() {
     let h = Planet::_get_planet_name_hash("p");
 
-    let a = vec![Action::Wait(1), Action::AddFacility(h, FacilityType::Mining)];
-    let b = vec![Action::AddFacility(h, FacilityType::Mining), Action::Wait(1)];
+    let a = vec![
+        Action::Wait(1),
+        Action::AddFacility(h, FacilityType::Mining),
+    ];
+    let b = vec![
+        Action::AddFacility(h, FacilityType::Mining),
+        Action::Wait(1),
+    ];
     assert_ne!(
         get_action_sequence_hash(&a),
         get_action_sequence_hash(&b),
@@ -32,7 +38,10 @@ fn action_sequence_hash_properties() {
     );
 
     // stable
-    assert_eq!(get_action_sequence_hash(&a), get_action_sequence_hash(&a.clone()));
+    assert_eq!(
+        get_action_sequence_hash(&a),
+        get_action_sequence_hash(&a.clone())
+    );
     assert_eq!(get_action_sequence_hash(&[]), get_action_sequence_hash(&[]));
 
     // within a non-wait run, reordering reaches the same state -> same key (dedup intact)
@@ -159,8 +168,8 @@ fn decomp_inner_sim_log_is_consistent_and_correct() {
     let goal = Goal::new(target * 0.5, None, None);
 
     let plan = SystemPlan::permit_all(&colonized);
-    let (log, months) =
-        simulate_plan(&colonized, &goal, &plan, true).expect("half the reachable income is solvable");
+    let (log, months) = simulate_plan(&colonized, &goal, &plan, true)
+        .expect("half the reachable income is solvable");
 
     assert_eq!(
         sum_wait_months(&log),
@@ -199,12 +208,17 @@ fn decomp_search_returns_satisfying_plan() {
     colonized.apply_action_raw(&Action::Colonize(hash), false);
 
     let target = reachable_income(&colonized, 60);
-    assert!(target > 0.0, "expected a reachable positive income, got {target}");
+    assert!(
+        target > 0.0,
+        "expected a reachable positive income, got {target}"
+    );
     let goal = Goal::new(target * 0.5, None, None);
 
     let result = decomp_search(&mut colonized, &goal, 2_000, true)
         .expect("outer search should find a plan for a reachable goal");
-    let log = result.solution.expect("a successful result carries a solution");
+    let log = result
+        .solution
+        .expect("a successful result carries a solution");
 
     assert_eq!(
         sum_wait_months(&log),
@@ -227,13 +241,18 @@ fn decomp_maximize_income_holds_stability_floor() {
     colonized.apply_action_raw(&Action::Colonize(hash), false);
 
     let target = reachable_income(&colonized, 60);
-    assert!(target > 0.0, "expected a reachable positive income, got {target}");
+    assert!(
+        target > 0.0,
+        "expected a reachable positive income, got {target}"
+    );
 
     // Maximize income with no income floor but a stability floor of 5.
     let floors = Goal::new(f64::NEG_INFINITY, None, Some(5));
     let result = decomp_search_maximize(&mut colonized, Metric::Income, &floors, 120, 3_000, true)
         .expect("a single colony can hold stability 5 while earning income");
-    let log = result.solution.expect("a successful result carries a solution");
+    let log = result
+        .solution
+        .expect("a successful result carries a solution");
 
     assert_eq!(
         sum_wait_months(&log),
@@ -345,10 +364,15 @@ fn decomp_maximize_mia_bravos_escapes_local_optimum() {
         let mut state = State::new(Balance::new(5_000_000.0, 5, 1), system.clone());
         let result = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 5_000, true)
             .expect("Mia Bravos can hold stability 6 while earning income");
-        let log = result.solution.expect("a successful result carries a solution");
+        let log = result
+            .solution
+            .expect("a successful result carries a solution");
         let mut replay = State::new(Balance::new(5_000_000.0, 5, 1), system.clone());
         apply_all(&mut replay, &log);
-        (replay.balance().net_income(), replay.system().avg_stability())
+        (
+            replay.balance().net_income(),
+            replay.system().avg_stability(),
+        )
     };
 
     let (income, stability) = run();
@@ -364,7 +388,10 @@ fn decomp_maximize_mia_bravos_escapes_local_optimum() {
 
     // The sorted neighbourhood must make repeated identical runs identical.
     let (income2, _) = run();
-    assert_eq!(income, income2, "maximize result must be deterministic run to run");
+    assert_eq!(
+        income, income2,
+        "maximize result must be deterministic run to run"
+    );
 }
 
 /// Regression for the Pareto cliff where the income maximizer selected a
@@ -386,7 +413,9 @@ fn decomp_maximize_mia_bravos_stability_8_keeps_three_planet_basin() {
     let mut state = State::new(Balance::new(5_000_000.0, 5, 1), system.clone());
     let result = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 15_000, true)
         .expect("Mia Bravos can hold stability 8 while earning income");
-    let log = result.solution.expect("a successful result carries a solution");
+    let log = result
+        .solution
+        .expect("a successful result carries a solution");
 
     let mut replay = State::new(Balance::new(5_000_000.0, 5, 1), system);
     apply_all(&mut replay, &log);
@@ -400,6 +429,37 @@ fn decomp_maximize_mia_bravos_stability_8_keeps_three_planet_basin() {
     assert!(
         income > 500_000.0,
         "income {income} regressed toward the old two-planet Pareto cliff (~401849)"
+    );
+}
+
+#[test]
+fn decomp_factored_lookahead_matches_reference_on_mia_bravos() {
+    use crate::parser::load_game_data;
+    use crate::solver::state::Balance;
+
+    let systems = load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")
+        .expect("game data CSVs load from the crate root during tests");
+    let system = systems
+        .get("Mia Bravos")
+        .expect("Mia Bravos is present in Planets.csv")
+        .clone();
+    let state = State::new(Balance::new(5_000_000.0, 5, 1), system);
+    let plan = SystemPlan::permit_all(&state);
+    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(9));
+
+    let compared = assert_factored_lookahead_matches_reference(
+        &state,
+        Metric::Income,
+        &floors,
+        120,
+        &plan,
+        true,
+        250,
+    );
+
+    assert!(
+        compared >= 250,
+        "expected hundreds of candidate comparisons, got {compared}"
     );
 }
 
@@ -433,7 +493,10 @@ fn decomp_joint_interleaves_planets_for_system_goal() {
     let mut solo = solo_base.clone();
     solo.apply_action_raw(&Action::Colonize(hash), false);
     let solo_income = reachable_income(&solo, 80);
-    assert!(solo_income > 0.0, "expected positive solo income, got {solo_income}");
+    assert!(
+        solo_income > 0.0,
+        "expected positive solo income, got {solo_income}"
+    );
 
     // A system goal beyond one planet's solo capacity but within two planets'.
     let goal = Goal::new(solo_income * 1.5, None, None);
@@ -485,9 +548,18 @@ fn generator_does_not_reoffer_lower_tiers_of_a_completed_chain() {
 
     // Walk the orbital-station chain to the top (each AddFacility upgrades the
     // previous tier in place).
-    state.apply_action_raw(&Action::AddFacility(hash, FacilityType::OrbitalStation), false);
-    state.apply_action_raw(&Action::AddFacility(hash, FacilityType::BattleStation), false);
-    state.apply_action_raw(&Action::AddFacility(hash, FacilityType::StarFortress), false);
+    state.apply_action_raw(
+        &Action::AddFacility(hash, FacilityType::OrbitalStation),
+        false,
+    );
+    state.apply_action_raw(
+        &Action::AddFacility(hash, FacilityType::BattleStation),
+        false,
+    );
+    state.apply_action_raw(
+        &Action::AddFacility(hash, FacilityType::StarFortress),
+        false,
+    );
 
     let planet = state.system().get_planet_by_hash(hash).unwrap();
     assert!(

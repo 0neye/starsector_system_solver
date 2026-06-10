@@ -7,16 +7,18 @@ use std::fmt;
 use std::hash::Hash;
 use std::hash::Hasher;
 
-use crate::constants::{FacilityData, FacilityType, MAX_FACILITIES, FACILITY_DATA, FACILITY_REQUIREMENTS};
 use crate::constants::{AdminType, Resource};
+use crate::constants::{
+    FacilityData, FacilityType, FACILITY_DATA, FACILITY_REQUIREMENTS, MAX_FACILITIES,
+};
 use crate::solver::Action;
 use crate::solver::Balance;
 use lazy_static::lazy_static;
 use nohash_hasher::BuildNoHashHasher;
 use rustc_hash::FxHashMap;
 
-pub use facility::Facility;
 use facility::DepositStatus;
+pub use facility::Facility;
 use rustc_hash::FxHashSet;
 use rustc_hash::FxHasher;
 
@@ -80,16 +82,27 @@ impl PlanetPropertyCache {
             farmland: properties.get("farmland").copied(),
             water: properties.get("water").copied().unwrap_or(0.0) > 0.0,
             habitable: properties.get("habitable").is_some(),
-            accessibility_percent: properties.get("accessibility percent").copied().unwrap_or(0.0),
+            accessibility_percent: properties
+                .get("accessibility percent")
+                .copied()
+                .unwrap_or(0.0),
         }
     }
 
     fn deposit_status(&self, resource: Resource) -> DepositStatus {
         match resource {
-            Resource::Ore => self.ore.map_or(DepositStatus::Absent, DepositStatus::Present),
-            Resource::TransplutonicOre => self.transplutonic_ore.map_or(DepositStatus::Absent, DepositStatus::Present),
-            Resource::Volatiles => self.volatiles.map_or(DepositStatus::Absent, DepositStatus::Present),
-            Resource::Organics => self.organics.map_or(DepositStatus::Absent, DepositStatus::Present),
+            Resource::Ore => self
+                .ore
+                .map_or(DepositStatus::Absent, DepositStatus::Present),
+            Resource::TransplutonicOre => self
+                .transplutonic_ore
+                .map_or(DepositStatus::Absent, DepositStatus::Present),
+            Resource::Volatiles => self
+                .volatiles
+                .map_or(DepositStatus::Absent, DepositStatus::Present),
+            Resource::Organics => self
+                .organics
+                .map_or(DepositStatus::Absent, DepositStatus::Present),
             Resource::Food => match (self.farmland, self.water) {
                 (None, false) => DepositStatus::Absent,
                 (Some(m), false) => DepositStatus::Present(m),
@@ -209,7 +222,7 @@ impl Planet {
         let name_hash = Self::_get_planet_name_hash(&name);
 
         Self {
-            name,   
+            name,
             name_hash,
             properties,
             property_cache,
@@ -275,7 +288,9 @@ impl Planet {
 
     /// Get a facility by its type
     pub fn get_facility(&self, facility_type: FacilityType) -> Option<&Facility> {
-        self.facilities.iter().find(|f| f.facility_type() == &facility_type)
+        self.facilities
+            .iter()
+            .find(|f| f.facility_type() == &facility_type)
     }
 
     /// Get a facility by its type, mutable
@@ -283,7 +298,32 @@ impl Planet {
         // Pessimistic: handing out &mut Facility means the caller may change
         // anything income-relevant (improvements, cores, items, build days).
         self.invalidate_income_cache();
-        self.facilities.iter_mut().find(|f| f.facility_type() == &facility_type)
+        self.facilities
+            .iter_mut()
+            .find(|f| f.facility_type() == &facility_type)
+    }
+
+    pub(crate) fn force_complete_build(&mut self, facility_type: FacilityType) -> Option<i32> {
+        let facility = self
+            .facilities
+            .iter_mut()
+            .find(|f| f.facility_type() == &facility_type)?;
+        let (current_build_days, total_build_days) = facility.build_days_state();
+        facility.set_build_days_state(0, total_build_days);
+        self.invalidate_income_cache();
+        Some(current_build_days)
+    }
+
+    pub(crate) fn restore_build_days(&mut self, facility_type: FacilityType, prior: i32) {
+        if let Some(facility) = self
+            .facilities
+            .iter_mut()
+            .find(|f| f.facility_type() == &facility_type)
+        {
+            let (_, total_build_days) = facility.build_days_state();
+            facility.set_build_days_state(prior, total_build_days);
+            self.invalidate_income_cache();
+        }
     }
 
     /// True if the planet has `facility_type`, or a facility that (transitively)
@@ -299,10 +339,7 @@ impl Planet {
 
     /// Check if we can add an industry to this planet
     pub fn can_add_industry(&self) -> bool {
-        self.facilities
-            .iter()
-            .filter(|f| !f.is_structure())
-            .count()
+        self.facilities.iter().filter(|f| !f.is_structure()).count()
             <= (self.size.saturating_sub(2)) as usize
     }
 
@@ -323,7 +360,10 @@ impl Planet {
         self.invalidate_income_cache();
 
         // Check if this is an upgrade by looking at requirements
-        if let (Some(data), Some(reqs)) = (FACILITY_DATA.get(&facility_type), FACILITY_REQUIREMENTS.get(&facility_type)) {
+        if let (Some(data), Some(reqs)) = (
+            FACILITY_DATA.get(&facility_type),
+            FACILITY_REQUIREMENTS.get(&facility_type),
+        ) {
             for req_facility in &reqs.facilities {
                 if let Some(fac) = self.get_facility_mut(*req_facility) {
                     _ = fac.swap_raw_w_data(facility_type, data, false);
@@ -354,14 +394,18 @@ impl Planet {
             for down_type in &reqs.facilities {
                 let down_type = *down_type;
                 if let Some(fac) = self.get_facility_mut(facility_type) {
-                    if fac.swap_raw_w_data(down_type, FACILITY_DATA.get(&down_type).unwrap(), true).is_some() {
+                    if fac
+                        .swap_raw_w_data(down_type, FACILITY_DATA.get(&down_type).unwrap(), true)
+                        .is_some()
+                    {
                         return true;
                     }
                 }
             }
         }
 
-        self.facilities.retain(|f| f.facility_type() != &facility_type);
+        self.facilities
+            .retain(|f| f.facility_type() != &facility_type);
         true
     }
 
@@ -427,7 +471,8 @@ impl Planet {
         if self.is_free_port {
             // increases to +25% over a year
             // we're doing it in chunks (not perfectly accurate) so we can cache things later
-            accessibility += match self.free_port_days / 30 {//self.free_port_days as f64 / 365.0 * 0.25;
+            accessibility += match self.free_port_days / 30 {
+                //self.free_port_days as f64 / 365.0 * 0.25;
                 0..=6 => 8.33,
                 7..=11 => 16.66,
                 _ => 25.0,
@@ -526,7 +571,7 @@ impl Planet {
         if !self.has_colony() {
             return 0.0;
         }
-        
+
         // base strength
         let mut strength = if self.size == 3 {
             50.0
@@ -632,7 +677,7 @@ impl Planet {
         let mut remaining_days = days.abs() as u32;
         let mut growth_points = self.calculate_growth_points(larger_friendly_colonies);
         // println!("Days: {} - Growth points: {} - Growth progress: {}", days, growth_points, self.growth_progress);
-        
+
         // First calculate size changes
         loop {
             let days_to_size_change = if is_undoing {
@@ -649,7 +694,7 @@ impl Planet {
             let days_to_size_change = days_to_size_change.unwrap();
 
             remaining_days = remaining_days.saturating_sub(days_to_size_change);
-            
+
             if is_undoing && self.size > MIN_SIZE {
                 self.size = self.size.saturating_sub(1);
                 growth_points = self.calculate_growth_points(larger_friendly_colonies);
@@ -866,12 +911,16 @@ impl Planet {
 
     /// Free-port maturity bucket; boundaries match the accessibility/stability tiers
     /// in `calculate_accessibility` and `stability` (changes at month 7 and month 12).
-    fn free_port_bucket(free_port_days: u32) -> u32 {
+    pub(crate) fn free_port_bucket(free_port_days: u32) -> u32 {
         match free_port_days / 30 {
             0..=6 => 0,
             7..=11 => 1,
             _ => 2,
         }
+    }
+
+    pub(crate) fn current_free_port_bucket(&self) -> u32 {
+        Self::free_port_bucket(self.free_port_days)
     }
 
     /// Get the gross income of this planet (per month)
@@ -927,11 +976,13 @@ impl Planet {
         if debug {
             println!(
                 "\nWAIT - Growth: {}, Size: {}",
-                self.growth_progress.round(), self.size
+                self.growth_progress.round(),
+                self.size
             );
             println!(
                 "Accumulated income: Gross: {}, Net: {}",
-                gross_income.round(), net_income.round()
+                gross_income.round(),
+                net_income.round()
             );
         }
 
@@ -955,7 +1006,6 @@ impl Planet {
             last_size = self.size;
             self.update_growth(30, None);
 
-
             // Progress build days for all facilities
             for (index, facility) in &mut self.facilities.iter_mut().enumerate() {
                 last_fac_build_days[index] = facility.remaining_build_days();
@@ -967,10 +1017,16 @@ impl Planet {
             self.invalidate_income_cache();
 
             // Calculate monthly income
-            if i == 0 ||
-            (Self::free_port_bucket(last_free_port_days) != Self::free_port_bucket(self.free_port_days)) ||
-            self.facilities.iter().zip(last_fac_build_days.iter()).any(|(fac, last)| fac.remaining_build_days() <= 0 && *last > 0) 
-            || self.size != last_size {
+            if i == 0
+                || (Self::free_port_bucket(last_free_port_days)
+                    != Self::free_port_bucket(self.free_port_days))
+                || self
+                    .facilities
+                    .iter()
+                    .zip(last_fac_build_days.iter())
+                    .any(|(fac, last)| fac.remaining_build_days() <= 0 && *last > 0)
+                || self.size != last_size
+            {
                 last_gross = self.get_gross_income();
                 last_net = last_gross - self.total_upkeep();
             }
@@ -982,11 +1038,16 @@ impl Planet {
             if debug {
                 println!(
                     "WAIT - Gross: {:.2}, Net: {:.2}, Growth: {:.2}, Growth P: {}, Size: {}",
-                    last_gross.round(), last_net.round(), self.growth_progress.round(), self.calculate_growth_points(None), self.size
+                    last_gross.round(),
+                    last_net.round(),
+                    self.growth_progress.round(),
+                    self.calculate_growth_points(None),
+                    self.size
                 );
                 println!(
                     "Accumulated income: Gross: {:.2}, Net: {:.2}",
-                    gross_income.round(), net_income.round()
+                    gross_income.round(),
+                    net_income.round()
                 );
             }
         }
@@ -1007,11 +1068,13 @@ impl Planet {
         if debug {
             println!(
                 "\nUNDO WAIT - Growth: {}, Size: {}",
-                self.growth_progress.round(), self.size
+                self.growth_progress.round(),
+                self.size
             );
             println!(
                 "Accumulated income: Gross: {}, Net: {}",
-                gross_income.round(), net_income.round()
+                gross_income.round(),
+                net_income.round()
             );
         }
 
@@ -1029,10 +1092,16 @@ impl Planet {
         }
         for i in 0..months {
             // First calculate income for this month before undoing changes
-            if i == 0 ||
-            (Self::free_port_bucket(last_free_port_days) != Self::free_port_bucket(self.free_port_days)) ||
-            self.facilities.iter().zip(last_fac_build_days.iter()).any(|(fac, last)| fac.remaining_build_days() > 0 && *last <= 0) 
-            || last_size != self.size {
+            if i == 0
+                || (Self::free_port_bucket(last_free_port_days)
+                    != Self::free_port_bucket(self.free_port_days))
+                || self
+                    .facilities
+                    .iter()
+                    .zip(last_fac_build_days.iter())
+                    .any(|(fac, last)| fac.remaining_build_days() > 0 && *last <= 0)
+                || last_size != self.size
+            {
                 last_gross = self.get_gross_income();
                 last_net = last_gross - self.total_upkeep();
             }
@@ -1063,11 +1132,16 @@ impl Planet {
             if debug {
                 println!(
                     "UNDO WAIT - Gross: {:.2}, Net: {:.2}, Growth: {:.2}, Growth P: {}, Size: {}",
-                    last_gross.round(), last_net.round(), self.growth_progress.round(), self.calculate_growth_points(None), self.size
+                    last_gross.round(),
+                    last_net.round(),
+                    self.growth_progress.round(),
+                    self.calculate_growth_points(None),
+                    self.size
                 );
                 println!(
                     "Accumulated income: Gross: {:.2}, Net: {:.2}",
-                    gross_income.round(), net_income.round()
+                    gross_income.round(),
+                    net_income.round()
                 );
             }
         }
@@ -1092,6 +1166,14 @@ impl Planet {
             }
         }
 
+        self.facility_deposit_requirements_satisfied(facility_type)
+    }
+
+    fn facility_deposit_requirements_satisfied(&self, facility_type: FacilityType) -> bool {
+        let Some(requirements) = FACILITY_REQUIREMENTS.get(&facility_type) else {
+            return true;
+        };
+
         let mut deposit_satisfied = false;
         for req in &requirements.deposits {
             // Property/deposit requirement: any one being present is enough (OR).
@@ -1108,6 +1190,21 @@ impl Planet {
         }
 
         requirements.deposits.is_empty() || deposit_satisfied
+    }
+
+    pub(crate) fn statically_buildable_facilities(&self) -> Vec<FacilityType> {
+        let mut facilities: Vec<FacilityType> = FACILITY_DATA
+            .keys()
+            .copied()
+            .filter(|ft| {
+                self.facility_deposit_requirements_satisfied(*ft)
+                    && upgrade_predecessors(*ft)
+                        .iter()
+                        .all(|pre| self.facility_deposit_requirements_satisfied(*pre))
+            })
+            .collect();
+        facilities.sort_unstable();
+        facilities
     }
 
     /// Get all possible actions for this planet
@@ -1152,9 +1249,11 @@ impl Planet {
             // play with linear simulator; farming seems to disapear
 
             // Check if this is an upgrade (any requirement matches an existing facility)
-            let upgrade_from = FACILITY_REQUIREMENTS
-                .get(facility_type)
-                .and_then(|reqs| reqs.facilities.iter().find_map(|req| self.get_facility(*req)));
+            let upgrade_from = FACILITY_REQUIREMENTS.get(facility_type).and_then(|reqs| {
+                reqs.facilities
+                    .iter()
+                    .find_map(|req| self.get_facility(*req))
+            });
 
             // Check if we already have an upgrade of this facility. This must
             // follow the *whole* chain: a star fortress upgrades from a battle
@@ -1179,9 +1278,7 @@ impl Planet {
                 // And whether the old facility is done building
                 Some(old_facility) => {
                     // Need industry slot if upgrading from structure to industry
-                    (!old_facility.is_structure()
-                        || facility.is_structure
-                        || can_add_industry)
+                    (!old_facility.is_structure() || facility.is_structure || can_add_industry)
                         && old_facility.remaining_build_days() <= 0
                 }
                 // Not an upgrade - normal structure/industry check
@@ -1227,52 +1324,74 @@ impl Planet {
     pub fn _get_differences(&self, other: &Planet) -> Vec<String> {
         let mut differences = Vec::new();
         if self.name != other.name {
-            differences.push(format!(" Name changed from {} to {}", self.name, other.name));
+            differences.push(format!(
+                " Name changed from {} to {}",
+                self.name, other.name
+            ));
         }
-        
+
         for (key, value) in self.properties.iter() {
             if let Some(other_value) = other.properties.get(key) {
                 if value != other_value {
-                    differences.push(format!(" {} changed from {} to {}", key, value, other_value));
+                    differences.push(format!(
+                        " {} changed from {} to {}",
+                        key, value, other_value
+                    ));
                 }
             } else {
                 differences.push(format!(" {} was removed", key));
             }
         }
-        
+
         for (key, value) in other.properties.iter() {
             if !self.properties.contains_key(key) {
                 differences.push(format!(" {} was added with value {}", key, value));
             }
         }
-        
+
         if self.admin != other.admin {
-            differences.push(format!(" Admin changed from {:?} to {:?}", self.admin, other.admin));
+            differences.push(format!(
+                " Admin changed from {:?} to {:?}",
+                self.admin, other.admin
+            ));
         }
-        
+
         if self.is_free_port != other.is_free_port {
-            differences.push(format!(" Free port status changed from {} to {}", self.is_free_port, other.is_free_port));
+            differences.push(format!(
+                " Free port status changed from {} to {}",
+                self.is_free_port, other.is_free_port
+            ));
         }
-        
+
         if self.has_hazard_pay != other.has_hazard_pay {
-            differences.push(format!(" Hazard pay status changed from {} to {}", self.has_hazard_pay, other.has_hazard_pay));
+            differences.push(format!(
+                " Hazard pay status changed from {} to {}",
+                self.has_hazard_pay, other.has_hazard_pay
+            ));
         }
-        
+
         if self.has_decivilized != other.has_decivilized {
-            differences.push(format!(" Decivilized status changed from {} to {}", self.has_decivilized, other.has_decivilized));
+            differences.push(format!(
+                " Decivilized status changed from {} to {}",
+                self.has_decivilized, other.has_decivilized
+            ));
         }
-        
+
         for (self_facility, other_facility) in self.facilities.iter().zip(other.facilities.iter()) {
             let facility_differences = self_facility._get_differences(other_facility);
             for diff in facility_differences {
                 differences.push(format!("  Facility {}: {}", self_facility.name(), diff));
             }
         }
-        
+
         if self.facilities.len() != other.facilities.len() {
-            differences.push(format!("Number of facilities changed from {} to {}", self.facilities.len(), other.facilities.len()));
+            differences.push(format!(
+                "Number of facilities changed from {} to {}",
+                self.facilities.len(),
+                other.facilities.len()
+            ));
         }
-        
+
         differences
     }
 }

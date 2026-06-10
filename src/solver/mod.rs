@@ -1,15 +1,16 @@
-pub mod state;
-pub mod goal;
-pub mod decomp;
-pub mod pareto;
-pub mod bound;
 pub mod archive;
+pub mod bound;
+pub mod decomp;
+pub mod goal;
+pub mod pareto;
+pub mod state;
 
-pub use state::{State, Balance, Action};
-pub use goal::{AStarSearchResult, Goal, Metric};
-pub use decomp::{diagnose_maximize_gap, search_system_decomp, search_system_maximize};
-pub use pareto::solve_pareto;
 pub use bound::{credits_relaxed, BoundRow};
+pub use decomp::stats as decomp_stats;
+pub use decomp::{diagnose_maximize_gap, search_system_decomp, search_system_maximize};
+pub use goal::{AStarSearchResult, Goal, Metric};
+pub use pareto::solve_pareto;
+pub use state::{Action, Balance, State};
 
 /// Whether two states' planets disagree on which facilities exist. Used by the
 /// apply/undo consistency checker below.
@@ -22,7 +23,11 @@ fn _fac_inconsistency(state1: &State, state2: &State) -> bool {
             return true;
         }
 
-        if !facilities1.iter().zip(facilities2.iter()).all(|(fac1, fac2)| fac1.name() == fac2.name()) {
+        if !facilities1
+            .iter()
+            .zip(facilities2.iter())
+            .all(|(fac1, fac2)| fac1.name() == fac2.name())
+        {
             return true;
         }
     }
@@ -57,8 +62,29 @@ pub fn _test_path_undo_consistency(state: &State) {
             println!("\nInconsistency found at action {:?}", actions[i]);
             for planet_name in should_be.system().planets().keys() {
                 println!("Planet: {}", planet_name);
-                println!("Should be: {:#?}", should_be.system().planets().get(planet_name).unwrap().facilities().iter().map(|f| f.name()).collect::<Vec<_>>());
-                println!("Is: {:#?}", is.system().planets().get(planet_name).unwrap().facilities().iter().map(|f| f.name()).collect::<Vec<_>>());
+                println!(
+                    "Should be: {:#?}",
+                    should_be
+                        .system()
+                        .planets()
+                        .get(planet_name)
+                        .unwrap()
+                        .facilities()
+                        .iter()
+                        .map(|f| f.name())
+                        .collect::<Vec<_>>()
+                );
+                println!(
+                    "Is: {:#?}",
+                    is.system()
+                        .planets()
+                        .get(planet_name)
+                        .unwrap()
+                        .facilities()
+                        .iter()
+                        .map(|f| f.name())
+                        .collect::<Vec<_>>()
+                );
             }
             issue = true;
         }
@@ -69,12 +95,50 @@ pub fn _test_path_undo_consistency(state: &State) {
             issue = true;
         }
         if issue {
-            println!("\nBlank State - Credits: {}", blank_state.balance().credits());
-            println!("Blank State - Facilities: {:?}", blank_state.system().planets().values().flat_map(|p| p.facilities().iter().map(|f| (f.name(), f.remaining_build_days()))).collect::<Vec<_>>());
-            println!("Should be State - Credits: {}", should_be.balance().credits());
-            println!("Should be State - Facilities: {:?}", should_be.system().planets().values().flat_map(|p| p.facilities().iter().map(|f| (f.name(), f.remaining_build_days()))).collect::<Vec<_>>());
+            println!(
+                "\nBlank State - Credits: {}",
+                blank_state.balance().credits()
+            );
+            println!(
+                "Blank State - Facilities: {:?}",
+                blank_state
+                    .system()
+                    .planets()
+                    .values()
+                    .flat_map(|p| p
+                        .facilities()
+                        .iter()
+                        .map(|f| (f.name(), f.remaining_build_days())))
+                    .collect::<Vec<_>>()
+            );
+            println!(
+                "Should be State - Credits: {}",
+                should_be.balance().credits()
+            );
+            println!(
+                "Should be State - Facilities: {:?}",
+                should_be
+                    .system()
+                    .planets()
+                    .values()
+                    .flat_map(|p| p
+                        .facilities()
+                        .iter()
+                        .map(|f| (f.name(), f.remaining_build_days())))
+                    .collect::<Vec<_>>()
+            );
             println!("Is State - Credits: {}", is.balance().credits());
-            println!("Is State - Facilities: {:?}", is.system().planets().values().flat_map(|p| p.facilities().iter().map(|f| (f.name(), f.remaining_build_days()))).collect::<Vec<_>>());
+            println!(
+                "Is State - Facilities: {:?}",
+                is.system()
+                    .planets()
+                    .values()
+                    .flat_map(|p| p
+                        .facilities()
+                        .iter()
+                        .map(|f| (f.name(), f.remaining_build_days())))
+                    .collect::<Vec<_>>()
+            );
             println!("Action log: {:?}", actions);
             panic!();
         }

@@ -1,11 +1,12 @@
-use rustc_hash::FxHashMap;
 use nohash_hasher::BuildNoHashHasher;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 use crate::constants::{
-    ColonyItem, FacilityData, Resource, ResourceAmount, ResourceGetter, FacilityType, COLONY_ITEM_DATA,
-    FACILITY_ALPHA_CORES, FACILITY_DATA, FACILITY_IMPROVEMENTS, POSSIBLE_COLONY_ITEMS, MAX_PRODUCTION, MAX_DEMANDS
+    ColonyItem, FacilityData, FacilityType, Resource, ResourceAmount, ResourceGetter,
+    COLONY_ITEM_DATA, FACILITY_ALPHA_CORES, FACILITY_DATA, FACILITY_IMPROVEMENTS, MAX_DEMANDS,
+    MAX_PRODUCTION, POSSIBLE_COLONY_ITEMS,
 };
 use crate::solver::{Action, Balance};
 use std::hash::{Hash, Hasher};
@@ -74,7 +75,7 @@ struct ProductionCache {
     improvements: bool,
     alpha_core: bool,
     colony_item: Option<ColonyItem>,
-    is_built: bool,  // Track if facility is complete (build_days <= 0)
+    is_built: bool, // Track if facility is complete (build_days <= 0)
     cached_production: HashMap<Resource, f64, BuildNoHashHasher<u8>>,
 }
 
@@ -202,7 +203,12 @@ impl Facility {
     }
 
     /// Upgrades/downgrades a facility in-place, doesn't check if it's possible
-    pub fn swap_raw_w_data(&mut self, new_type: FacilityType, data: &FacilityData, downgrade: bool) -> Option<&Self> {
+    pub fn swap_raw_w_data(
+        &mut self,
+        new_type: FacilityType,
+        data: &FacilityData,
+        downgrade: bool,
+    ) -> Option<&Self> {
         self.facility_type = new_type;
         if downgrade {
             self.current_build_days = 0;
@@ -212,8 +218,16 @@ impl Facility {
             self.total_build_days = data.build_time as i32;
         }
 
-        self.base_production = data.production.iter().map(|ra| (ra.resource, ra.clone())).collect();
-        self.base_demands = data.demands.iter().map(|ra| (ra.resource, ra.clone())).collect();
+        self.base_production = data
+            .production
+            .iter()
+            .map(|ra| (ra.resource, ra.clone()))
+            .collect();
+        self.base_demands = data
+            .demands
+            .iter()
+            .map(|ra| (ra.resource, ra.clone()))
+            .collect();
         self.upkeep_formula = data.base_upkeep_formula;
         self.base_accessibility_bonus = data.accessibility_bonus;
         self.base_stability_bonus = data.stability_bonus;
@@ -270,11 +284,10 @@ impl Facility {
         ColonyItem::all()
             .into_iter()
             .filter(|&item| {
-                COLONY_ITEM_DATA.get(&item)
-                    .map_or(false, |data| {
-                        data.compatible_facilities.contains(&self.facility_type)
-                            && self.can_install_colony_item(&item, planet)
-                    })
+                COLONY_ITEM_DATA.get(&item).map_or(false, |data| {
+                    data.compatible_facilities.contains(&self.facility_type)
+                        && self.can_install_colony_item(&item, planet)
+                })
             })
             .collect()
     }
@@ -346,7 +359,7 @@ impl Facility {
     // }
 
     pub fn calculate_accessibility_bonus(&self) -> f64 {
-        if self.current_build_days > 0 {  
+        if self.current_build_days > 0 {
             return 0.0;
         }
 
@@ -463,17 +476,24 @@ impl Facility {
         &self.base_demands
     }
 
-    fn get_or_calculate_production(&self, resource: Resource, size: u32, bonus: f64, is_free_port: bool) -> f64 {
+    fn get_or_calculate_production(
+        &self,
+        resource: Resource,
+        size: u32,
+        bonus: f64,
+        is_free_port: bool,
+    ) -> f64 {
         let mut production_cache = self.production_cache.borrow_mut();
         let is_built = self.current_build_days <= 0;
-        
+
         // Check if cache is valid (all relevant state matches)
-        if production_cache.size == size && 
-           production_cache.is_free_port == is_free_port && 
-           production_cache.improvements == self.improvements &&
-           production_cache.alpha_core == self.alpha_core &&
-           production_cache.colony_item == self.colony_item &&
-           production_cache.is_built == is_built {
+        if production_cache.size == size
+            && production_cache.is_free_port == is_free_port
+            && production_cache.improvements == self.improvements
+            && production_cache.alpha_core == self.alpha_core
+            && production_cache.colony_item == self.colony_item
+            && production_cache.is_built == is_built
+        {
             if let Some(&cached) = production_cache.cached_production.get(&resource) {
                 return cached;
             }
@@ -481,7 +501,7 @@ impl Facility {
             // Cache is invalid, clear it
             production_cache.cached_production.clear();
         }
-        
+
         // Update cache state
         production_cache.size = size;
         production_cache.is_free_port = is_free_port;
@@ -489,9 +509,11 @@ impl Facility {
         production_cache.alpha_core = self.alpha_core;
         production_cache.colony_item = self.colony_item;
         production_cache.is_built = is_built;
-        
+
         let production = self.calculate_resource_production(resource, size, bonus, is_free_port);
-        production_cache.cached_production.insert(resource, production);
+        production_cache
+            .cached_production
+            .insert(resource, production);
         production
     }
 
@@ -502,32 +524,42 @@ impl Facility {
         bonus: f64,
         is_free_port: bool,
     ) -> f64 {
-        if self.current_build_days > 0 || 
-           (!is_free_port && (resource == Resource::Drugs || resource == Resource::HarvestedOrgans)) {
+        if self.current_build_days > 0
+            || (!is_free_port
+                && (resource == Resource::Drugs || resource == Resource::HarvestedOrgans))
+        {
             return 0.0;
         }
 
-        self.base_production.get(&resource)
+        self.base_production
+            .get(&resource)
             .map(|resource_amount| {
                 let amount = (resource_amount.amount_formula)(size);
-                if amount <= 0.0 { return 0.0; }
+                if amount <= 0.0 {
+                    return 0.0;
+                }
 
                 let mut total_bonus = bonus;
 
                 if self.improvements {
-                    total_bonus += FACILITY_IMPROVEMENTS.get(&self.facility_type)
+                    total_bonus += FACILITY_IMPROVEMENTS
+                        .get(&self.facility_type)
                         .map_or(0.0, |effects| effects.production_bonus);
                 }
 
                 if self.alpha_core {
-                    total_bonus += FACILITY_ALPHA_CORES.get(&self.facility_type)
+                    total_bonus += FACILITY_ALPHA_CORES
+                        .get(&self.facility_type)
                         .map_or(0.0, |effects| effects.production_bonus);
                 }
 
                 if let Some(item) = self.colony_item {
-                    total_bonus += COLONY_ITEM_DATA.get(&item)
+                    total_bonus += COLONY_ITEM_DATA
+                        .get(&item)
                         .and_then(|item_data| item_data.production_bonuses.get(resource))
-                        .map_or(0.0, |resource_amount| (resource_amount.amount_formula)(size));
+                        .map_or(0.0, |resource_amount| {
+                            (resource_amount.amount_formula)(size)
+                        });
                 }
 
                 amount + total_bonus
@@ -543,12 +575,7 @@ impl Facility {
     ) -> FxHashMap<Resource, f64> {
         let mut result = FxHashMap::default();
         for (resource, resource_amount) in &self.base_production {
-            let amount = self.calculate_resource_production(
-                *resource,
-                size,
-                bonus,
-                is_free_port,
-            );
+            let amount = self.calculate_resource_production(*resource, size, bonus, is_free_port);
             if amount > 0.0 {
                 result.insert(*resource, amount);
             }
@@ -576,7 +603,12 @@ impl Facility {
     }
 
     /// Per month
-    pub fn calculate_gross_income(&self, size: u32, planet: &dyn PlanetConditionChecker, accessibility: f64) -> f64 {
+    pub fn calculate_gross_income(
+        &self,
+        size: u32,
+        planet: &dyn PlanetConditionChecker,
+        accessibility: f64,
+    ) -> f64 {
         if self.current_build_days > 0 || accessibility == 0.0 {
             return 0.0;
         }
@@ -588,7 +620,7 @@ impl Facility {
         }
 
         let freeport = planet.is_free_port();
-        
+
         // Calculate market share per resource
         // let resources = self.base_production.keys().map(|r| *r).collect::<Vec<Resource>>();
         for resource in self.base_production.keys() {
@@ -606,26 +638,27 @@ impl Facility {
                 DepositStatus::NotDeposit => 0.0,
             };
 
-            let production = self.get_or_calculate_production(
-                *resource,
-                size,
-                deposit_bonus,
-                freeport,
-            );
+            let production =
+                self.get_or_calculate_production(*resource, size, deposit_bonus, freeport);
 
-            // Calculate income: production scaled by accessibility, divided by sector supply 
+            // Calculate income: production scaled by accessibility, divided by sector supply
             // to get market share, then multiplied by market value
             let sector_supply = resource.sector_supply() as f64;
             let market_share = (production * accessibility / 100.0) / sector_supply;
             gross_income += market_share * market_value;
         }
-        
+
         gross_income
     }
 
     //TODO: upkeep needs to take into account same-faction supply of demanded resources
     /// Per month
-    pub fn calculate_net_income(&self, size: u32, planet: &dyn PlanetConditionChecker, accessibility: f64) -> f64 {
+    pub fn calculate_net_income(
+        &self,
+        size: u32,
+        planet: &dyn PlanetConditionChecker,
+        accessibility: f64,
+    ) -> f64 {
         let gross = self.calculate_gross_income(size, planet, accessibility);
         let upkeep = self.calculate_upkeep(planet.get_property("hazard percent"), planet.size());
         gross - upkeep
@@ -637,7 +670,6 @@ impl Facility {
         balance: &Balance,
         slim: bool,
     ) -> Vec<Action> {
-
         // TODO: experiment with allowing adding items before building is done
 
         let mut actions = Vec::with_capacity(if !slim { 4 } else { 2 });
@@ -662,20 +694,14 @@ impl Facility {
             if !self.has_improvements() {
                 let improvement_cost = 2_u32.pow(planet.improvements());
                 if balance.story_points() >= improvement_cost {
-                    actions.push(Action::AddImprovement(
-                        planet_name_hash,
-                        self.facility_type,
-                    ));
+                    actions.push(Action::AddImprovement(planet_name_hash, self.facility_type));
                 }
             }
 
             // Add alpha core if not present
             if !self.has_alpha_core() {
                 if balance.alpha_cores() >= 1 {
-                    actions.push(Action::AddAlphaCore(
-                        planet_name_hash,
-                        self.facility_type,
-                    ));
+                    actions.push(Action::AddAlphaCore(planet_name_hash, self.facility_type));
                 }
             }
         }
@@ -692,33 +718,60 @@ impl Facility {
         let mut differences = Vec::new();
 
         if self.facility_type != other.facility_type {
-            differences.push(format!("Facility type changed from {:?} to {:?}", self.facility_type, other.facility_type));
+            differences.push(format!(
+                "Facility type changed from {:?} to {:?}",
+                self.facility_type, other.facility_type
+            ));
         }
         if self.current_build_days != other.current_build_days {
-            differences.push(format!("Remaining build days changed from {} to {}", self.current_build_days, other.current_build_days));
+            differences.push(format!(
+                "Remaining build days changed from {} to {}",
+                self.current_build_days, other.current_build_days
+            ));
         }
         if self.improvements != other.improvements {
-            differences.push(format!("Improvements changed from {} to {}", self.improvements, other.improvements));
+            differences.push(format!(
+                "Improvements changed from {} to {}",
+                self.improvements, other.improvements
+            ));
         }
         if self.alpha_core != other.alpha_core {
-            differences.push(format!("Alpha core changed from {} to {}", self.alpha_core, other.alpha_core));
+            differences.push(format!(
+                "Alpha core changed from {} to {}",
+                self.alpha_core, other.alpha_core
+            ));
         }
         if self.colony_item != other.colony_item {
-            differences.push(format!("Colony item changed from {:?} to {:?}", self.colony_item, other.colony_item));
+            differences.push(format!(
+                "Colony item changed from {:?} to {:?}",
+                self.colony_item, other.colony_item
+            ));
         }
         // base_production / base_demands / upkeep_formula are determined by
         // facility_type and contain fn pointers, which can't be compared reliably.
         if self.base_accessibility_bonus != other.base_accessibility_bonus {
-            differences.push(format!("Base accessibility bonus changed from {} to {}", self.base_accessibility_bonus, other.base_accessibility_bonus));
+            differences.push(format!(
+                "Base accessibility bonus changed from {} to {}",
+                self.base_accessibility_bonus, other.base_accessibility_bonus
+            ));
         }
         if self.base_stability_bonus != other.base_stability_bonus {
-            differences.push(format!("Base stability bonus changed from {} to {}", self.base_stability_bonus, other.base_stability_bonus));
+            differences.push(format!(
+                "Base stability bonus changed from {} to {}",
+                self.base_stability_bonus, other.base_stability_bonus
+            ));
         }
         if self.base_defense_multiplier != other.base_defense_multiplier {
-            differences.push(format!("Base defense multiplier changed from {} to {}", self.base_defense_multiplier, other.base_defense_multiplier));
+            differences.push(format!(
+                "Base defense multiplier changed from {} to {}",
+                self.base_defense_multiplier, other.base_defense_multiplier
+            ));
         }
         if self.base_income_multiplier != other.base_income_multiplier {
-            differences.push(format!("Base income multiplier changed from {} to {}", self.base_income_multiplier, other.base_income_multiplier));
+            differences.push(format!(
+                "Base income multiplier changed from {} to {}",
+                self.base_income_multiplier, other.base_income_multiplier
+            ));
         }
 
         differences

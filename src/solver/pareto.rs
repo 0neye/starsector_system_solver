@@ -1,4 +1,4 @@
-use crate::solver::decomp::search_system_maximize;
+use crate::solver::decomp::{search_system_maximize_seeded, SystemPlan};
 use crate::solver::goal::{Goal, Metric};
 use crate::solver::state::{Action, Balance, State};
 use crate::system::System;
@@ -60,35 +60,78 @@ pub fn solve_pareto(
 ) -> ParetoSolve {
     let mut samples = Vec::new();
 
-    for stability in STABILITY_FLOORS {
-        let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stability));
-        if let Some(point) = measure_point(
-            system,
-            balance,
-            FrontierKind::Stability,
-            stability as f64,
-            &floors,
-            horizon,
-            time_limit,
-        ) {
-            samples.push(point);
-        }
+    let mut stability_warm = None;
+    let first_stability = STABILITY_FLOORS[0];
+    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(first_stability));
+    if let Some(point) = measure_point_chained(
+        system,
+        balance,
+        FrontierKind::Stability,
+        first_stability as f64,
+        &floors,
+        horizon,
+        time_limit,
+        &mut stability_warm,
+    ) {
+        samples.push(point);
     }
+    let defense_initial_warm = stability_warm.clone();
 
-    for defense in DEFENSE_FLOORS {
-        let floors = Goal::new(f64::NEG_INFINITY, Some(defense), Some(0));
-        if let Some(point) = measure_point(
-            system,
-            balance,
-            FrontierKind::Defense,
-            defense,
-            &floors,
-            horizon,
-            time_limit,
-        ) {
-            samples.push(point);
-        }
-    }
+    let stability_system = system.clone();
+    let stability_balance = balance.clone();
+    let defense_system = system.clone();
+    let defense_balance = balance.clone();
+    let (mut stability_tail, mut defense_samples) = std::thread::scope(|scope| {
+        let stability_handle = scope.spawn(move || {
+            let mut stability_warm = stability_warm;
+            let mut points = Vec::new();
+            for stability in STABILITY_FLOORS.iter().copied().skip(1) {
+                let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stability));
+                if let Some(point) = measure_point_chained(
+                    &stability_system,
+                    &stability_balance,
+                    FrontierKind::Stability,
+                    stability as f64,
+                    &floors,
+                    horizon,
+                    time_limit,
+                    &mut stability_warm,
+                ) {
+                    points.push(point);
+                }
+            }
+            points
+        });
+
+        let defense_handle = scope.spawn(move || {
+            let mut points = Vec::new();
+            let mut defense_warm = defense_initial_warm;
+            for defense in DEFENSE_FLOORS {
+                let floors = Goal::new(f64::NEG_INFINITY, Some(defense), Some(0));
+                if let Some(point) = measure_point_chained(
+                    &defense_system,
+                    &defense_balance,
+                    FrontierKind::Defense,
+                    defense,
+                    &floors,
+                    horizon,
+                    time_limit,
+                    &mut defense_warm,
+                ) {
+                    points.push(point);
+                }
+            }
+            points
+        });
+
+        (
+            stability_handle.join().expect("stability chain panicked"),
+            defense_handle.join().expect("defense chain panicked"),
+        )
+    });
+
+    samples.append(&mut stability_tail);
+    samples.append(&mut defense_samples);
 
     let stability_frontier = pareto_frontier(
         samples
@@ -129,18 +172,36 @@ pub(crate) fn measure_point(
     horizon: i32,
     time_limit: u32,
 ) -> Option<ParetoPoint> {
+    let mut warm = None;
+    measure_point_chained(
+        system, balance, kind, floor, floors, horizon, time_limit, &mut warm,
+    )
+}
+
+pub(crate) fn measure_point_chained(
+    system: &System,
+    balance: &Balance,
+    kind: FrontierKind,
+    floor: f64,
+    floors: &Goal,
+    horizon: i32,
+    time_limit: u32,
+    warm: &mut Option<SystemPlan>,
+) -> Option<ParetoPoint> {
     let mut state = State::new(balance.clone(), system.clone());
     let base = state.clone();
-    let result = search_system_maximize(
+    let extra_seeds = warm.as_ref().map(std::slice::from_ref).unwrap_or(&[]);
+    let (results, best_plan) = search_system_maximize_seeded(
         &mut state,
         Metric::Income,
         floors,
         horizon,
         time_limit,
         true,
-    )
-    .into_iter()
-    .next()?;
+        extra_seeds,
+    );
+    *warm = best_plan;
+    let result = results.into_iter().next()?;
     let actions = result.solution.unwrap_or_default();
 
     let mut replay = base;
