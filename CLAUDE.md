@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cargo build
 cargo test
 cargo clippy
-cargo run -- --system "Mia Bravos" --income 200000 --stability 8 --time-limit 25000
+cargo run -- --system "Mia's Star" --income 200000 --stability 8 --time-limit 25000
 
 # A/B test decomp vs IDA* across all systems/goals
 SYSTEM_SOLVER_AB=1 cargo run
@@ -28,6 +28,28 @@ SYSTEM_SOLVER_BOUND_MS=5000 cargo run   # budget per point. See OPTIMAL_SOLVER_B
 ```
 
 Key CLI flags: `--income`, `--stability`, `--defense`, `--credits`, `--story-points`, `--alpha-cores`, `--item <NAME>` (repeatable), `--time-limit <MS>`.
+
+### Game data source
+
+All solver modes (CLI and env-var modes) load game data from the save-extraction
+SQLite DB (`save_data.db` by default, built by `extract run`), via
+`parser::load_game_data_from_db`. Select the DB/save with `--db <path>` /
+`--save <substring>` on the CLI, or `SYSTEM_SOLVER_DB` / `SYSTEM_SOLVER_SAVE`
+for the env-var modes (default: most recently extracted save). The CSV parser
+(`parser::load_game_data`) is kept for tests and for consuming `extract export`
+output; the DB loader is verified to match its semantics exactly
+(`db_loader_matches_csv_semantics` in `src/tests/parser.rs`).
+
+```bash
+# Save-game extraction (see SAVE_EXTRACTION_DESIGN.md): parses a Starsector save
+# into save_data.db with tables mirroring the three CSVs. Available both as a
+# subcommand of the main CLI and as a standalone bin (same code, extract/cli.rs):
+cargo run --release -- extract list-saves
+cargo run --release -- extract run --save DEMIURGE --latest
+cargo run --release -- extract search "askonia"
+cargo run --release -- extract export --system Corvus --out-dir out/extract_test
+cargo run --release --bin extract -- list-saves   # standalone equivalent
+```
 
 ## Architecture
 
@@ -49,7 +71,7 @@ The archived solvers (`solver/archive/`) — IDA\* per-planet and Rayon-parallel
 | `system/mod.rs` | `System` | Multi-planet aggregate (avg stability, defense, net income) |
 | `solver/goal.rs` | `Goal` | Threshold triple; `goal.is_satisfied(&state)` |
 | `constants.rs` | `FACILITY_DATA`, etc. | `lazy_static!` game data maps |
-| `parser/mod.rs` | — | `load_game_data()` from Planets.csv + Infrastructure.csv |
+| `parser/mod.rs` | — | `load_game_data_from_db()` (primary) + `load_game_data()` CSV fallback |
 
 ### Reversible-action invariant
 

@@ -5,6 +5,7 @@ use std::path::Path;
 use csv;
 use rustc_hash::FxHashMap;
 
+use crate::extract::db::Db;
 use crate::planet::Planet;
 use crate::system::{System, Infrastructure};
 use crate::constants::AdminType;
@@ -15,6 +16,7 @@ pub enum ParserError {
     InvalidValue(String),
     IoError(std::io::Error),
     CsvError(csv::Error),
+    DbError(crate::extract::ExtractError),
 }
 
 impl std::fmt::Display for ParserError {
@@ -24,6 +26,7 @@ impl std::fmt::Display for ParserError {
             ParserError::InvalidValue(msg) => write!(f, "Invalid value: {}", msg),
             ParserError::IoError(e) => write!(f, "IO error: {}", e),
             ParserError::CsvError(e) => write!(f, "CSV error: {}", e),
+            ParserError::DbError(e) => write!(f, "DB error: {}", e),
         }
     }
 }
@@ -39,6 +42,12 @@ impl From<std::io::Error> for ParserError {
 impl From<csv::Error> for ParserError {
     fn from(err: csv::Error) -> ParserError {
         ParserError::CsvError(err)
+    }
+}
+
+impl From<crate::extract::ExtractError> for ParserError {
+    fn from(err: crate::extract::ExtractError) -> ParserError {
+        ParserError::DbError(err)
     }
 }
 
@@ -170,6 +179,113 @@ pub fn parse_systems_csv<P: AsRef<Path>>(
     }
 
     Ok(())
+}
+
+/// Insert a numeric property only when the column has a value, matching the
+/// CSV parser's empty-cell-skip semantics.
+fn insert_opt(properties: &mut FxHashMap<String, f64>, key: &str, value: Option<f64>) {
+    if let Some(v) = value {
+        properties.insert(key.to_string(), v);
+    }
+}
+
+/// Insert a boolean property as 1.0/0.0. The exported CSVs write explicit
+/// TRUE/FALSE cells which the CSV parser inserts as 1.0/0.0, so the key is
+/// always present — replicate that exactly.
+fn insert_bool(properties: &mut FxHashMap<String, f64>, key: &str, value: bool) {
+    properties.insert(key.to_string(), if value { 1.0 } else { 0.0 });
+}
+
+/// Load solver game data from the save-extraction SQLite DB (see
+/// SAVE_EXTRACTION_DESIGN.md). `save` selects the extracted save by
+/// case-insensitive substring match on its directory or character name; `None`
+/// picks the most recent one. Produces exactly what the CSV round trip
+/// (`extract export` + `load_game_data`) would: same property keys and values,
+/// same infrastructure variants, same stable-point counts.
+pub fn load_game_data_from_db(
+    db_path: impl AsRef<Path>,
+    save: Option<&str>,
+) -> Result<HashMap<String, System>, ParserError> {
+    let db_path = db_path.as_ref();
+    if !db_path.exists() {
+        return Err(ParserError::InvalidValue(format!(
+            "extraction DB {} not found — run `extract run` first (see `extract --help`)",
+            db_path.display()
+        )));
+    }
+    let db = Db::open(db_path)?;
+    let saves = db.list_saves()?;
+    if saves.is_empty() {
+        return Err(ParserError::InvalidValue(format!(
+            "no saves extracted into {} — run `extract run` first",
+            db_path.display()
+        )));
+    }
+    let chosen = match save {
+        Some(needle) => {
+            let lower = needle.to_lowercase();
+            saves
+                .iter()
+                .find(|s| {
+                    s.dir_name.to_lowercase().contains(&lower)
+                        || s.character_name.to_lowercase().contains(&lower)
+                })
+                .ok_or_else(|| {
+                    ParserError::InvalidValue(format!("no extracted save matching {needle:?}"))
+                })?
+        }
+        None => &saves[0],
+    };
+
+    let save_filter = chosen.dir_name.to_lowercase();
+    let mut systems: HashMap<String, System> = HashMap::new();
+
+    for row in db.fetch_systems(Some(&save_filter), None)? {
+        let planets = db.fetch_planets(row.id, &row.name)?;
+        let infrastructure = db.fetch_infrastructure(row.id, &row.name)?;
+
+        let system = systems
+            .entry(row.name.clone())
+            .or_insert_with(|| System::new(row.name.clone()));
+        system.set_stable_points(row.stable_points);
+
+        for planet in planets {
+            let mut properties = FxHashMap::default();
+            insert_opt(&mut properties, "ruins", planet.ruins);
+            insert_opt(&mut properties, "farmland", planet.farmland);
+            insert_opt(&mut properties, "rare ores", planet.rare_ores);
+            insert_opt(&mut properties, "ores", planet.ores);
+            insert_opt(&mut properties, "volatiles", planet.volatiles);
+            insert_opt(&mut properties, "organics", planet.organics);
+            insert_opt(&mut properties, "accessibility percent", planet.accessibility_percent);
+            properties.insert("hazard percent".to_string(), planet.hazard_percent);
+            insert_bool(&mut properties, "no atmosphere", planet.no_atmosphere);
+            insert_bool(&mut properties, "very hot", planet.very_hot);
+            insert_bool(&mut properties, "gas giant", planet.gas_giant);
+            insert_bool(&mut properties, "habitable", planet.habitable);
+            insert_bool(&mut properties, "extreme activity", planet.extreme_activity);
+            insert_bool(&mut properties, "water", planet.water);
+
+            system.add_planet(Planet::new(planet.name, properties));
+        }
+
+        for infra in infrastructure {
+            let infrastructure = match infra.infrastructure_type.as_str() {
+                "CommRelay" => Infrastructure::CommRelay { domain: infra.is_domain },
+                "NavBouy" | "NavBuoy" => Infrastructure::NavBuoy { domain: infra.is_domain },
+                "SensorArray" => Infrastructure::SensorArray { domain: infra.is_domain },
+                "Gate" => Infrastructure::Gate,
+                "Remnants" => Infrastructure::Remnants { damaged: infra.is_damaged },
+                _ => continue, // Skip unknown infrastructure types (CoronalTap, Cryosleeper, ...)
+            };
+            system.add_infrastructure(
+                format!("{}-{}", row.name, infra.infrastructure_type),
+                infrastructure,
+            );
+        }
+    }
+
+    Ok(systems)
 }
 
 /// Helper function to load all data from CSV files

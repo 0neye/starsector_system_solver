@@ -4,10 +4,12 @@ mod planet;
 mod system;
 mod solver;
 mod parser;
+mod extract;
 
 use std::error::Error;
 use std::collections::HashMap;
-use clap::Parser;
+use std::path::PathBuf;
+use clap::{Parser, Subcommand};
 use planet::Planet;
 use solver::{diagnose_maximize_gap, search_system_decomp, search_system_maximize, solve_pareto, Goal, Metric, Balance, State};
 // Archived solvers, kept reachable for benchmarking/comparison:
@@ -19,9 +21,21 @@ use system::System;
 #[derive(Parser)]
 #[command(about = "Starsector colony system solver")]
 struct Cli {
-    /// Star system to solve (name as it appears in Planets.csv)
-    #[arg(long, default_value = "Mia Bravos")]
+    #[command(subcommand)]
+    command: Option<Command>,
+
+    /// Star system to solve (name as extracted into the DB; see `extract search`)
+    #[arg(long, default_value = "Mia's Star")]
     system: String,
+
+    /// Extraction DB to load game data from (produced by `extract run`)
+    #[arg(long, default_value = "save_data.db")]
+    db: PathBuf,
+
+    /// Extracted save to load (substring of save dir or character name).
+    /// Defaults to the most recently extracted save.
+    #[arg(long)]
+    save: Option<String>,
 
     /// Minimum net income goal (credits/month). Defaults to 200000 in reach mode
     /// and to break-even (0) as a `--maximize` floor.
@@ -70,6 +84,21 @@ struct Cli {
     /// within this many months.
     #[arg(long, default_value_t = 120)]
     horizon: i32,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Save-game extraction tools (parse saves into the DB, search, export)
+    #[command(subcommand)]
+    Extract(extract::cli::ExtractCommand),
+}
+
+/// Load solver game data from the extraction DB. Env-var modes use
+/// `SYSTEM_SOLVER_DB` / `SYSTEM_SOLVER_SAVE` since they bypass CLI parsing.
+fn load_systems_from_env() -> Result<HashMap<String, System>, Box<dyn Error>> {
+    let db = std::env::var("SYSTEM_SOLVER_DB").unwrap_or_else(|_| "save_data.db".to_string());
+    let save = std::env::var("SYSTEM_SOLVER_SAVE").ok();
+    Ok(parser::load_game_data_from_db(&db, save.as_deref())?)
 }
 
 /// Run the maximize-mode solver and report the best plan plus the metric values
@@ -478,7 +507,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Special env-var modes bypass normal CLI parsing.
     if std::env::var_os("SYSTEM_SOLVER_BOUND").is_some() {
         eprintln!("Loading game data...");
-        let systems = parser::load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")?;
+        let systems = load_systems_from_env()?;
         let horizon: i32 = std::env::var("SYSTEM_SOLVER_BOUND_HORIZON")
             .ok().and_then(|v| v.parse().ok()).unwrap_or(120);
         let time_limit: u32 = std::env::var("SYSTEM_SOLVER_BOUND_MS")
@@ -489,7 +518,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if std::env::var_os("SYSTEM_SOLVER_AB").is_some() {
         println!("Loading game data...");
-        let systems = parser::load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")?;
+        let systems = load_systems_from_env()?;
         let budget_ms = std::env::var("SYSTEM_SOLVER_AB_MS")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
@@ -500,7 +529,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if std::env::var_os("SYSTEM_SOLVER_VERIFY").is_some() {
         println!("Loading game data...");
-        let systems = parser::load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")?;
+        let systems = load_systems_from_env()?;
         verify_decomp(&systems);
         return Ok(());
     }
@@ -510,7 +539,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // SYSTEM_SOLVER_DIAG=<system> overrides the system (default "Mia Bravos").
     if let Some(diag) = std::env::var_os("SYSTEM_SOLVER_DIAG") {
         println!("Loading game data...");
-        let systems = parser::load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")?;
+        let systems = load_systems_from_env()?;
         let sys_name = diag.to_str().filter(|s| !s.is_empty()).unwrap_or("Mia Bravos");
         let system = systems
             .get(sys_name)
@@ -536,7 +565,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     //   SYSTEM_SOLVER_PARETO_ALPHA     — starting alpha cores (default 1)
     //   SYSTEM_SOLVER_PARETO_ALL_ITEMS — add N of every colony item (default 0)
     if std::env::var_os("SYSTEM_SOLVER_PARETO").is_some() {
-        let systems = parser::load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")?;
+        let systems = load_systems_from_env()?;
         let horizon: i32 = std::env::var("SYSTEM_SOLVER_PARETO_HORIZON")
             .ok().and_then(|v| v.parse().ok()).unwrap_or(120);
         let time_limit: u32 = std::env::var("SYSTEM_SOLVER_PARETO_MS")
@@ -612,8 +641,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let cli = Cli::parse();
 
+    if let Some(Command::Extract(command)) = cli.command {
+        if let Err(err) = extract::cli::run(command) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
     println!("Loading game data...");
-    let systems = parser::load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")?;
+    let systems = parser::load_game_data_from_db(&cli.db, cli.save.as_deref())?;
 
     let test_system = systems
         .get(&cli.system)
