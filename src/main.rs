@@ -381,22 +381,79 @@ fn verify_decomp(systems: &HashMap<String, System>) {
 /// and the gap, then a summary of the worst gaps. This is the measurement that
 /// decides whether an exact/branch-and-bound solver is worth building: small gaps
 /// everywhere mean the greedy is already near-optimal on the budget axis.
+///
+/// Both runs use the same warm-start chaining and concurrent stability/defense
+/// chains as `solve_pareto`, and each bound solve is additionally cross-seeded
+/// with the same floor's greedy plan (feasible and no worse under relaxed
+/// credits), so `bound >= greedy` holds by construction and a negative gap no
+/// longer reflects bound-search suboptimality.
 /// Triggered by `SYSTEM_SOLVER_BOUND=1`; horizon/budget via
-/// `SYSTEM_SOLVER_BOUND_HORIZON` / `SYSTEM_SOLVER_BOUND_MS`.
+/// `SYSTEM_SOLVER_BOUND_HORIZON` / `SYSTEM_SOLVER_BOUND_MS`;
+/// `SYSTEM_SOLVER_BOUND_SYSTEM=<substring>` limits the sweep to one system.
 fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
-    use solver::pareto::{measure_point, FrontierKind, DEFENSE_FLOORS, STABILITY_FLOORS};
+    use solver::decomp::SystemPlan;
+    use solver::pareto::{
+        measure_point_seeded, FrontierKind, ParetoPoint, DEFENSE_FLOORS, STABILITY_FLOORS,
+    };
     use solver::{credits_relaxed, BoundRow};
 
     // The same scenario the Pareto sweep and A/B harness use, so numbers line up.
     let base = ab_balance();
     let relaxed = credits_relaxed(&base);
 
-    let measure = |system: &System, balance: &Balance, kind, floor, floors: &Goal| {
-        measure_point(system, balance, kind, floor, floors, horizon, time_limit)
-    };
+    // One floor's (greedy, bound) pair. The greedy run warm-starts from its
+    // chain's previous plan (same chaining as `solve_pareto`); the bound run
+    // additionally seeds the greedy plan it is compared against — feasible and
+    // no worse under relaxed credits — so a negative gap can no longer mean
+    // "the relaxed search failed to find what the greedy found".
+    #[allow(clippy::too_many_arguments)] // mirrors measure_point_seeded
+    fn measure_pair(
+        system: &System,
+        base: &Balance,
+        relaxed: &Balance,
+        kind: FrontierKind,
+        floor: f64,
+        floors: &Goal,
+        horizon: i32,
+        time_limit: u32,
+        warm_greedy: &mut Option<SystemPlan>,
+        warm_bound: &mut Option<SystemPlan>,
+    ) -> (Option<ParetoPoint>, Option<ParetoPoint>) {
+        let greedy = measure_point_seeded(
+            system,
+            base,
+            kind,
+            floor,
+            floors,
+            horizon,
+            time_limit,
+            warm_greedy,
+            &[],
+        );
+        let cross: Vec<SystemPlan> = warm_greedy.iter().cloned().collect();
+        let bound = measure_point_seeded(
+            system,
+            relaxed,
+            kind,
+            floor,
+            floors,
+            horizon,
+            time_limit,
+            warm_bound,
+            &cross,
+        );
+        (greedy, bound)
+    }
 
     let mut names: Vec<&String> = systems.keys().collect();
     names.sort();
+    // Optional substring filter so a single system can be measured.
+    if let Ok(filter) = std::env::var("SYSTEM_SOLVER_BOUND_SYSTEM") {
+        if !filter.is_empty() {
+            let needle = filter.to_lowercase();
+            names.retain(|n| n.to_lowercase().contains(&needle));
+        }
+    }
 
     let mut rows: Vec<BoundRow> = Vec::new();
 
@@ -408,45 +465,129 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
 
     for name in &names {
         let system = &systems[*name];
+        let system_start = std::time::Instant::now();
 
-        let mut push = |kind: FrontierKind, floor: f64, floors: &Goal| {
-            let greedy = measure(system, &base, kind, floor, floors);
-            let bound = measure(system, &relaxed, kind, floor, floors);
-            let row = BoundRow {
-                system: (*name).clone(),
-                kind: kind.as_str(),
-                floor,
-                greedy_income: greedy.as_ref().map(|p| p.income),
-                bound_income: bound.as_ref().map(|p| p.income),
-                greedy_months: greedy.as_ref().map(|p| p.months),
-                bound_months: bound.as_ref().map(|p| p.months),
+        // First stability point alone, so its plans can seed both chains; then
+        // the remaining stability floors and the defense floors run as two
+        // concurrent warm-start chains (mirrors `solve_pareto`; `System` holds
+        // `RefCell` caches so each chain gets its own clone).
+        let mut stab_warm_greedy = None;
+        let mut stab_warm_bound = None;
+        let first_stab = STABILITY_FLOORS[0];
+        let first_floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(first_stab));
+        let first_pair = measure_pair(
+            system,
+            &base,
+            &relaxed,
+            FrontierKind::Stability,
+            first_stab as f64,
+            &first_floors,
+            horizon,
+            time_limit,
+            &mut stab_warm_greedy,
+            &mut stab_warm_bound,
+        );
+        let mut def_warm_greedy = stab_warm_greedy.clone();
+        let mut def_warm_bound = stab_warm_bound.clone();
+
+        let stability_system = system.clone();
+        let stability_base = base.clone();
+        let stability_relaxed = relaxed.clone();
+        let defense_system = system.clone();
+        let defense_base = base.clone();
+        let defense_relaxed = relaxed.clone();
+        let (stab_tail, def_pairs) = std::thread::scope(|scope| {
+            let stability_handle = scope.spawn(move || {
+                let mut points = Vec::new();
+                for stab in STABILITY_FLOORS.iter().copied().skip(1) {
+                    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stab));
+                    points.push((
+                        stab as f64,
+                        measure_pair(
+                            &stability_system,
+                            &stability_base,
+                            &stability_relaxed,
+                            FrontierKind::Stability,
+                            stab as f64,
+                            &floors,
+                            horizon,
+                            time_limit,
+                            &mut stab_warm_greedy,
+                            &mut stab_warm_bound,
+                        ),
+                    ));
+                }
+                points
+            });
+            let defense_handle = scope.spawn(move || {
+                let mut points = Vec::new();
+                for def_floor in DEFENSE_FLOORS {
+                    let floors = Goal::new(f64::NEG_INFINITY, Some(def_floor), Some(0));
+                    points.push((
+                        def_floor,
+                        measure_pair(
+                            &defense_system,
+                            &defense_base,
+                            &defense_relaxed,
+                            FrontierKind::Defense,
+                            def_floor,
+                            &floors,
+                            horizon,
+                            time_limit,
+                            &mut def_warm_greedy,
+                            &mut def_warm_bound,
+                        ),
+                    ));
+                }
+                points
+            });
+            (
+                stability_handle.join().expect("stability chain panicked"),
+                defense_handle.join().expect("defense chain panicked"),
+            )
+        });
+
+        let mut push =
+            |kind: FrontierKind, floor: f64, pair: (Option<ParetoPoint>, Option<ParetoPoint>)| {
+                let (greedy, bound) = pair;
+                let row = BoundRow {
+                    system: (*name).clone(),
+                    kind: kind.as_str(),
+                    floor,
+                    greedy_income: greedy.as_ref().map(|p| p.income),
+                    bound_income: bound.as_ref().map(|p| p.income),
+                    greedy_months: greedy.as_ref().map(|p| p.months),
+                    bound_months: bound.as_ref().map(|p| p.months),
+                };
+                let fmt_f = |v: Option<f64>| v.map_or("--".to_string(), |x| format!("{x:.0}"));
+                let fmt_i = |v: Option<i32>| v.map_or("--".to_string(), |x| x.to_string());
+                println!(
+                    "{},{},{:.0},{},{},{},{},{},{}",
+                    row.system,
+                    row.kind,
+                    row.floor,
+                    fmt_f(row.greedy_income),
+                    fmt_f(row.bound_income),
+                    fmt_f(row.gap()),
+                    row.gap_pct()
+                        .map_or("--".to_string(), |p| format!("{p:.1}")),
+                    fmt_i(row.greedy_months),
+                    fmt_i(row.bound_months),
+                );
+                rows.push(row);
             };
-            let fmt_f = |v: Option<f64>| v.map_or("--".to_string(), |x| format!("{x:.0}"));
-            let fmt_i = |v: Option<i32>| v.map_or("--".to_string(), |x| x.to_string());
-            println!(
-                "{},{},{:.0},{},{},{},{},{},{}",
-                row.system,
-                row.kind,
-                row.floor,
-                fmt_f(row.greedy_income),
-                fmt_f(row.bound_income),
-                fmt_f(row.gap()),
-                row.gap_pct()
-                    .map_or("--".to_string(), |p| format!("{p:.1}")),
-                fmt_i(row.greedy_months),
-                fmt_i(row.bound_months),
-            );
-            rows.push(row);
-        };
 
-        for stab in STABILITY_FLOORS {
-            let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stab));
-            push(FrontierKind::Stability, stab as f64, &floors);
+        push(FrontierKind::Stability, first_stab as f64, first_pair);
+        for (floor, pair) in stab_tail {
+            push(FrontierKind::Stability, floor, pair);
         }
-        for def_floor in DEFENSE_FLOORS {
-            let floors = Goal::new(f64::NEG_INFINITY, Some(def_floor), Some(0));
-            push(FrontierKind::Defense, def_floor, &floors);
+        for (floor, pair) in def_pairs {
+            push(FrontierKind::Defense, floor, pair);
         }
+        eprintln!(
+            "[{name}] done in {:.1}s",
+            system_start.elapsed().as_secs_f64()
+        );
     }
 
     // ----- Summary -----
@@ -470,18 +611,17 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
         let median = gaps[comparable / 2].1;
         let over_5 = gaps.iter().filter(|(_, p)| *p > 5.0).count();
         let over_15 = gaps.iter().filter(|(_, p)| *p > 15.0).count();
-        // The bound is itself a heuristic VND run (relaxed credits), so it can
-        // land below greedy. The most-negative gap is the measurement's noise
-        // floor: only gaps clear of it are real credit-timing headroom. (A true
-        // bound is max(greedy, relaxed); a negative raw value just reflects the
-        // bound search's own suboptimality, not headroom.)
+        // Cross-seeding makes bound >= greedy hold by construction, so the
+        // most-negative gap should sit at ~0; anything clearly below that means
+        // the relaxed simulation of the greedy plan came out *worse* than the
+        // real-credit one, which would be a solver bug worth investigating.
         let noise_floor = gaps.iter().map(|(_, p)| *p).fold(f64::INFINITY, f64::min);
         eprintln!("comparable points : {comparable}");
         eprintln!("mean gap          : {mean:.1}%");
         eprintln!("median gap        : {median:.1}%");
         eprintln!("points >5% gap    : {over_5}");
         eprintln!("points >15% gap   : {over_15}");
-        eprintln!("noise floor (min) : {noise_floor:.1}%  (bound-search suboptimality; treat |gap| below this as zero)");
+        eprintln!("noise floor (min) : {noise_floor:.1}%  (cross-seeded: should be ~0; clearly negative would indicate a solver bug)");
         eprintln!("\nworst 10 gaps (bound is an *upper* estimate of headroom):");
         for (r, p) in gaps.iter().take(10) {
             eprintln!(

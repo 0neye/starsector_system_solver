@@ -33,6 +33,9 @@ python plot_pareto_frontiers.py   # writes pareto_frontiers.png
 # greedy leaves on the credit-timing axis). CSV to stdout, summary to stderr.
 SYSTEM_SOLVER_BOUND=1 cargo run
 SYSTEM_SOLVER_BOUND_MS=5000 cargo run   # budget per point. See OPTIMAL_SOLVER_BOUND.md
+#   SYSTEM_SOLVER_BOUND_SYSTEM=<substring>  limit the bound sweep to one system
+# The bound sweep warm-chains floors and cross-seeds each relaxed solve with the
+# greedy plan, so bound >= greedy by construction (negative gaps = solver bug).
 ```
 
 Key CLI flags: `--income`, `--stability`, `--defense`, `--credits`, `--story-points`, `--alpha-cores`, `--item <NAME>` (repeatable), `--time-limit <MS>`.

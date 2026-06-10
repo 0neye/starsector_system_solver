@@ -16,3 +16,6 @@ quality_refs_stats.txt
 bench_moloch_baseline.csv
 baseline_alpha_haojing.csv
 bound_benchmark.csv
+bound_benchmark_chained.csv
+bound_benchmark_chained_summary.txt
+QUICK_RANKING_DESIGN.md

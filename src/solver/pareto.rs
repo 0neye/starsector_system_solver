@@ -163,21 +163,6 @@ pub fn solve_pareto(
     }
 }
 
-pub(crate) fn measure_point(
-    system: &System,
-    balance: &Balance,
-    kind: FrontierKind,
-    floor: f64,
-    floors: &Goal,
-    horizon: i32,
-    time_limit: u32,
-) -> Option<ParetoPoint> {
-    let mut warm = None;
-    measure_point_chained(
-        system, balance, kind, floor, floors, horizon, time_limit, &mut warm,
-    )
-}
-
 pub(crate) fn measure_point_chained(
     system: &System,
     balance: &Balance,
@@ -188,9 +173,32 @@ pub(crate) fn measure_point_chained(
     time_limit: u32,
     warm: &mut Option<SystemPlan>,
 ) -> Option<ParetoPoint> {
+    measure_point_seeded(
+        system, balance, kind, floor, floors, horizon, time_limit, warm, &[],
+    )
+}
+
+/// [`measure_point_chained`] plus caller-supplied seed plans beyond the chain's
+/// warm plan. The bound sweep cross-seeds each credit-relaxed solve with the
+/// same floor's real-budget plan (feasible and no worse under relaxed credits),
+/// so `bound >= greedy` holds by construction instead of relying on the relaxed
+/// climb to rediscover what the greedy already found.
+#[allow(clippy::too_many_arguments)] // mirrors measure_point_chained
+pub(crate) fn measure_point_seeded(
+    system: &System,
+    balance: &Balance,
+    kind: FrontierKind,
+    floor: f64,
+    floors: &Goal,
+    horizon: i32,
+    time_limit: u32,
+    warm: &mut Option<SystemPlan>,
+    extra_seeds: &[SystemPlan],
+) -> Option<ParetoPoint> {
     let mut state = State::new(balance.clone(), system.clone());
     let base = state.clone();
-    let extra_seeds = warm.as_ref().map(std::slice::from_ref).unwrap_or(&[]);
+    let mut seeds: Vec<SystemPlan> = warm.iter().cloned().collect();
+    seeds.extend(extra_seeds.iter().cloned());
     let (results, best_plan) = search_system_maximize_seeded(
         &mut state,
         Metric::Income,
@@ -198,7 +206,7 @@ pub(crate) fn measure_point_chained(
         horizon,
         time_limit,
         true,
-        extra_seeds,
+        &seeds,
     );
     *warm = best_plan;
     let result = results.into_iter().next()?;
