@@ -5,3 +5,5 @@ MAXIMIZE_LOCAL_MINIMA.md
 OPTIMAL_SOLVER_BOUND.md
 bound_summary.txt
 bound_sweep.csv
+SAVE_EXTRACTION_DESIGN.md
+*.db

@@ -6,6 +6,7 @@ pub mod planet;
 pub mod system;
 pub mod solver;
 pub mod parser;
+pub mod extract;
 
 pub use planet::{Planet, Facility};
 pub use solver::state::Action;
