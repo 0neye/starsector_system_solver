@@ -7,3 +7,12 @@ bound_summary.txt
 bound_sweep.csv
 SAVE_EXTRACTION_DESIGN.md
 *.db
+SOLVER_OPTIMIZATION_REPORT.md
+compare_pareto.py
+final_sweep.csv
+final_sweep_stats.txt
+quality_refs.csv
+quality_refs_stats.txt
+bench_moloch_baseline.csv
+baseline_alpha_haojing.csv
+bound_benchmark.csv

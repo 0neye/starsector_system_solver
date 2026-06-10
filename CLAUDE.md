@@ -20,6 +20,14 @@ SYSTEM_SOLVER_VERIFY=1 cargo run
 # Sample Pareto-frontier data (income vs stability/defense) as CSV, then plot it
 SYSTEM_SOLVER_PARETO=1 cargo run
 python plot_pareto_frontiers.py   # writes pareto_frontiers.png
+# Pareto sweep extras:
+#   SYSTEM_SOLVER_PARETO_SYSTEM=<substring>  limit the sweep to one system
+#   SYSTEM_SOLVER_STATS=1                    per-point timings + per-system search counters (stderr)
+#   SYSTEM_SOLVER_QUALITY=1                  slow max-quality reference config (full climb
+#                                            refresh; used to gate speed optimizations)
+# Benchmark workflow (see SOLVER_OPTIMIZATION_REPORT.md): run a sweep against
+# system_benchmark.db, then `python compare_pareto.py <ref.csv> <cand.csv> [tol_pct]`
+# (exit 1 on income regression).
 
 # Measure greedy income vs a credit-relaxed upper bound (how much headroom the
 # greedy leaves on the credit-timing axis). CSV to stdout, summary to stderr.
