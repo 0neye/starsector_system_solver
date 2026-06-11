@@ -627,6 +627,21 @@ impl Db {
         Ok(rows)
     }
 
+    pub(crate) fn fetch_planet_conditions(&self, planet_id: i64) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT condition_id
+            FROM planet_conditions
+            WHERE planet_id = ?1
+            ORDER BY condition_id ASC
+            "#,
+        )?;
+        let rows = stmt
+            .query_map(params![planet_id], |row| row.get(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     fn select_save_id(&self, save: Option<&str>) -> Result<i64> {
         if let Some(save) = save {
             let needle = format!("%{}%", save.to_lowercase());
@@ -699,7 +714,7 @@ pub(crate) struct SystemRowDb {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PlanetRowDb {
+pub struct PlanetRowDb {
     pub(crate) id: i64,
     pub(crate) system_name: String,
     pub(crate) name: String,
@@ -728,7 +743,7 @@ pub(crate) struct PlanetRowDb {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct InfraRowDb {
+pub struct InfraRowDb {
     pub(crate) system_name: String,
     pub(crate) infrastructure_type: String,
     pub(crate) is_domain: bool,

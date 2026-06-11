@@ -10,6 +10,12 @@ cargo test
 cargo clippy
 cargo run -- --system "Mia's Star" --income 200000 --stability 8 --time-limit 25000
 
+# Interactive TUI (see TUI_DESIGN.md): Saves -> Rank -> System detail, with a
+# discovered-only scope filter (>=1 surveyed planet, core worlds excluded by
+# default) and settings persisted to solver_tui.toml. Rank/extract run as
+# background jobs; "cancel" only detaches until cooperative cancel lands (v1.5).
+cargo run --release -- tui
+
 # A/B test decomp vs IDA* across all systems/goals
 SYSTEM_SOLVER_AB=1 cargo run
 SYSTEM_SOLVER_AB_MS=8000 cargo run   # custom time budget (ms)

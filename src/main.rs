@@ -6,6 +6,7 @@ mod planet;
 mod rank;
 mod solver;
 mod system;
+mod tui;
 mod utils;
 
 use clap::{Parser, Subcommand};
@@ -121,6 +122,8 @@ enum Command {
     /// Save-game extraction tools (parse saves into the DB, search, export)
     #[command(subcommand)]
     Extract(extract::cli::ExtractCommand),
+    /// Open the interactive terminal UI.
+    Tui,
 }
 
 /// Load solver game data from the extraction DB. Env-var modes use
@@ -996,10 +999,20 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let cli = Cli::parse();
 
-    if let Some(Command::Extract(command)) = cli.command {
-        if let Err(err) = extract::cli::run(command) {
-            eprintln!("{err}");
-            std::process::exit(1);
+    if let Some(command) = cli.command {
+        match command {
+            Command::Extract(command) => {
+                if let Err(err) = extract::cli::run(command) {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                }
+            }
+            Command::Tui => {
+                if let Err(err) = tui::run() {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                }
+            }
         }
         return Ok(());
     }

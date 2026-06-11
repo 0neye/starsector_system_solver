@@ -5,6 +5,7 @@ pub mod planet;
 pub mod rank;
 pub mod solver;
 pub mod system;
+pub mod tui;
 #[cfg(test)]
 mod tests;
 pub mod utils;

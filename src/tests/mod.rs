@@ -31,3 +31,4 @@ mod planet;
 mod rank;
 mod solver;
 mod system;
+mod tui;
