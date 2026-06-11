@@ -116,7 +116,7 @@ fn setting_rows(app: &App) -> Vec<Row<'_>> {
             )),
         ]),
     ];
-    for item in ColonyItem::all() {
+    for (offset, item) in ColonyItem::all().into_iter().enumerate() {
         let count = app
             .config
             .colony_items
@@ -125,7 +125,7 @@ fn setting_rows(app: &App) -> Vec<Row<'_>> {
             .unwrap_or(0);
         rows.push(Row::new(vec![
             Cell::from(format!("item: {}", item.name())),
-            Cell::from(count.to_string()),
+            Cell::from(setting_value(app, BASE_FIELDS + offset, count.to_string())),
         ]));
     }
     rows.push(Row::new(vec![
@@ -175,8 +175,25 @@ fn begin_edit_or_toggle(app: &mut App) {
                 .unwrap_or_default(),
         ),
         n if n == BASE_FIELDS + ColonyItem::all().len() => {
+            // Reset the solver-facing settings but keep machine-specific
+            // paths: wiping db_path/starsector_dir would strand the user.
+            let db_path = std::mem::take(&mut app.config.db_path);
+            let starsector_dir = app.config.starsector_dir.take();
             app.config = Default::default();
+            app.config.db_path = db_path;
+            app.config.starsector_dir = starsector_dir;
             app.mark_rank_stale();
+            app.status = "settings reset to defaults (paths kept)".to_string();
+        }
+        n if n >= BASE_FIELDS && n < BASE_FIELDS + ColonyItem::all().len() => {
+            let item = ColonyItem::all()[n - BASE_FIELDS];
+            let count = app
+                .config
+                .colony_items
+                .get(item.name())
+                .copied()
+                .unwrap_or(0);
+            edit(app, count.to_string());
         }
         _ => {}
     }
@@ -188,48 +205,57 @@ fn edit(app: &mut App, value: String) {
 }
 
 fn commit_edit(app: &mut App) {
-    let input = app.settings_input.trim();
+    let input = app.settings_input.trim().to_string();
     let mut balance_changed = false;
+    let mut parse_failed = false;
+    // Numeric fields: a failed parse keeps the editor open with feedback
+    // instead of silently discarding the input.
+    macro_rules! numeric {
+        ($target:expr) => {
+            match input.parse() {
+                Ok(v) => {
+                    $target = v;
+                    balance_changed = true;
+                }
+                Err(_) => parse_failed = true,
+            }
+        };
+    }
     match app.settings_selection {
-        0 => {
-            if let Ok(v) = input.parse() {
-                app.config.credits = v;
-                balance_changed = true;
-            }
-        }
-        1 => {
-            if let Ok(v) = input.parse() {
-                app.config.story_points = v;
-                balance_changed = true;
-            }
-        }
-        2 => {
-            if let Ok(v) = input.parse() {
-                app.config.alpha_cores = v;
-                balance_changed = true;
-            }
-        }
-        3 => {
-            if let Ok(v) = input.parse() {
-                app.config.horizon_months = v;
-                balance_changed = true;
-            }
-        }
-        4 => {
-            if let Ok(v) = input.parse() {
-                app.config.solver_time_budget_ms = v;
-                balance_changed = true;
-            }
-        }
-        7 => app.config.db_path = input.into(),
+        0 => numeric!(app.config.credits),
+        1 => numeric!(app.config.story_points),
+        2 => numeric!(app.config.alpha_cores),
+        3 => numeric!(app.config.horizon_months),
+        4 => numeric!(app.config.solver_time_budget_ms),
+        7 => app.config.db_path = input.as_str().into(),
         8 => {
             app.config.starsector_dir = if input.is_empty() {
                 None
             } else {
-                Some(input.into())
+                Some(input.as_str().into())
             };
         }
+        n if n >= BASE_FIELDS && n < BASE_FIELDS + ColonyItem::all().len() => {
+            let item = ColonyItem::all()[n - BASE_FIELDS];
+            match input.parse::<u32>() {
+                Ok(count) => {
+                    if count == 0 {
+                        app.config.colony_items.remove(item.name());
+                    } else {
+                        app.config
+                            .colony_items
+                            .insert(item.name().to_string(), count);
+                    }
+                    balance_changed = true;
+                }
+                Err(_) => parse_failed = true,
+            }
+        }
         _ => {}
+    }
+    if parse_failed {
+        app.status = format!("invalid number: {input}");
+        return;
     }
     app.settings_editing = false;
     if balance_changed {

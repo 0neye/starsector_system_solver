@@ -230,6 +230,33 @@ fn tui_mark_rank_stale_marks_existing_caches() {
     assert!(app.status.contains("scores are stale"));
 }
 
+/// The Rank-header stale indicator must come on only when there are
+/// displayed rows to be stale about, and a balance change must trip it.
+#[test]
+fn tui_rank_rows_stale_indicator_tracks_displayed_rows() {
+    let config = TuiConfig::default();
+    let mut app = App::new(config, None);
+
+    // No rows yet: a balance change has nothing to invalidate on screen.
+    app.mark_rank_stale();
+    assert!(!app.rank_rows_stale);
+
+    app.rank_rows.push(RankRow {
+        system: "Alpha".to_string(),
+        solve: ParetoSolve {
+            stability_frontier: Vec::new(),
+            defense_frontier: Vec::new(),
+            stability_auc: 0.0,
+            defense_auc: 0.0,
+            score: 1.0,
+            recommendation: None,
+        },
+        seconds: 0.1,
+    });
+    app.mark_rank_stale();
+    assert!(app.rank_rows_stale);
+}
+
 #[test]
 fn tui_solve_cache_key_includes_mode_params_and_balance() {
     let config = TuiConfig::default();

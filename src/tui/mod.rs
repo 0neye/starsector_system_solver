@@ -122,8 +122,12 @@ fn handle_key(app: &mut App, code: KeyCode) {
             }
         }
         KeyCode::Char('4') => {
-            app.active_screen = Screen::Solve;
-            app.restore_solve_cache();
+            if app.systems.is_empty() {
+                app.status = "load a save's systems first".to_string();
+            } else {
+                app.active_screen = Screen::Solve;
+                app.restore_solve_cache();
+            }
         }
         KeyCode::Char('5') => {
             if app.plan.is_some() {

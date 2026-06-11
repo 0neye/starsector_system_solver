@@ -14,7 +14,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let total = app.systems.len();
     let scope_count = app.visible_scope_names().len();
     let header = format!(
-        "Rank · scope: {} ({} of {}) · scorer: {:?} · {}",
+        "Rank{} · scope: {} ({} of {}) · scorer: {:?} · {}",
+        if app.rank_rows_stale {
+            " [STALE - r to re-rank]"
+        } else {
+            ""
+        },
         match app.scope_mode {
             ScopeMode::Discovered => "discovered",
             ScopeMode::All => "all",
@@ -37,6 +42,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         rows.push(Row::new(vec![
             Cell::from((idx + 1).to_string()),
             Cell::from(row.system.clone()),
+            Cell::from(planet_count(app, &row.system)),
             Cell::from(format!("{:.1}", row.solve.score)),
             Cell::from(format!("{:.0}", peak_income(&row.solve))),
             Cell::from(format!("{:.1}s", row.seconds)),
@@ -50,12 +56,20 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         [
             Constraint::Length(5),
             Constraint::Percentage(45),
+            Constraint::Length(8),
             Constraint::Length(10),
             Constraint::Length(14),
             Constraint::Length(9),
         ],
     )
-    .header(Row::new(["#", "system", "score", "peak income", "time"]))
+    .header(Row::new([
+        "#",
+        "system",
+        "planets",
+        "score",
+        "peak income",
+        "time",
+    ]))
     .block(Block::default().title(header).borders(Borders::ALL))
     .row_highlight_style(selected_style())
     .highlight_symbol("> ");
@@ -133,9 +147,33 @@ pub fn handle_scorer_key(app: &mut App, code: KeyCode) {
     match code {
         KeyCode::Char('j') | KeyCode::Down => app.move_scorer_picker(1),
         KeyCode::Char('k') | KeyCode::Up => app.move_scorer_picker(-1),
-        KeyCode::Enter | KeyCode::Esc => app.close_scorer_picker(),
+        KeyCode::Enter => app.close_scorer_picker(),
+        KeyCode::Esc => {
+            // Cancel: revert to the scorer that was active when the picker
+            // opened (Enter commits).
+            if let Some(original) = app.scorer_picker_original {
+                app.scorer = original;
+            }
+            app.close_scorer_picker();
+        }
         _ => {}
     }
+}
+
+/// Planet count for a ranked system: the loaded solver `System` is
+/// authoritative; fall back to the extraction discovery row.
+fn planet_count(app: &App, system: &str) -> String {
+    app.systems
+        .get(system)
+        .map(|sys| sys.planets().len())
+        .or_else(|| {
+            app.discovery
+                .iter()
+                .find(|row| row.system_name == system)
+                .map(|row| row.planet_count as usize)
+        })
+        .map(|count| count.to_string())
+        .unwrap_or_else(|| "-".to_string())
 }
 
 fn cycle_scope(app: &mut App) {

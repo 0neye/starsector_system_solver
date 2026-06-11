@@ -415,7 +415,10 @@ fn decomp_maximize_mia_bravos_stability_8_keeps_three_planet_basin() {
 
     let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(8));
     let mut state = State::new(Balance::new(5_000_000.0, 5, 1), system.clone());
-    let result = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 15_000, true)
+    // Generous budget: the climb needs ~15s alone in debug, and the time
+    // limit is now a hard deadline — a cutoff under `cargo test` rayon-pool
+    // contention would return a weaker basin and fail the assertion below.
+    let result = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 120_000, true)
         .expect("Mia Bravos can hold stability 8 while earning income");
     let log = result
         .solution
@@ -616,14 +619,17 @@ fn decomp_time_limit_is_a_hard_deadline() {
 
     let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(6));
     let mut state = State::new(Balance::new(5_000_000.0, 5, 1), system);
+    // Dedicated rayon pool: under `cargo test` the global pool is saturated
+    // by the heavy solver tests, which can queue this test's parallel work
+    // for minutes and make a wall-clock assertion flaky.
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
     let t0 = Instant::now();
-    let _ = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 200, true);
-    // Generous slack: alone this finishes in <1s, but under `cargo test` the
-    // global rayon pool is shared with the heavy solver tests, so this test's
-    // parallel work can queue behind theirs for tens of seconds. The original
-    // bug ran *minutes* past the budget, so 120s still separates pass/fail.
+    let _ = pool.install(|| {
+        decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 200, true)
+    });
+    // Alone this finishes in <1s even in debug; the original bug ran minutes.
     assert!(
-        t0.elapsed() < Duration::from_secs(120),
+        t0.elapsed() < Duration::from_secs(30),
         "200ms-budget solve ran {:?}; the wall-clock deadline is not being enforced",
         t0.elapsed()
     );

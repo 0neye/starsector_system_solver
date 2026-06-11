@@ -177,6 +177,9 @@ pub struct App {
     pub rank_cache: Vec<RankCache>,
     pub rank_filter: String,
     pub editing_filter: bool,
+    /// The displayed rank rows were scored with a different balance/settings
+    /// than the current ones (shown in the Rank header until re-ranked).
+    pub rank_rows_stale: bool,
     pub status: String,
     pub error: Option<String>,
     pub job: JobRunner,
@@ -221,6 +224,7 @@ impl App {
             rank_cache: Vec::new(),
             rank_filter: String::new(),
             editing_filter: false,
+            rank_rows_stale: false,
             status: status.unwrap_or_else(|| "ready".to_string()),
             error: None,
             job: JobRunner::new(),
@@ -380,6 +384,7 @@ impl App {
             }
             JobOutput::RankComplete(rows) => {
                 self.rank_rows = rows;
+                self.rank_rows_stale = false;
                 let save = self
                     .active_save
                     .as_ref()
@@ -423,6 +428,7 @@ impl App {
             return;
         }
         self.rank_rows.clear();
+        self.rank_rows_stale = false;
         self.rank_selection = 0;
         self.selected_system_name = None;
         self.start_job(Job::Rank {
@@ -541,7 +547,9 @@ impl App {
             .map(|row| row.system.clone())
             .or_else(|| self.selected_system_name.clone());
         if let Some(rows) = self.cached_rows_for_active() {
+            // A signature-matching cache hit is fresh by definition.
             self.rank_rows = rows;
+            self.rank_rows_stale = false;
             let visible = self.visible_rank_rows();
             self.rank_selection = previously_selected
                 .and_then(|name| visible.iter().position(|row| row.system == name))
@@ -554,6 +562,7 @@ impl App {
         for cache in &mut self.rank_cache {
             cache.stale = true;
         }
+        self.rank_rows_stale = !self.rank_rows.is_empty();
         self.status = "scores are stale (balance changed) - r to re-rank".to_string();
     }
 

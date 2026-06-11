@@ -125,12 +125,20 @@ fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
         return;
     }
 
-    let text = match app.active_screen {
-        Screen::Saves => "Enter activate/extract · e extract · j/k move · ? help · q quit",
-        Screen::Rank => "Enter inspect · c scorer · u scope · r re-rank · / filter · x export csv",
-        Screen::System => "b/Esc back · / search active scope · j/k planet · s solve · S setup",
-        Screen::Solve => "Tab focus · Enter/R run · m mode · p plan · b back · q quit",
-        Screen::Plan => "Space toggle · n next unchecked · x export text · b/Esc back to solve",
+    let text = if app.editing_filter {
+        "Type to search · Enter/Esc done · Backspace delete"
+    } else if app.editing_solve_param {
+        "Type value · Enter commit · Esc cancel edit · Backspace delete"
+    } else {
+        match app.active_screen {
+            Screen::Saves => "Enter activate/extract · e extract · j/k move · ? help · q quit",
+            Screen::Rank => {
+                "Enter inspect · c scorer · u scope · r re-rank · / filter · x export csv"
+            }
+            Screen::System => "b/Esc back · / search active scope · j/k planet · s solve · S setup",
+            Screen::Solve => "Tab focus · Enter edit/cycle · R run · m mode · p plan · b back",
+            Screen::Plan => "Space toggle · n next unchecked · x export text · b/Esc back to solve",
+        }
     };
     frame.render_widget(
         Paragraph::new(text).style(Style::default().fg(Color::Gray)),
@@ -143,9 +151,11 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut App, modal: Modal) {
     frame.render_widget(Clear, area);
     match modal {
         Modal::Help => {
-            let text = "Global: 1 Saves · 2 Rank · 3 System · s Setup · ? Help · q Quit\n\
+            let text = "Global: 1 Saves · 2 Rank · 3 System · 4 Solve · 5 Plan · s Setup · ? Help · q Quit\n\
                         Move: j/k or arrows · Enter drill in · Esc back/close\n\
                         Rank: r rank · c scorer · u scope · / filter · x export CSV\n\
+                        System: / jump to system · s solve this system · S setup\n\
+                        Solve: Tab panes · Enter edit/cycle · R run · p plan\n\
                         Jobs: x cancels rank/solve (extract/load detach)";
             frame.render_widget(
                 Paragraph::new(text)
@@ -169,7 +179,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut App, modal: Modal) {
         }
         Modal::QuitConfirm => {
             frame.render_widget(
-                Paragraph::new("A job is running. Detach it and quit? y/n")
+                Paragraph::new("A job is running. Cancel it and quit? y/n")
                     .block(Block::default().title("Quit").borders(Borders::ALL)),
                 area,
             );

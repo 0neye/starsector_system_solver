@@ -132,7 +132,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 pub fn handle_key(app: &mut App, code: KeyCode) {
     if app.editing_filter {
         match code {
-            KeyCode::Esc | KeyCode::Enter => app.editing_filter = false,
+            KeyCode::Esc | KeyCode::Enter => {
+                // System search is jump-to-system, not a persistent filter:
+                // clear it so it doesn't silently filter the Rank screen.
+                app.editing_filter = false;
+                app.rank_filter.clear();
+            }
             KeyCode::Backspace => {
                 app.rank_filter.pop();
             }

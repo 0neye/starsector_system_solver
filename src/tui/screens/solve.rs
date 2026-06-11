@@ -290,7 +290,7 @@ fn cycle_mode(app: &mut App, delta: i32) {
 
 fn commit_edit(app: &mut App) {
     let value = app.solve_input.trim();
-    match (app.solve_params.mode, app.solve_param_selection) {
+    let ok = match (app.solve_params.mode, app.solve_param_selection) {
         (SolveMode::Goal, 1) => parse_f64(value, &mut app.solve_params.goal_income),
         (SolveMode::Goal, 2) => parse_i32(value, &mut app.solve_params.goal_stability),
         (SolveMode::Goal, 3) => parse_f64(value, &mut app.solve_params.goal_defense),
@@ -306,29 +306,46 @@ fn commit_edit(app: &mut App) {
                 parse_i32(value, &mut app.solve_params.floor_stability)
             }
             Some(MaxFloorField::Defense) => parse_f64(value, &mut app.solve_params.floor_defense),
-            None => {}
+            None => true,
         },
-        _ => {}
+        _ => true,
+    };
+    if !ok {
+        // Keep editing so the user can fix the value; Esc still cancels.
+        app.status = format!("invalid number: {value}");
+        return;
     }
     app.editing_solve_param = false;
     app.restore_solve_cache();
 }
 
-fn parse_f64(value: &str, target: &mut f64) {
-    if let Ok(parsed) = value.parse() {
-        *target = parsed;
+fn parse_f64(value: &str, target: &mut f64) -> bool {
+    match value.parse() {
+        Ok(parsed) => {
+            *target = parsed;
+            true
+        }
+        Err(_) => false,
     }
 }
 
-fn parse_i32(value: &str, target: &mut i32) {
-    if let Ok(parsed) = value.parse() {
-        *target = parsed;
+fn parse_i32(value: &str, target: &mut i32) -> bool {
+    match value.parse() {
+        Ok(parsed) => {
+            *target = parsed;
+            true
+        }
+        Err(_) => false,
     }
 }
 
-fn parse_u32(value: &str, target: &mut u32) {
-    if let Ok(parsed) = value.parse() {
-        *target = parsed;
+fn parse_u32(value: &str, target: &mut u32) -> bool {
+    match value.parse() {
+        Ok(parsed) => {
+            *target = parsed;
+            true
+        }
+        Err(_) => false,
     }
 }
 
@@ -359,20 +376,27 @@ fn param_rows(app: &App) -> Vec<Row<'_>> {
         Cell::from("mode"),
         Cell::from(p.mode.as_str()),
     ])];
+    let editing = |index: usize, value: String| -> String {
+        if app.editing_solve_param && app.solve_param_selection == index {
+            format!("editing: {}_", app.solve_input)
+        } else {
+            value
+        }
+    };
     match p.mode {
         SolveMode::Pareto => {}
         SolveMode::Goal => {
             rows.push(Row::new(vec![
                 Cell::from("income"),
-                Cell::from(format!("{:.0}", p.goal_income)),
+                Cell::from(editing(1, format!("{:.0}", p.goal_income))),
             ]));
             rows.push(Row::new(vec![
                 Cell::from("stability"),
-                Cell::from(p.goal_stability.to_string()),
+                Cell::from(editing(2, p.goal_stability.to_string())),
             ]));
             rows.push(Row::new(vec![
                 Cell::from("defense"),
-                Cell::from(format!("{:.0}", p.goal_defense)),
+                Cell::from(editing(3, format!("{:.0}", p.goal_defense))),
             ]));
         }
         SolveMode::Maximize => {
@@ -383,30 +407,30 @@ fn param_rows(app: &App) -> Vec<Row<'_>> {
             if p.maximize_metric != Metric::Income {
                 rows.push(Row::new(vec![
                     Cell::from("income floor"),
-                    Cell::from(format!("{:.0}", p.floor_income)),
+                    Cell::from(editing(rows.len(), format!("{:.0}", p.floor_income))),
                 ]));
             }
             if p.maximize_metric != Metric::Stability {
                 rows.push(Row::new(vec![
                     Cell::from("stability floor"),
-                    Cell::from(p.floor_stability.to_string()),
+                    Cell::from(editing(rows.len(), p.floor_stability.to_string())),
                 ]));
             }
             if p.maximize_metric != Metric::Defense {
                 rows.push(Row::new(vec![
                     Cell::from("defense floor"),
-                    Cell::from(format!("{:.0}", p.floor_defense)),
+                    Cell::from(editing(rows.len(), format!("{:.0}", p.floor_defense))),
                 ]));
             }
         }
     }
     rows.push(Row::new(vec![
         Cell::from("horizon"),
-        Cell::from(p.horizon.to_string()),
+        Cell::from(editing(rows.len(), p.horizon.to_string())),
     ]));
     rows.push(Row::new(vec![
         Cell::from("time budget ms"),
-        Cell::from(p.time_limit.to_string()),
+        Cell::from(editing(rows.len(), p.time_limit.to_string())),
     ]));
     rows.push(Row::new(vec![
         Cell::from("[Run]").style(
