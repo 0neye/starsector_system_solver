@@ -24,3 +24,4 @@ rank_quick.csv
 rank_quick_log.txt
 TUI_DESIGN.md
 specs/
+solver_tui.toml
