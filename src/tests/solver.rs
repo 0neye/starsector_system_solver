@@ -622,11 +622,13 @@ fn decomp_time_limit_is_a_hard_deadline() {
     // Dedicated rayon pool: under `cargo test` the global pool is saturated
     // by the heavy solver tests, which can queue this test's parallel work
     // for minutes and make a wall-clock assertion flaky.
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build().unwrap();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .unwrap();
     let t0 = Instant::now();
-    let _ = pool.install(|| {
-        decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 200, true)
-    });
+    let _ = pool
+        .install(|| decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 200, true));
     // Alone this finishes in <1s even in debug; the original bug ran minutes.
     assert!(
         t0.elapsed() < Duration::from_secs(30),

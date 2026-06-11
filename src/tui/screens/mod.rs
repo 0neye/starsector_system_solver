@@ -1,5 +1,5 @@
-pub mod rank;
 pub mod plan;
+pub mod rank;
 pub mod saves;
 pub mod settings;
 pub mod solve;
@@ -51,7 +51,10 @@ fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
         app.config.story_points,
         app.config.alpha_cores
     );
-    frame.render_widget(Paragraph::new(text).style(Style::default().fg(Color::Cyan)), area);
+    frame.render_widget(
+        Paragraph::new(text).style(Style::default().fg(Color::Cyan)),
+        area,
+    );
 }
 
 fn draw_tabs(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -85,7 +88,11 @@ fn draw_tabs(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let tabs = Tabs::new(titles)
         .select(selected)
         .style(Style::default().fg(Color::Gray))
-        .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        );
     frame.render_widget(tabs, area);
 }
 

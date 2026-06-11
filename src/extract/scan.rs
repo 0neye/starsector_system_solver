@@ -95,7 +95,12 @@ fn scan_player_balance(doc: &XmlDoc) -> Option<PlayerBalance> {
             if let Some(cargo) =
                 find_descendant(doc, node, &mut |n| n.attr("cl") == Some("CargoData"))
             {
-                collect_cargo_items(doc, cargo.resolve(doc), &mut balance.alpha_cores, &mut items);
+                collect_cargo_items(
+                    doc,
+                    cargo.resolve(doc),
+                    &mut balance.alpha_cores,
+                    &mut items,
+                );
             }
         }
     }
