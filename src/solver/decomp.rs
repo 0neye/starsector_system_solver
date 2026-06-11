@@ -117,7 +117,9 @@ const TOP_SEED_CLIMBS: usize = 8;
 /// profile is deterministic. `FULL` reproduces the production search exactly;
 /// the `QUICK_*` profiles trade quality for speed in the ranking mode and are
 /// a strict *reduction* of `FULL` (same seed generation and queue order, lower
-/// caps), so their scores are lower bounds on the full search's. See
+/// caps), so for one solve with the same seeds, a reduced profile's result is a
+/// lower bound on `FULL`'s. (Across a chained sweep the warm seeds diverge, so
+/// sweep-level scores are only empirically ordered.) See
 /// `QUICK_RANKING_DESIGN.md`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SearchProfile {
@@ -158,8 +160,9 @@ impl SearchProfile {
     /// floor costs only one forced simulation per template (roughly linear in
     /// planets → milliseconds per system). The same templates run on every
     /// system, so the approximation error is correlated across systems, which
-    /// is what rank preservation wants. Because it never climbs, its score is a
-    /// lower bound on `QUICK`'s (which climbs from these same seeds). See
+    /// is what rank preservation wants. Because it never climbs, its result for
+    /// one solve lower-bounds `QUICK`'s from the same seeds (sweep-level scores
+    /// are only empirically ordered — the warm chains diverge). See
     /// `QUICK_RANKING_DESIGN.md`.
     pub const TEMPLATE: Self = Self {
         top_seed_climbs: 1,
@@ -746,6 +749,7 @@ fn run_plan(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // threaded simulation context
 fn choose_plan_action(
     state: &mut State,
     objective: &Objective,

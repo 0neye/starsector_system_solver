@@ -145,12 +145,15 @@ pub fn solve_pareto(
 }
 
 /// Quick-ranking variant of [`solve_pareto`]: a sparse floor grid (3 stability
-/// + 2 defense points instead of 11), a reduced-effort anchor solve, and
+/// plus 2 defense points instead of 11), a reduced-effort anchor solve, and
 /// node-capped repair climbs warm-started along each chain. Deterministic, and
 /// shares the frontier/AUC/score code with the full sweep so the two can't
 /// drift. Every search budget is a strict reduction of the full sweep's, so
-/// the returned score is a lower bound on the full-sweep score. See
-/// `QUICK_RANKING_DESIGN.md`.
+/// each *point's* income is a lower bound on what the full search would find
+/// there. The *score* is in practice below the full-sweep score too (benchmark
+/// ratios 0.876–0.975), but not provably: the trapezoid AUC over the sparse
+/// grid can overestimate the area the full grid would measure between shared
+/// floors. See `QUICK_RANKING_DESIGN.md`.
 pub fn solve_pareto_quick(
     system: &System,
     balance: &Balance,
@@ -249,9 +252,11 @@ pub fn solve_pareto_quick(
 /// winning template forward as a warm seed. One forced simulation per template,
 /// so it paints a rough ranking in milliseconds (the UI shows this immediately
 /// and refines to Tier 1 in the background). Shares the frontier/AUC/score code
-/// with the full sweep so its scores stay comparable, and because it never
-/// climbs, each point is a lower bound on the corresponding `solve_pareto_quick`
-/// point — refinement only moves scores up. See `QUICK_RANKING_DESIGN.md`.
+/// with the full sweep so its scores stay comparable. Because it never climbs,
+/// each point's income is in practice a lower bound on the corresponding
+/// `solve_pareto_quick` point — refinement only moves scores up. (Not provable:
+/// after the first floor the two modes' warm chains diverge, so later floors do
+/// not climb from identical seed sets.) See `QUICK_RANKING_DESIGN.md`.
 pub fn solve_pareto_template(
     system: &System,
     balance: &Balance,
@@ -326,12 +331,16 @@ pub fn solve_pareto_template(
 
 /// Tier-0 *upper-bound* variant: the per-planet decomposed, credit-relaxed
 /// income ceiling ([`per_planet_income_bound`]), reported as a `ParetoSolve`
-/// whose score is an upper bound on the full-sweep score. Unlike
-/// [`solve_pareto_template`] (a lower bound that approximates the frontier), this
-/// is the "potential" certificate the interval-escalation step wants: the real
-/// score can never exceed it. No frontier search at all — one FULL solve per
-/// single-planet sub-system, rationing the shared one-shots. See
-/// `QUICK_RANKING_DESIGN.md` step 1.
+/// whose score upper-bounds the full-sweep score. Unlike
+/// [`solve_pareto_template`] (which approximates the frontier from below), this
+/// is the "potential" ceiling the interval-escalation step wants. Caveat for
+/// certificate use: the ceiling is certified only up to the greedy one-shot
+/// rationing, which is optimal under concavity but can in principle
+/// under-allocate when units complement each other (see
+/// [`per_planet_income_bound`]); the benchmark margin is wide (bound/full
+/// 1.36–2.02). No frontier search at all — one FULL solve per single-planet
+/// sub-system, rationing the shared one-shots. See `QUICK_RANKING_DESIGN.md`
+/// step 1.
 pub fn solve_pareto_bound(
     system: &System,
     balance: &Balance,
@@ -379,8 +388,8 @@ pub fn solve_pareto_bound(
 }
 
 /// Per-planet decomposed, credit-relaxed **upper bound** on the system's net
-/// income — the Tier-0 "potential" ceiling. Two relaxations make it a true
-/// ceiling that is also cheap to compute:
+/// income — the Tier-0 "potential" ceiling. Two relaxations make it a ceiling
+/// that is also cheap to compute:
 ///
 /// * **Drop cross-planet contention.** Net income is a pure sum of per-planet
 ///   incomes, so solving each planet on its own infinite-credit timeline (no
@@ -395,9 +404,13 @@ pub fn solve_pareto_bound(
 ///   planets by greedy marginal income (each unit to the planet it helps most),
 ///   so the bound is not the vacuous "a core on every planet" number.
 ///
-/// The result is an upper bound on the joint optimum, exact when each planet's
-/// income is concave in its one-shot allocation (which diminishing returns make
-/// near-true). See `QUICK_RANKING_DESIGN.md` step 1.
+/// The result upper-bounds the joint optimum *when the greedy rationing is
+/// optimal*, which holds when each planet's income is concave in its one-shot
+/// allocation (diminishing returns make that near-true). Under complementarities
+/// — a unit whose gain only materializes alongside a second unit — the greedy
+/// can under-allocate, so this is a near-certain ceiling rather than a certified
+/// one; don't build pruning that assumes it can never undershoot. See
+/// `QUICK_RANKING_DESIGN.md` step 1.
 fn per_planet_income_bound(
     system: &System,
     balance: &Balance,
@@ -475,7 +488,11 @@ fn per_planet_income_bound(
         for p in 0..n {
             let cur = incomes[p];
             if cores_rem > 0 {
-                consider(solve(p, cores[p] + 1, sps[p], &items[p]) - cur, p, Unit::Core);
+                consider(
+                    solve(p, cores[p] + 1, sps[p], &items[p]) - cur,
+                    p,
+                    Unit::Core,
+                );
             }
             if sps_rem > 0 {
                 consider(solve(p, cores[p], sps[p] + 1, &items[p]) - cur, p, Unit::Sp);
@@ -604,6 +621,7 @@ fn assemble_solve(samples: Vec<ParetoPoint>) -> ParetoSolve {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors measure_point_seeded
 pub(crate) fn measure_point_chained(
     system: &System,
     balance: &Balance,

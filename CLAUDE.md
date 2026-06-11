@@ -48,10 +48,13 @@ cargo run --release -- --rank --rank-system askonia --rank-system corvus  # filt
 cargo run --release -- --rank --rank-csv > rank.csv  # machine-readable
 python rank_validation.py final_sweep.csv rank.csv   # rank-agreement gate vs full sweep
 # --rank-scorer picks the scorer (default `quick` = Tier-1 budgeted search):
-#   bound    = per-planet decomposed credit-relaxed UPPER bound (solve_pareto_bound,
-#              ~1s/system, ranks perfectly on the benchmark; the interval-escalation
-#              certificate). Validate the same way: bound/full should be >= 1.
-#   template = instant template portfolio, no search, a LOWER bound
+#   bound    = per-planet decomposed credit-relaxed upper bound (solve_pareto_bound,
+#              ~1s/system, ranks perfectly on the benchmark). A near-certain
+#              ceiling, not a certified one: the greedy one-shot rationing is
+#              exact only under concavity (see per_planet_income_bound) — don't
+#              build hard pruning that assumes it can never undershoot.
+#              Validate the same way: bound/full should be >= 1.
+#   template = instant template portfolio, no search, in practice a lower bound
 #              (solve_pareto_template, ~ms/system, rougher ordering).
 cargo run --release -- --rank --rank-scorer bound
 cargo run --release -- --rank --rank-scorer template

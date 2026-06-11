@@ -303,29 +303,6 @@ impl Planet {
             .find(|f| f.facility_type() == &facility_type)
     }
 
-    pub(crate) fn force_complete_build(&mut self, facility_type: FacilityType) -> Option<i32> {
-        let facility = self
-            .facilities
-            .iter_mut()
-            .find(|f| f.facility_type() == &facility_type)?;
-        let (current_build_days, total_build_days) = facility.build_days_state();
-        facility.set_build_days_state(0, total_build_days);
-        self.invalidate_income_cache();
-        Some(current_build_days)
-    }
-
-    pub(crate) fn restore_build_days(&mut self, facility_type: FacilityType, prior: i32) {
-        if let Some(facility) = self
-            .facilities
-            .iter_mut()
-            .find(|f| f.facility_type() == &facility_type)
-        {
-            let (_, total_build_days) = facility.build_days_state();
-            facility.set_build_days_state(prior, total_build_days);
-            self.invalidate_income_cache();
-        }
-    }
-
     /// True if the planet has `facility_type`, or a facility that (transitively)
     /// upgrades from it — e.g. a star fortress satisfies a request for an
     /// orbital or battle station. Used to avoid treating a tier as still

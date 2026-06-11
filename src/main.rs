@@ -90,9 +90,10 @@ struct Cli {
 
     /// Which `--rank` scorer to use: `quick` (default) = budgeted real search
     /// (`solve_pareto_quick`, Tier 1); `template` = instant template portfolio,
-    /// a Tier-0 lower bound (`solve_pareto_template`); `bound` = per-planet
-    /// decomposed credit-relaxed upper bound, the Tier-0 "potential" ceiling
-    /// (`solve_pareto_bound`). See QUICK_RANKING_DESIGN.md.
+    /// in practice a Tier-0 lower bound (`solve_pareto_template`); `bound` =
+    /// per-planet decomposed credit-relaxed near-certain upper bound, the
+    /// Tier-0 "potential" ceiling (`solve_pareto_bound`). See
+    /// QUICK_RANKING_DESIGN.md.
     #[arg(long = "rank-scorer", value_enum, default_value_t = RankScorer::Quick)]
     rank_scorer: RankScorer,
 
@@ -121,8 +122,9 @@ enum Command {
 }
 
 /// `--rank` scoring strategy. `Quick` is the Tier-1 budgeted search; `Template`
-/// and `Bound` are the two Tier-0 instant scorers (a lower and an upper bound on
-/// the score, respectively). See QUICK_RANKING_DESIGN.md.
+/// and `Bound` are the two Tier-0 instant scorers (in practice a lower and an
+/// upper bound on the score, respectively — see the soundness caveats on
+/// `solve_pareto_template` / `solve_pareto_bound`). See QUICK_RANKING_DESIGN.md.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum RankScorer {
     Quick,
@@ -256,9 +258,10 @@ fn run_solve(system_name: &str, system: &System, balance: &Balance, horizon: i32
 /// `--rank`: score every selected system with a quick Pareto sweep and print
 /// them best-first. `scorer` selects the strategy (see [`RankScorer`]): `Quick`
 /// is the Tier-1 budgeted search; `Template` and `Bound` are the Tier-0 instant
-/// scorers (a lower and an upper bound on the score). All are deterministic and
-/// meant for *ordering* systems, not as final numbers — `--solve` on the chosen
-/// system gives the real frontier. See QUICK_RANKING_DESIGN.md.
+/// scorers (in practice a lower and an upper bound on the score). All are
+/// deterministic and meant for *ordering* systems, not as final numbers —
+/// `--solve` on the chosen system gives the real frontier. See
+/// QUICK_RANKING_DESIGN.md.
 fn run_rank(
     systems: &HashMap<String, System>,
     balance: &Balance,
@@ -316,12 +319,19 @@ fn run_rank(
     if csv {
         println!("system,score,peak_income,seconds");
         for (name, solve, secs) in &ranked {
-            println!("{name},{:.3},{:.0},{secs:.2}", solve.score, peak_income(solve));
+            println!(
+                "{name},{:.3},{:.0},{secs:.2}",
+                solve.score,
+                peak_income(solve)
+            );
         }
         return;
     }
 
-    println!("\n#   {:<24} {:>8}  {:>12}  {:>7}", "system", "score", "peak income", "time");
+    println!(
+        "\n#   {:<24} {:>8}  {:>12}  {:>7}",
+        "system", "score", "peak income", "time"
+    );
     for (i, (name, solve, secs)) in ranked.iter().enumerate() {
         println!(
             "{:<3} {:<24} {:>8.1}  {:>12.0}  {:>6.1}s",
@@ -333,7 +343,7 @@ fn run_rank(
         );
     }
     println!(
-        "\nQuick scores are deterministic lower bounds meant for ordering; run\n\
+        "\nQuick scores are deterministic approximations meant for ordering; run\n\
          --solve --system <NAME> on the system you pick for the real frontier."
     );
 }
