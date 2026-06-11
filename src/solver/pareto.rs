@@ -91,6 +91,8 @@ pub fn solve_pareto(
     let defense_balance = balance.clone();
     let (mut stability_tail, mut defense_samples) = std::thread::scope(|scope| {
         let stability_handle = scope.spawn(move || {
+            crate::cpu_affinity::prefer_performance_cores();
+
             let mut stability_warm = stability_warm;
             let mut points = Vec::new();
             for stability in STABILITY_FLOORS.iter().copied().skip(1) {
@@ -112,6 +114,8 @@ pub fn solve_pareto(
         });
 
         let defense_handle = scope.spawn(move || {
+            crate::cpu_affinity::prefer_performance_cores();
+
             let mut points = Vec::new();
             let mut defense_warm = defense_initial_warm;
             for defense in DEFENSE_FLOORS {

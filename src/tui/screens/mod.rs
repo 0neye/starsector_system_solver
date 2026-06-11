@@ -1,6 +1,8 @@
 pub mod rank;
+pub mod plan;
 pub mod saves;
 pub mod settings;
+pub mod solve;
 pub mod system;
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -30,6 +32,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
         Screen::Saves => saves::draw(frame, app, chunks[2]),
         Screen::Rank => rank::draw(frame, app, chunks[2]),
         Screen::System => system::draw(frame, app, chunks[2]),
+        Screen::Solve => solve::draw(frame, app, chunks[2]),
+        Screen::Plan => plan::draw(frame, app, chunks[2]),
     }
     draw_status(frame, app, chunks[3]);
     draw_footer(frame, app, chunks[4]);
@@ -59,14 +63,24 @@ fn draw_tabs(frame: &mut Frame<'_>, app: &App, area: Rect) {
         } else {
             Line::from(muted("[3] System"))
         },
-        Line::from(muted("[4] Solve")),
-        Line::from(muted("[5] Plan")),
+        if app.systems.is_empty() {
+            Line::from(muted("[4] Solve"))
+        } else {
+            Line::from("[4] Solve")
+        },
+        if app.plan.is_some() {
+            Line::from("[5] Plan")
+        } else {
+            Line::from(muted("[5] Plan"))
+        },
         Line::from("[s] Setup"),
     ];
     let selected = match app.active_screen {
         Screen::Saves => 0,
         Screen::Rank => 1,
         Screen::System => 2,
+        Screen::Solve => 3,
+        Screen::Plan => 4,
     };
     let tabs = Tabs::new(titles)
         .select(selected)
@@ -95,7 +109,9 @@ fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let text = match app.active_screen {
         Screen::Saves => "Enter activate/extract · e extract · j/k move · ? help · q quit",
         Screen::Rank => "Enter inspect · c scorer · u scope · r re-rank · / filter · x export csv",
-        Screen::System => "b/Esc back · / search active scope · j/k planet · s solve in M2",
+        Screen::System => "b/Esc back · / search active scope · j/k planet · s solve · S setup",
+        Screen::Solve => "Tab focus · Enter/R run · m mode · p plan · b back · q quit",
+        Screen::Plan => "Space toggle · n next unchecked · x export text · b/Esc back to solve",
     };
     frame.render_widget(Paragraph::new(text).style(Style::default().fg(Color::Gray)), area);
 }

@@ -13,10 +13,11 @@ use crate::extract::save::{discover_saves, load_campaign_xml};
 use crate::extract::scan::scan_save;
 use crate::parser;
 use crate::rank::{rank_systems, RankRow, RankScorer};
-use crate::solver::Balance;
+use crate::solve;
+use crate::solver::{solve_pareto, Balance, Goal, Metric};
 use crate::system::System;
 
-use super::app::{PlanetDetail, SystemDetail};
+use super::app::{PlanetDetail, SolveMode, SolveParams, SolveResult, SystemDetail};
 
 pub enum Job {
     LoadSaves {
@@ -40,6 +41,13 @@ pub enum Job {
         time_limit: u32,
         scorer: RankScorer,
     },
+    Solve {
+        key: String,
+        system_name: String,
+        system: System,
+        balance: Balance,
+        params: SolveParams,
+    },
 }
 
 impl Job {
@@ -49,6 +57,7 @@ impl Job {
             Job::Extract { .. } => "extracting save",
             Job::LoadSystems { .. } => "loading systems",
             Job::Rank { .. } => "ranking systems",
+            Job::Solve { .. } => "solving system",
         }
     }
 }
@@ -75,6 +84,10 @@ pub enum JobOutput {
         details: HashMap<String, SystemDetail>,
     },
     RankComplete(Vec<RankRow>),
+    SolveComplete {
+        key: String,
+        result: SolveResult,
+    },
 }
 
 pub struct JobRunner {
@@ -144,6 +157,8 @@ impl Default for JobRunner {
 }
 
 fn run_job(job: Job, tx: Sender<JobEvent>) {
+    crate::cpu_affinity::prefer_performance_cores();
+
     let result = match job {
         Job::LoadSaves {
             db_path,
@@ -163,6 +178,13 @@ fn run_job(job: Job, tx: Sender<JobEvent>) {
             time_limit,
             scorer,
         } => rank(systems, names, balance, horizon, time_limit, scorer, &tx),
+        Job::Solve {
+            key,
+            system_name,
+            system,
+            balance,
+            params,
+        } => solve_job(key, system_name, system, balance, params, &tx),
     };
 
     match result {
@@ -325,4 +347,57 @@ fn rank(
         },
     );
     Ok(JobOutput::RankComplete(rows))
+}
+
+fn solve_job(
+    key: String,
+    system_name: String,
+    system: System,
+    balance: Balance,
+    params: SolveParams,
+    tx: &Sender<JobEvent>,
+) -> Result<JobOutput, String> {
+    let _ = tx.send(JobEvent::Progress(format!(
+        "solving {system_name}; budget is advisory, cancel detaches only"
+    )));
+    let result = match params.mode {
+        SolveMode::Pareto => SolveResult::Pareto(solve_pareto(
+            &system,
+            &balance,
+            params.horizon,
+            params.time_limit,
+        )),
+        SolveMode::Goal => {
+            let goal = Goal::new(
+                params.goal_income,
+                Some(params.goal_defense),
+                Some(params.goal_stability),
+            );
+            SolveResult::Goal(solve::solve_goal(&system, &balance, &goal, params.time_limit))
+        }
+        SolveMode::Maximize => {
+            let floors = match params.maximize_metric {
+                Metric::Income => Goal::new(
+                    f64::NEG_INFINITY,
+                    Some(params.floor_defense),
+                    Some(params.floor_stability),
+                ),
+                Metric::Defense => Goal::new(
+                    params.floor_income,
+                    None,
+                    Some(params.floor_stability),
+                ),
+                Metric::Stability => Goal::new(params.floor_income, Some(params.floor_defense), None),
+            };
+            SolveResult::Maximize(solve::solve_maximize(
+                &system,
+                &balance,
+                params.maximize_metric,
+                &floors,
+                params.horizon,
+                params.time_limit,
+            ))
+        }
+    };
+    Ok(JobOutput::SolveComplete { key, result })
 }

@@ -5,6 +5,9 @@ use std::time::{Duration, Instant};
 use crate::extract::db::{InfraRowDb, PlanetRowDb, SaveRow, SystemDiscovery};
 use crate::extract::model::SaveInfo;
 use crate::rank::{peak_income, sort_rows_best_first, RankRow, RankScorer};
+use crate::solve::SolveOutcome;
+use crate::solver::pareto::{FrontierKind, ParetoPoint, ParetoSolve};
+use crate::solver::{Action, Metric};
 use crate::system::System;
 
 use super::config::{BalanceSignature, DiscoveryDefinition, TuiConfig};
@@ -20,6 +23,8 @@ pub enum Screen {
     Saves,
     Rank,
     System,
+    Solve,
+    Plan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +73,89 @@ pub enum ScopeMode {
     All,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolveMode {
+    Pareto,
+    Goal,
+    Maximize,
+}
+
+impl SolveMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SolveMode::Pareto => "Pareto",
+            SolveMode::Goal => "Goal",
+            SolveMode::Maximize => "Maximize",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolveFocus {
+    Parameters,
+    Results,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SolveParams {
+    pub mode: SolveMode,
+    pub goal_income: f64,
+    pub goal_stability: i32,
+    pub goal_defense: f64,
+    pub maximize_metric: Metric,
+    pub floor_income: f64,
+    pub floor_stability: i32,
+    pub floor_defense: f64,
+    pub horizon: i32,
+    pub time_limit: u32,
+}
+
+impl SolveParams {
+    pub fn from_config(config: &TuiConfig) -> Self {
+        Self {
+            mode: SolveMode::Pareto,
+            goal_income: 200_000.0,
+            goal_stability: 8,
+            goal_defense: 0.0,
+            maximize_metric: Metric::Income,
+            floor_income: 0.0,
+            floor_stability: 0,
+            floor_defense: 0.0,
+            horizon: config.horizon_months,
+            time_limit: config.solver_time_budget_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum SolveResult {
+    Pareto(ParetoSolve),
+    Goal(Option<SolveOutcome>),
+    Maximize(Option<SolveOutcome>),
+}
+
+#[derive(Debug, Clone)]
+pub struct SolveCacheEntry {
+    pub key: String,
+    pub result: SolveResult,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlanActionRow {
+    pub month: i32,
+    pub action_index: usize,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlanState {
+    pub header: String,
+    pub actions: Vec<Action>,
+    pub rows: Vec<PlanActionRow>,
+    pub checked: Vec<bool>,
+    pub selection: usize,
+}
+
 pub struct App {
     pub config: TuiConfig,
     pub active_screen: Screen,
@@ -97,11 +185,21 @@ pub struct App {
     pub settings_selection: usize,
     pub settings_editing: bool,
     pub settings_input: String,
+    pub solve_params: SolveParams,
+    pub solve_focus: SolveFocus,
+    pub solve_param_selection: usize,
+    pub solve_result_selection: usize,
+    pub solve_result: Option<SolveResult>,
+    pub solve_cache: Vec<SolveCacheEntry>,
+    pub editing_solve_param: bool,
+    pub solve_input: String,
+    pub plan: Option<PlanState>,
     first_rank_entry: bool,
 }
 
 impl App {
     pub fn new(config: TuiConfig, status: Option<String>) -> Self {
+        let solve_params = SolveParams::from_config(&config);
         Self {
             config,
             active_screen: Screen::Saves,
@@ -131,6 +229,15 @@ impl App {
             settings_selection: 0,
             settings_editing: false,
             settings_input: String::new(),
+            solve_params,
+            solve_focus: SolveFocus::Parameters,
+            solve_param_selection: 0,
+            solve_result_selection: 0,
+            solve_result: None,
+            solve_cache: Vec::new(),
+            editing_solve_param: false,
+            solve_input: String::new(),
+            plan: None,
             first_rank_entry: true,
         }
     }
@@ -238,6 +345,13 @@ impl App {
                     signature: self.config.balance_signature(),
                 });
                 self.status = format!("ranked {} systems", self.rank_rows.len());
+            }
+            JobOutput::SolveComplete { key, result } => {
+                self.solve_result = Some(result.clone());
+                self.solve_result_selection = 0;
+                self.solve_cache.retain(|entry| entry.key != key);
+                self.solve_cache.push(SolveCacheEntry { key, result });
+                self.status = "solve complete".to_string();
             }
         }
     }
@@ -392,6 +506,137 @@ impl App {
         }
     }
 
+    pub fn open_solve_for_selected_system(&mut self) {
+        if self.selected_system_name.is_none() {
+            self.status = "open a system first".to_string();
+            return;
+        }
+        self.active_screen = Screen::Solve;
+        self.restore_solve_cache();
+    }
+
+    pub fn current_system(&self) -> Option<&System> {
+        let name = self.selected_system_name.as_ref()?;
+        self.systems.get(name)
+    }
+
+    pub fn planet_name_map_for_selected(&self) -> HashMap<u64, String> {
+        self.current_system()
+            .map(|system| {
+                system
+                    .planets()
+                    .iter()
+                    .map(|(hash, planet)| (*hash, planet.name().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn solve_cache_key(&self) -> Option<String> {
+        Some(solve_cache_key(
+            self.selected_system_name.as_ref()?,
+            &self.solve_params,
+            &self.config.balance_signature(),
+        ))
+    }
+
+    pub fn restore_solve_cache(&mut self) {
+        if let Some(key) = self.solve_cache_key() {
+            self.solve_result = self
+                .solve_cache
+                .iter()
+                .find(|entry| entry.key == key)
+                .map(|entry| entry.result.clone());
+            self.solve_result_selection = 0;
+        }
+    }
+
+    pub fn start_solve(&mut self) {
+        let Some(system_name) = self.selected_system_name.clone() else {
+            self.status = "open a system first".to_string();
+            return;
+        };
+        let Some(system) = self.systems.get(&system_name).cloned() else {
+            self.status = "selected system is not loaded".to_string();
+            return;
+        };
+        let Some(key) = self.solve_cache_key() else {
+            self.status = "open a system first".to_string();
+            return;
+        };
+        self.start_job(Job::Solve {
+            key,
+            system_name,
+            system,
+            balance: self.config.balance(),
+            params: self.solve_params.clone(),
+        });
+    }
+
+    pub fn open_plan(&mut self) {
+        let Some((header, actions)) = self.selected_plan_actions() else {
+            self.status = "no plan to open".to_string();
+            return;
+        };
+        let planet_names = self.planet_name_map_for_selected();
+        let rows = group_plan_actions(&actions, &planet_names);
+        self.plan = Some(PlanState {
+            header,
+            checked: vec![false; rows.len()],
+            actions,
+            rows,
+            selection: 0,
+        });
+        self.active_screen = Screen::Plan;
+    }
+
+    fn selected_plan_actions(&self) -> Option<(String, Vec<Action>)> {
+        let system_name = self.selected_system_name.as_ref()?;
+        match self.solve_result.as_ref()? {
+            SolveResult::Pareto(solve) => {
+                let points = pareto_points(solve);
+                let point = points.get(self.solve_result_selection)?;
+                Some((
+                    format!(
+                        "{} · {} floor {:.0} -> income {:.0}, stability {:.1}, defense {:.1}, month {}",
+                        system_name,
+                        point.kind.as_str(),
+                        point.floor,
+                        point.income,
+                        point.stability,
+                        point.defense,
+                        point.months
+                    ),
+                    point.actions.clone(),
+                ))
+            }
+            SolveResult::Goal(Some(outcome)) => Some((
+                format!(
+                    "{} · goal -> income {:.0}, stability {:.1}, defense {:.1}, month {}",
+                    system_name,
+                    outcome.achieved_income,
+                    outcome.achieved_stability,
+                    outcome.achieved_defense,
+                    outcome.months
+                ),
+                outcome.actions.clone(),
+            )),
+            SolveResult::Maximize(Some(outcome)) => Some((
+                format!(
+                    "{} · maximize {} -> income {:.0}, stability {:.1}, defense {:.1}, month {}",
+                    system_name,
+                    self.solve_params.maximize_metric.as_str(),
+                    outcome.achieved_income,
+                    outcome.achieved_stability,
+                    outcome.achieved_defense,
+                    outcome.months
+                ),
+                outcome.actions.clone(),
+            )),
+            _ => None,
+        }
+    }
+
     pub fn export_rank_csv(&mut self) {
         let rows = self.visible_rank_rows();
         let mut out = String::from("system,score,peak_income,seconds\n");
@@ -477,6 +722,55 @@ pub fn estimate_rank_cost(system_count: usize, scorer: RankScorer) -> Duration {
         RankScorer::Template => TEMPLATE_SECONDS_PER_SYSTEM,
     };
     Duration::from_secs_f64(system_count as f64 * seconds)
+}
+
+pub fn solve_cache_key(
+    system_name: &str,
+    params: &SolveParams,
+    balance: &BalanceSignature,
+) -> String {
+    format!(
+        "{system_name}|{:?}|{}|{}|{}|{:?}|{}|{}|{}|{}|{}|{:?}",
+        params.mode,
+        params.goal_income.to_bits(),
+        params.goal_stability,
+        params.goal_defense.to_bits(),
+        params.maximize_metric,
+        params.floor_income.to_bits(),
+        params.floor_stability,
+        params.floor_defense.to_bits(),
+        params.horizon,
+        params.time_limit,
+        balance
+    )
+}
+
+pub fn group_plan_actions(
+    actions: &[Action],
+    planet_names: &HashMap<u64, String>,
+) -> Vec<PlanActionRow> {
+    let mut month = 0;
+    let mut rows = Vec::new();
+    for (index, action) in actions.iter().enumerate() {
+        match action {
+            Action::Wait(months) => month += *months as i32,
+            _ => rows.push(PlanActionRow {
+                month,
+                action_index: index,
+                text: crate::solver::state::format_action(action, planet_names),
+            }),
+        }
+    }
+    rows
+}
+
+pub fn pareto_points(solve: &ParetoSolve) -> Vec<ParetoPoint> {
+    solve
+        .stability_frontier
+        .iter()
+        .chain(solve.defense_frontier.iter())
+        .cloned()
+        .collect()
 }
 
 pub fn format_duration(duration: Duration) -> String {

@@ -3,7 +3,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::Frame;
 
-use super::super::app::{App, Screen};
+use super::super::app::{App, Modal, Screen};
 use super::selected_style;
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -149,7 +149,8 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
             app.system_planet_selection = app.system_planet_selection.saturating_sub(1)
         }
         KeyCode::Char('b') => app.active_screen = Screen::Rank,
-        KeyCode::Char('s') => app.status = "Solve arrives in M2".to_string(),
+        KeyCode::Char('s') => app.open_solve_for_selected_system(),
+        KeyCode::Char('S') => app.modal = Some(Modal::Settings),
         KeyCode::Char('/') => {
             app.editing_filter = true;
             app.rank_filter.clear();

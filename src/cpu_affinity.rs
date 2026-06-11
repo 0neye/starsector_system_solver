@@ -228,6 +228,6 @@ mod imp {
     pub(super) fn prefer_performance_cores() {}
 }
 
-pub(crate) fn prefer_performance_cores() {
+pub fn prefer_performance_cores() {
     imp::prefer_performance_cores();
 }

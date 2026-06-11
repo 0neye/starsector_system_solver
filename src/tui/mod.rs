@@ -87,7 +87,12 @@ fn handle_key(app: &mut App, code: KeyCode) {
         }
     }
 
-    if app.editing_filter {
+    if app.editing_filter || app.editing_solve_param {
+        route_screen_key(app, code);
+        return;
+    }
+
+    if app.active_screen == Screen::System && matches!(code, KeyCode::Char('s') | KeyCode::Char('S')) {
         route_screen_key(app, code);
         return;
     }
@@ -114,14 +119,24 @@ fn handle_key(app: &mut App, code: KeyCode) {
                 app.status = "open a ranked system first".to_string();
             }
         }
-        KeyCode::Char('4') | KeyCode::Char('5') => {
-            app.status = "Solve/Plan arrive in M2".to_string();
+        KeyCode::Char('4') => {
+            app.active_screen = Screen::Solve;
+            app.restore_solve_cache();
+        }
+        KeyCode::Char('5') => {
+            if app.plan.is_some() {
+                app.active_screen = Screen::Plan;
+            } else {
+                app.status = "open a plan from Solve first".to_string();
+            }
         }
         KeyCode::Char('x') if app.job.is_running() => app.cancel_job(),
         KeyCode::Esc => match app.active_screen {
             Screen::Saves => {}
             Screen::Rank => app.active_screen = Screen::Saves,
             Screen::System => app.active_screen = Screen::Rank,
+            Screen::Solve => app.active_screen = Screen::System,
+            Screen::Plan => app.active_screen = Screen::Solve,
         },
         _ => route_screen_key(app, code),
     }
@@ -132,6 +147,8 @@ fn route_screen_key(app: &mut App, code: KeyCode) {
         Screen::Saves => screens::saves::handle_key(app, code),
         Screen::Rank => screens::rank::handle_key(app, code),
         Screen::System => screens::system::handle_key(app, code),
+        Screen::Solve => screens::solve::handle_key(app, code),
+        Screen::Plan => screens::plan::handle_key(app, code),
     }
 }
 

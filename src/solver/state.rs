@@ -23,6 +23,69 @@ pub enum Action {
     Wait(u32),                         // number of months
 }
 
+pub fn format_action(action: &Action, planet_names: &HashMap<u64, String>) -> String {
+    match action {
+        Action::AddFacility(planet_hash, facility_type) => format!(
+            "Build {} on {}",
+            title_case(facility_type.as_str()),
+            planet_name(*planet_hash, planet_names)
+        ),
+        Action::AddImprovement(planet_hash, facility_type) => format!(
+            "Improve {} on {}",
+            title_case(facility_type.as_str()),
+            planet_name(*planet_hash, planet_names)
+        ),
+        Action::AddAlphaCore(planet_hash, facility_type) => format!(
+            "Install alpha core in {} on {}",
+            title_case(facility_type.as_str()),
+            planet_name(*planet_hash, planet_names)
+        ),
+        Action::InstallItem(planet_hash, facility_type, item) => format!(
+            "Install {} in {} on {}",
+            title_case(item.name()),
+            title_case(facility_type.as_str()),
+            planet_name(*planet_hash, planet_names)
+        ),
+        Action::SetFreePort(planet_hash, enabled) => format!(
+            "{} free port on {}",
+            if *enabled { "Enable" } else { "Disable" },
+            planet_name(*planet_hash, planet_names)
+        ),
+        Action::SetHazardPay(planet_hash, enabled) => format!(
+            "{} hazard pay on {}",
+            if *enabled { "Enable" } else { "Disable" },
+            planet_name(*planet_hash, planet_names)
+        ),
+        Action::UpgradeAdmin(planet_hash) => {
+            format!("Install alpha-core administrator on {}", planet_name(*planet_hash, planet_names))
+        }
+        Action::BuildMakeshiftCommRelay => "Build makeshift comm relay".to_string(),
+        Action::Colonize(planet_hash) => format!("Colonize {}", planet_name(*planet_hash, planet_names)),
+        Action::Wait(months) => format!("Wait {} {}", months, if *months == 1 { "month" } else { "months" }),
+    }
+}
+
+fn planet_name(planet_hash: u64, planet_names: &HashMap<u64, String>) -> String {
+    planet_names
+        .get(&planet_hash)
+        .cloned()
+        .unwrap_or_else(|| planet_hash.to_string())
+}
+
+fn title_case(input: &str) -> String {
+    input
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 impl Action {
     /// Custom hasher implementation for speed with better collision resistance
     pub fn get_hash(&self) -> u64 {

@@ -3,12 +3,19 @@ use std::time::Duration;
 
 use crate::extract::db::{SaveRow, SystemDiscovery};
 use crate::rank::{RankRow, RankScorer};
+use crate::solve::{solve_goal, solve_maximize};
+use crate::solver::state::format_action;
 use crate::solver::pareto::ParetoSolve;
+use crate::solver::{Action, Goal, Metric};
 use crate::system::System;
 use crate::tui::app::{
-    estimate_rank_cost, filter_scope, format_system_time, App, RankCache, ScopeMode,
+    estimate_rank_cost, filter_scope, format_system_time, group_plan_actions, solve_cache_key,
+    App, RankCache, ScopeMode, SolveMode, SolveParams,
 };
 use crate::tui::config::{DiscoveryDefinition, TuiConfig};
+use crate::constants::{ColonyItem, FacilityType};
+
+use super::support::{rich_balance, single_planet_system, PlanetBuilder};
 
 fn discovery(
     name: &str,
@@ -44,6 +51,88 @@ fn rank_row(system: &str, score: f64) -> RankRow {
         solve: solve_with_score(score),
         seconds: 0.1,
     }
+}
+
+#[test]
+fn tui_action_formatter_covers_every_action_variant() {
+    let planet = PlanetBuilder::new("Corvus II");
+    let hash = planet.name_hash();
+    let names = std::collections::HashMap::from([(hash, "Corvus II".to_string())]);
+
+    assert_eq!(
+        format_action(&Action::Colonize(hash), &names),
+        "Colonize Corvus II"
+    );
+    assert_eq!(
+        format_action(&Action::AddFacility(hash, FacilityType::Megaport), &names),
+        "Build Megaport on Corvus II"
+    );
+    assert_eq!(
+        format_action(&Action::InstallItem(hash, FacilityType::HeavyIndustry, ColonyItem::CorruptedNanoforge), &names),
+        "Install Corrupted Nanoforge in Heavy Industry on Corvus II"
+    );
+    assert_eq!(
+        format_action(&Action::AddImprovement(hash, FacilityType::Megaport), &names),
+        "Improve Megaport on Corvus II"
+    );
+    assert_eq!(
+        format_action(&Action::AddAlphaCore(hash, FacilityType::Megaport), &names),
+        "Install alpha core in Megaport on Corvus II"
+    );
+    assert_eq!(
+        format_action(&Action::SetFreePort(hash, true), &names),
+        "Enable free port on Corvus II"
+    );
+    assert_eq!(
+        format_action(&Action::SetFreePort(hash, false), &names),
+        "Disable free port on Corvus II"
+    );
+    assert_eq!(
+        format_action(&Action::SetHazardPay(hash, true), &names),
+        "Enable hazard pay on Corvus II"
+    );
+    assert_eq!(
+        format_action(&Action::SetHazardPay(hash, false), &names),
+        "Disable hazard pay on Corvus II"
+    );
+    assert_eq!(
+        format_action(&Action::UpgradeAdmin(hash), &names),
+        "Install alpha-core administrator on Corvus II"
+    );
+    assert_eq!(
+        format_action(&Action::BuildMakeshiftCommRelay, &names),
+        "Build makeshift comm relay"
+    );
+    assert_eq!(format_action(&Action::Wait(3), &names), "Wait 3 months");
+    assert_eq!(
+        format_action(&Action::Colonize(99), &names),
+        "Colonize 99"
+    );
+}
+
+#[test]
+fn tui_plan_grouping_folds_waits_into_month_headers() {
+    let planet = PlanetBuilder::new("Corvus II");
+    let hash = planet.name_hash();
+    let names = std::collections::HashMap::from([(hash, "Corvus II".to_string())]);
+    let rows = group_plan_actions(
+        &[
+            Action::Colonize(hash),
+            Action::Wait(3),
+            Action::AddFacility(hash, FacilityType::Megaport),
+            Action::Wait(2),
+            Action::AddImprovement(hash, FacilityType::Megaport),
+        ],
+        &names,
+    );
+
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].month, 0);
+    assert_eq!(rows[0].text, "Colonize Corvus II");
+    assert_eq!(rows[1].month, 3);
+    assert_eq!(rows[1].text, "Build Megaport on Corvus II");
+    assert_eq!(rows[2].month, 5);
+    assert_eq!(rows[2].text, "Improve Megaport on Corvus II");
 }
 
 #[test]
@@ -126,6 +215,41 @@ fn tui_mark_rank_stale_marks_existing_caches() {
 
     assert!(app.rank_cache[0].stale);
     assert!(app.status.contains("scores are stale"));
+}
+
+#[test]
+fn tui_solve_cache_key_includes_mode_params_and_balance() {
+    let config = TuiConfig::default();
+    let mut params = SolveParams::from_config(&config);
+    let base = solve_cache_key("Alpha", &params, &config.balance_signature());
+
+    params.mode = SolveMode::Goal;
+    let changed_mode = solve_cache_key("Alpha", &params, &config.balance_signature());
+    params.goal_income += 1.0;
+    let changed_param = solve_cache_key("Alpha", &params, &config.balance_signature());
+
+    let mut changed_config = config.clone();
+    changed_config.credits += 1.0;
+    let changed_balance = solve_cache_key("Alpha", &params, &changed_config.balance_signature());
+
+    assert_ne!(base, changed_mode);
+    assert_ne!(changed_mode, changed_param);
+    assert_ne!(changed_param, changed_balance);
+}
+
+#[test]
+fn solve_wrappers_replay_tiny_fixture_results() {
+    let system = single_planet_system(PlanetBuilder::new("Tiny I").build());
+    let balance = rich_balance();
+
+    let goal = Goal::new(0.0, None, None);
+    let goal_outcome = solve_goal(&system, &balance, &goal, 1).expect("goal should be reachable");
+    assert!(goal_outcome.achieved_income >= 0.0);
+
+    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(0));
+    let max_outcome = solve_maximize(&system, &balance, Metric::Income, &floors, 1, 1)
+        .expect("maximize should return a tiny result");
+    assert!(max_outcome.months >= 0);
 }
 
 #[test]

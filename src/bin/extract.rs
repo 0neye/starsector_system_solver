@@ -13,6 +13,8 @@ struct Cli {
 }
 
 fn main() {
+    system_solver::cpu_affinity::prefer_performance_cores();
+
     let cli = Cli::parse();
     if let Err(err) = run(cli.command) {
         eprintln!("{err}");

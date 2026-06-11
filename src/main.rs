@@ -4,6 +4,7 @@ mod extract;
 mod parser;
 mod planet;
 mod rank;
+mod solve;
 mod solver;
 mod system;
 mod tui;
@@ -189,9 +190,21 @@ fn test_solver(mut state: State, goal: &Goal, time_limit: u32) {
     }
 }
 
-fn print_action_log(actions: &[Action]) {
+fn planet_name_map(system: &System) -> HashMap<u64, String> {
+    system
+        .planets()
+        .iter()
+        .map(|(hash, planet)| (*hash, planet.name().to_string()))
+        .collect()
+}
+
+fn print_action_log(actions: &[Action], planet_names: &HashMap<u64, String>) {
     for (i, action) in actions.iter().enumerate() {
-        println!("    {:>2}. {:?}", i + 1, action);
+        println!(
+            "    {:>2}. {}",
+            i + 1,
+            solver::state::format_action(action, planet_names)
+        );
     }
 }
 
@@ -243,7 +256,7 @@ fn run_solve(system_name: &str, system: &System, balance: &Balance, horizon: i32
             point.months,
         );
         println!("Action sequence:");
-        print_action_log(&point.actions);
+        print_action_log(&point.actions, &planet_name_map(system));
     } else {
         println!("\nNo feasible Pareto point found within the time budget.");
     }
@@ -604,6 +617,8 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
         let defense_relaxed = relaxed.clone();
         let (stab_tail, def_pairs) = std::thread::scope(|scope| {
             let stability_handle = scope.spawn(move || {
+                cpu_affinity::prefer_performance_cores();
+
                 let mut points = Vec::new();
                 for stab in STABILITY_FLOORS.iter().copied().skip(1) {
                     let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stab));
@@ -626,6 +641,8 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
                 points
             });
             let defense_handle = scope.spawn(move || {
+                cpu_affinity::prefer_performance_cores();
+
                 let mut points = Vec::new();
                 for def_floor in DEFENSE_FLOORS {
                     let floors = Goal::new(f64::NEG_INFINITY, Some(def_floor), Some(0));
@@ -924,6 +941,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             let defense_balance = base_balance.clone();
             let (stability_tail, defense_points) = std::thread::scope(|scope| {
                 let stability_handle = scope.spawn(move || {
+                    cpu_affinity::prefer_performance_cores();
+
                     let mut warm = stability_warm;
                     let mut points = Vec::new();
                     for stab in STABILITY_FLOORS.iter().copied().skip(1) {
@@ -945,6 +964,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 });
 
                 let defense_handle = scope.spawn(move || {
+                    cpu_affinity::prefer_performance_cores();
+
                     let mut warm = defense_initial_warm;
                     let mut points = Vec::new();
                     for def_floor in DEFENSE_FLOORS {

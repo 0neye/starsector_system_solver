@@ -106,4 +106,3 @@ pub struct BalanceSignature {
     horizon_months: i32,
     solver_time_budget_ms: u32,
 }
-
