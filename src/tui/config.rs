@@ -27,8 +27,14 @@ pub struct TuiConfig {
     pub solver_time_budget_ms: u32,
     pub discovery_definition: DiscoveryDefinition,
     pub include_core_worlds: bool,
+    #[serde(default = "default_rank_by_score_per_planet")]
+    pub rank_by_score_per_planet: bool,
     pub db_path: PathBuf,
     pub starsector_dir: Option<PathBuf>,
+}
+
+fn default_rank_by_score_per_planet() -> bool {
+    true
 }
 
 impl Default for TuiConfig {
@@ -42,6 +48,7 @@ impl Default for TuiConfig {
             solver_time_budget_ms: 25_000,
             discovery_definition: DiscoveryDefinition::AtLeastOneSurveyed,
             include_core_worlds: false,
+            rank_by_score_per_planet: true,
             db_path: PathBuf::from(DEFAULT_DB_PATH),
             starsector_dir: None,
         }

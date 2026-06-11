@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
-use crate::rank::{peak_income, RankScorer};
+use crate::rank::{peak_income, score_per_planet, RankScorer};
 
 use super::super::app::{estimate_rank_cost, format_duration, App, Modal, ScopeMode};
 use super::selected_style;
@@ -14,7 +14,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let total = app.systems.len();
     let scope_count = app.visible_scope_names().len();
     let header = format!(
-        "Rank{} · scope: {} ({} of {}) · scorer: {:?} · {}",
+        "Rank{} · scope: {} ({} of {}) · scorer: {:?} · sort: {} · {}",
         if app.rank_rows_stale {
             " [STALE - r to re-rank]"
         } else {
@@ -27,6 +27,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         scope_count,
         total,
         app.scorer,
+        if app.config.rank_by_score_per_planet {
+            "score/planet"
+        } else {
+            "score"
+        },
         if visible.is_empty() {
             format!(
                 "press r to rank ~{} systems (~{})",
@@ -42,8 +47,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         rows.push(Row::new(vec![
             Cell::from((idx + 1).to_string()),
             Cell::from(row.system.clone()),
-            Cell::from(planet_count(app, &row.system)),
+            Cell::from(row.planet_count.to_string()),
             Cell::from(format!("{:.1}", row.solve.score)),
+            Cell::from(format!("{:.1}", score_per_planet(row))),
             Cell::from(format!("{:.0}", peak_income(&row.solve))),
             Cell::from(format!("{:.1}s", row.seconds)),
         ]));
@@ -58,6 +64,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Constraint::Percentage(45),
             Constraint::Length(8),
             Constraint::Length(10),
+            Constraint::Length(12),
             Constraint::Length(14),
             Constraint::Length(9),
         ],
@@ -67,6 +74,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         "system",
         "planets",
         "score",
+        "score/pl",
         "peak income",
         "time",
     ]))
@@ -158,22 +166,6 @@ pub fn handle_scorer_key(app: &mut App, code: KeyCode) {
         }
         _ => {}
     }
-}
-
-/// Planet count for a ranked system: the loaded solver `System` is
-/// authoritative; fall back to the extraction discovery row.
-fn planet_count(app: &App, system: &str) -> String {
-    app.systems
-        .get(system)
-        .map(|sys| sys.planets().len())
-        .or_else(|| {
-            app.discovery
-                .iter()
-                .find(|row| row.system_name == system)
-                .map(|row| row.planet_count as usize)
-        })
-        .map(|count| count.to_string())
-        .unwrap_or_else(|| "-".to_string())
 }
 
 fn cycle_scope(app: &mut App) {

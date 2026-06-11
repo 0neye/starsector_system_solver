@@ -46,8 +46,13 @@ fn solve_with_score(score: f64) -> ParetoSolve {
 }
 
 fn rank_row(system: &str, score: f64) -> RankRow {
+    rank_row_with_planets(system, score, 1)
+}
+
+fn rank_row_with_planets(system: &str, score: f64, planet_count: usize) -> RankRow {
     RankRow {
         system: system.to_string(),
+        planet_count,
         solve: solve_with_score(score),
         seconds: 0.1,
     }
@@ -210,6 +215,7 @@ fn tui_mark_rank_stale_marks_existing_caches() {
         scorer: RankScorer::Quick,
         rows: vec![RankRow {
             system: "Alpha".to_string(),
+            planet_count: 1,
             solve: ParetoSolve {
                 stability_frontier: Vec::new(),
                 defense_frontier: Vec::new(),
@@ -243,6 +249,7 @@ fn tui_rank_rows_stale_indicator_tracks_displayed_rows() {
 
     app.rank_rows.push(RankRow {
         system: "Alpha".to_string(),
+        planet_count: 1,
         solve: ParetoSolve {
             stability_frontier: Vec::new(),
             defense_frontier: Vec::new(),
@@ -255,6 +262,31 @@ fn tui_rank_rows_stale_indicator_tracks_displayed_rows() {
     });
     app.mark_rank_stale();
     assert!(app.rank_rows_stale);
+}
+
+#[test]
+fn tui_rank_sort_defaults_to_score_per_planet_and_toggle_uses_total_score() {
+    let config = TuiConfig::default();
+    let mut app = App::new(config, None);
+    app.systems
+        .insert("Wide".to_string(), System::new("Wide".to_string()));
+    app.systems
+        .insert("Focused".to_string(), System::new("Focused".to_string()));
+    app.discovery = vec![
+        discovery("Wide", 4, 1, 1, false),
+        discovery("Focused", 1, 1, 1, false),
+    ];
+    app.rank_rows = vec![
+        rank_row_with_planets("Wide", 20.0, 4),
+        rank_row_with_planets("Focused", 8.0, 1),
+    ];
+
+    let visible = app.visible_rank_rows();
+    assert_eq!(visible[0].system, "Focused");
+
+    app.config.rank_by_score_per_planet = false;
+    let visible = app.visible_rank_rows();
+    assert_eq!(visible[0].system, "Wide");
 }
 
 #[test]

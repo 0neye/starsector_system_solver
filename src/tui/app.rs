@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::extract::db::{InfraRowDb, PlanetRowDb, SaveRow, SystemDiscovery};
 use crate::extract::model::SaveInfo;
-use crate::rank::{peak_income, sort_rows_best_first, RankRow, RankScorer};
+use crate::rank::{peak_income, sort_rows_best_first, RankRow, RankScorer, RankSortMode};
 use crate::solve::SolveOutcome;
 use crate::solver::pareto::{FrontierKind, ParetoPoint, ParetoSolve};
 use crate::solver::{Action, Metric};
@@ -481,7 +481,7 @@ impl App {
             .filter(|row| filter.is_empty() || row.system.to_lowercase().contains(&filter))
             .cloned()
             .collect();
-        sort_rows_best_first(&mut rows);
+        sort_rows_best_first(&mut rows, self.rank_sort_mode());
         rows
     }
 
@@ -494,7 +494,8 @@ impl App {
         self.rank_rows
             .retain(|existing| existing.system != row.system);
         self.rank_rows.push(row);
-        sort_rows_best_first(&mut self.rank_rows);
+        let mode = self.rank_sort_mode();
+        sort_rows_best_first(&mut self.rank_rows, mode);
         if let Some(name) = selected {
             let rows = self.visible_rank_rows();
             if let Some(index) = rows.iter().position(|row| row.system == name) {
@@ -564,6 +565,14 @@ impl App {
         }
         self.rank_rows_stale = !self.rank_rows.is_empty();
         self.status = "scores are stale (balance changed) - r to re-rank".to_string();
+    }
+
+    pub fn rank_sort_mode(&self) -> RankSortMode {
+        if self.config.rank_by_score_per_planet {
+            RankSortMode::ScorePerPlanet
+        } else {
+            RankSortMode::TotalScore
+        }
     }
 
     pub fn open_selected_system(&mut self) {
@@ -709,12 +718,14 @@ impl App {
 
     pub fn export_rank_csv(&mut self) {
         let rows = self.visible_rank_rows();
-        let mut out = String::from("system,score,peak_income,seconds\n");
+        let mut out = String::from("system,planets,score,score_per_planet,peak_income,seconds\n");
         for row in &rows {
             out.push_str(&format!(
-                "{},{:.3},{:.0},{:.2}\n",
+                "{},{},{:.3},{:.3},{:.0},{:.2}\n",
                 row.system,
+                row.planet_count,
                 row.solve.score,
+                crate::rank::score_per_planet(row),
                 peak_income(&row.solve),
                 row.seconds
             ));

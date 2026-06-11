@@ -21,8 +21,15 @@ pub enum RankScorer {
 #[derive(Debug, Clone)]
 pub struct RankRow {
     pub system: String,
+    pub planet_count: usize,
     pub solve: ParetoSolve,
     pub seconds: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RankSortMode {
+    ScorePerPlanet,
+    TotalScore,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,13 +72,27 @@ pub fn filter_system_names<'a>(
 }
 
 /// Best-first ordering used by both CLI and TUI rank presenters.
-pub fn sort_rows_best_first(rows: &mut [RankRow]) {
+pub fn sort_rows_best_first(rows: &mut [RankRow], mode: RankSortMode) {
     rows.sort_by(|a, b| {
-        b.solve
-            .score
-            .total_cmp(&a.solve.score)
+        rank_value(b, mode)
+            .total_cmp(&rank_value(a, mode))
             .then_with(|| a.system.cmp(&b.system))
     });
+}
+
+pub fn score_per_planet(row: &RankRow) -> f64 {
+    if row.planet_count == 0 {
+        0.0
+    } else {
+        row.solve.score / row.planet_count as f64
+    }
+}
+
+fn rank_value(row: &RankRow, mode: RankSortMode) -> f64 {
+    match mode {
+        RankSortMode::ScorePerPlanet => score_per_planet(row),
+        RankSortMode::TotalScore => row.solve.score,
+    }
 }
 
 /// Score selected systems in display order while exposing each finished row to
@@ -102,6 +123,7 @@ pub fn rank_systems(
         let solve = scorer_fn(&systems[*name], balance, horizon, time_limit);
         let row = RankRow {
             system: (*name).clone(),
+            planet_count: systems[*name].planets().len(),
             solve,
             seconds: t0.elapsed().as_secs_f64(),
         };
@@ -109,6 +131,6 @@ pub fn rank_systems(
         rows.push(row);
     }
 
-    sort_rows_best_first(&mut rows);
+    sort_rows_best_first(&mut rows, RankSortMode::ScorePerPlanet);
     rows
 }

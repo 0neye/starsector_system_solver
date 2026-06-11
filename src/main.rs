@@ -12,7 +12,7 @@ mod utils;
 
 use clap::{Parser, Subcommand};
 use planet::Planet;
-use rank::{filter_system_names, peak_income, rank_systems, RankScorer};
+use rank::{filter_system_names, peak_income, rank_systems, score_per_planet, RankScorer};
 use solver::{
     diagnose_maximize_gap, search_system_decomp, search_system_maximize, solve_pareto, Balance,
     Goal, Metric, State,
@@ -297,8 +297,11 @@ fn run_rank(
         scorer,
         &mut |row| {
             eprintln!(
-                "  [{}] score {:.1} in {:.1}s",
-                row.system, row.solve.score, row.seconds
+                "  [{}] score {:.1} ({:.1}/planet) in {:.1}s",
+                row.system,
+                row.solve.score,
+                score_per_planet(row),
+                row.seconds
             );
         },
     );
@@ -318,15 +321,17 @@ fn run_rank(
     }
 
     println!(
-        "\n#   {:<24} {:>8}  {:>12}  {:>7}",
-        "system", "score", "peak income", "time"
+        "\n#   {:<24} {:>7}  {:>8}  {:>10}  {:>12}  {:>7}",
+        "system", "planets", "score", "score/pl", "peak income", "time"
     );
     for (i, row) in ranked.iter().enumerate() {
         println!(
-            "{:<3} {:<24} {:>8.1}  {:>12.0}  {:>6.1}s",
+            "{:<3} {:<24} {:>7}  {:>8.1}  {:>10.1}  {:>12.0}  {:>6.1}s",
             i + 1,
             row.system,
+            row.planet_count,
             row.solve.score,
+            score_per_planet(row),
             peak_income(&row.solve),
             row.seconds,
         );

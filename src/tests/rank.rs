@@ -1,7 +1,10 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use crate::rank::{filter_system_names, rank_systems, sort_rows_best_first, RankRow, RankScorer};
+use crate::rank::{
+    filter_system_names, rank_systems, score_per_planet, sort_rows_best_first, RankRow, RankScorer,
+    RankSortMode,
+};
 use crate::solver::pareto::ParetoSolve;
 use crate::system::System;
 
@@ -63,25 +66,52 @@ fn sort_rows_best_first_breaks_equal_scores_by_name() {
     let mut rows = vec![
         RankRow {
             system: "Beta".to_string(),
+            planet_count: 1,
             solve: solve_with_score(10.0),
             seconds: 0.0,
         },
         RankRow {
             system: "Gamma".to_string(),
+            planet_count: 1,
             solve: solve_with_score(11.0),
             seconds: 0.0,
         },
         RankRow {
             system: "Alpha".to_string(),
+            planet_count: 1,
             solve: solve_with_score(10.0),
             seconds: 0.0,
         },
     ];
 
-    sort_rows_best_first(&mut rows);
+    sort_rows_best_first(&mut rows, RankSortMode::TotalScore);
     let names: Vec<&str> = rows.iter().map(|row| row.system.as_str()).collect();
 
     assert_eq!(names, vec!["Gamma", "Alpha", "Beta"]);
+}
+
+#[test]
+fn sort_rows_best_first_defaults_to_score_per_planet_shape() {
+    let mut rows = vec![
+        RankRow {
+            system: "Wide".to_string(),
+            planet_count: 4,
+            solve: solve_with_score(20.0),
+            seconds: 0.0,
+        },
+        RankRow {
+            system: "Focused".to_string(),
+            planet_count: 1,
+            solve: solve_with_score(8.0),
+            seconds: 0.0,
+        },
+    ];
+
+    sort_rows_best_first(&mut rows, RankSortMode::ScorePerPlanet);
+    let names: Vec<&str> = rows.iter().map(|row| row.system.as_str()).collect();
+
+    assert_eq!(score_per_planet(&rows[0]), 8.0);
+    assert_eq!(names, vec!["Focused", "Wide"]);
 }
 
 #[test]
