@@ -1,5 +1,6 @@
 pub mod archive;
 pub mod bound;
+pub mod cancel;
 pub mod decomp;
 pub mod goal;
 pub mod pareto;

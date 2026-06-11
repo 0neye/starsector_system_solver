@@ -8,7 +8,7 @@ use crate::extract::db::{Db, SaveRow, SystemDiscovery};
 use crate::extract::gamedata::load_game_data;
 use crate::extract::locate;
 use crate::extract::mapping::map_save;
-use crate::extract::model::SaveInfo;
+use crate::extract::model::{PlayerBalance, SaveInfo};
 use crate::extract::save::{discover_saves, load_campaign_xml};
 use crate::extract::scan::scan_save;
 use crate::parser;
@@ -51,6 +51,12 @@ pub enum Job {
 }
 
 impl Job {
+    /// Jobs whose worker polls `solver::cancel` and stops cooperatively.
+    /// The others (IO-bound extraction/loading) can only be detached.
+    pub fn supports_cancel(&self) -> bool {
+        matches!(self, Job::Rank { .. } | Job::Solve { .. })
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Job::LoadSaves { .. } => "loading saves",
@@ -82,6 +88,8 @@ pub enum JobOutput {
         systems: HashMap<String, System>,
         discovery: Vec<SystemDiscovery>,
         details: HashMap<String, SystemDetail>,
+        /// Balance-from-save seed (v1.5); None on pre-balance extractions.
+        player_balance: Option<PlayerBalance>,
     },
     RankComplete(Vec<RankRow>),
     SolveComplete {
@@ -94,6 +102,8 @@ pub struct JobRunner {
     receiver: Option<Receiver<JobEvent>>,
     label: Option<&'static str>,
     started_at: Option<Instant>,
+    cancellable: bool,
+    cancelling: bool,
 }
 
 impl JobRunner {
@@ -102,16 +112,38 @@ impl JobRunner {
             receiver: None,
             label: None,
             started_at: None,
+            cancellable: false,
+            cancelling: false,
         }
     }
 
     pub fn start(&mut self, job: Job) {
+        // A previous cancel must not leak into this job's solver loops.
+        crate::solver::cancel::clear();
         let (tx, rx) = mpsc::channel();
         let label = job.label();
         self.receiver = Some(rx);
         self.label = Some(label);
         self.started_at = Some(Instant::now());
+        self.cancellable = job.supports_cancel();
+        self.cancelling = false;
         thread::spawn(move || run_job(job, tx));
+    }
+
+    /// Cooperatively cancel the running job if it supports it. Returns true
+    /// when a cancel is (already) in flight; the job stays attached until the
+    /// worker notices the flag and reports back.
+    pub fn request_cancel(&mut self) -> bool {
+        if !self.is_running() || !self.cancellable {
+            return false;
+        }
+        crate::solver::cancel::request();
+        self.cancelling = true;
+        true
+    }
+
+    pub fn is_cancelling(&self) -> bool {
+        self.cancelling
     }
 
     pub fn is_running(&self) -> bool {
@@ -133,6 +165,8 @@ impl JobRunner {
         self.receiver = None;
         self.label = None;
         self.started_at = None;
+        self.cancellable = false;
+        self.cancelling = false;
     }
 
     pub fn detach(&mut self) -> Option<&'static str> {
@@ -206,21 +240,21 @@ fn load_saves(
     let saves = match locate::resolve_starsector_dir(starsector_dir.as_deref()) {
         Ok(dir) => {
             let saves_dir = locate::default_saves_dir(&dir);
-            discover_saves(&saves_dir).map_err(|err| format!("{err}; set STARSECTOR_DIR or Setup starsector_dir"))?
+            discover_saves(&saves_dir)
+                .map_err(|err| format!("{err}; set STARSECTOR_DIR or Setup starsector_dir"))?
         }
         Err(err) => {
             if db_path.exists() {
                 Vec::new()
             } else {
-                return Err(format!(
-                    "{err}; set STARSECTOR_DIR or Setup starsector_dir"
-                ));
+                return Err(format!("{err}; set STARSECTOR_DIR or Setup starsector_dir"));
             }
         }
     };
     let extracted = if db_path.exists() {
         let db = Db::open(&db_path).map_err(|err| format!("DB unreadable: {err}"))?;
-        db.list_saves().map_err(|err| format!("DB unreadable: {err}"))?
+        db.list_saves()
+            .map_err(|err| format!("DB unreadable: {err}"))?
     } else {
         Vec::new()
     };
@@ -279,10 +313,12 @@ fn load_systems(
         .system_discovery(Some(&save))
         .map_err(|err| err.to_string())?;
     let details = load_details(&db, &save, &systems)?;
+    let player_balance = db.player_balance(Some(&save)).unwrap_or(None);
     Ok(JobOutput::Systems {
         systems,
         discovery,
         details,
+        player_balance,
     })
 }
 
@@ -358,7 +394,7 @@ fn solve_job(
     tx: &Sender<JobEvent>,
 ) -> Result<JobOutput, String> {
     let _ = tx.send(JobEvent::Progress(format!(
-        "solving {system_name}; budget is advisory, cancel detaches only"
+        "solving {system_name}; time budget is enforced, x cancels"
     )));
     let result = match params.mode {
         SolveMode::Pareto => SolveResult::Pareto(solve_pareto(
@@ -373,7 +409,12 @@ fn solve_job(
                 Some(params.goal_defense),
                 Some(params.goal_stability),
             );
-            SolveResult::Goal(solve::solve_goal(&system, &balance, &goal, params.time_limit))
+            SolveResult::Goal(solve::solve_goal(
+                &system,
+                &balance,
+                &goal,
+                params.time_limit,
+            ))
         }
         SolveMode::Maximize => {
             let floors = match params.maximize_metric {
@@ -382,12 +423,12 @@ fn solve_job(
                     Some(params.floor_defense),
                     Some(params.floor_stability),
                 ),
-                Metric::Defense => Goal::new(
-                    params.floor_income,
-                    None,
-                    Some(params.floor_stability),
-                ),
-                Metric::Stability => Goal::new(params.floor_income, Some(params.floor_defense), None),
+                Metric::Defense => {
+                    Goal::new(params.floor_income, None, Some(params.floor_stability))
+                }
+                Metric::Stability => {
+                    Goal::new(params.floor_income, Some(params.floor_defense), None)
+                }
             };
             SolveResult::Maximize(solve::solve_maximize(
                 &system,

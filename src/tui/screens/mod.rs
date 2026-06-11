@@ -96,16 +96,35 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .elapsed_job()
             .map(super::app::format_duration)
             .unwrap_or_else(|| "0s".to_string());
-        format!("{spinner} {label} · {elapsed} · {} · [x] cancel", app.status)
+        format!(
+            "{spinner} {label} · {elapsed} · {} · [x] cancel",
+            app.status
+        )
     } else if let Some(error) = &app.error {
         format!("error: {error}")
     } else {
         app.status.clone()
     };
-    frame.render_widget(Paragraph::new(text).style(Style::default().fg(Color::Yellow)), area);
+    frame.render_widget(
+        Paragraph::new(text).style(Style::default().fg(Color::Yellow)),
+        area,
+    );
 }
 
 fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    if matches!(app.modal, Some(Modal::Settings)) {
+        let text = if app.settings_editing {
+            "Type value - Enter commit - Esc cancel edit - Backspace delete"
+        } else {
+            "Enter edit/toggle - +/- item count - j/k move - Esc save+close"
+        };
+        frame.render_widget(
+            Paragraph::new(text).style(Style::default().fg(Color::Gray)),
+            area,
+        );
+        return;
+    }
+
     let text = match app.active_screen {
         Screen::Saves => "Enter activate/extract · e extract · j/k move · ? help · q quit",
         Screen::Rank => "Enter inspect · c scorer · u scope · r re-rank · / filter · x export csv",
@@ -113,7 +132,10 @@ fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Screen::Solve => "Tab focus · Enter/R run · m mode · p plan · b back · q quit",
         Screen::Plan => "Space toggle · n next unchecked · x export text · b/Esc back to solve",
     };
-    frame.render_widget(Paragraph::new(text).style(Style::default().fg(Color::Gray)), area);
+    frame.render_widget(
+        Paragraph::new(text).style(Style::default().fg(Color::Gray)),
+        area,
+    );
 }
 
 fn draw_modal(frame: &mut Frame<'_>, app: &mut App, modal: Modal) {
@@ -124,7 +146,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut App, modal: Modal) {
             let text = "Global: 1 Saves · 2 Rank · 3 System · s Setup · ? Help · q Quit\n\
                         Move: j/k or arrows · Enter drill in · Esc back/close\n\
                         Rank: r rank · c scorer · u scope · / filter · x export CSV\n\
-                        Jobs: x detaches; cooperative cancellation is v1.5";
+                        Jobs: x cancels rank/solve (extract/load detach)";
             frame.render_widget(
                 Paragraph::new(text)
                     .block(Block::default().title("Keymap").borders(Borders::ALL))
@@ -137,7 +159,11 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut App, modal: Modal) {
         Modal::SpoilerConfirm => {
             frame.render_widget(
                 Paragraph::new("Show all systems? This can reveal undiscovered save content. y/n")
-                    .block(Block::default().title("Spoiler Guard").borders(Borders::ALL)),
+                    .block(
+                        Block::default()
+                            .title("Spoiler Guard")
+                            .borders(Borders::ALL),
+                    ),
                 area,
             );
         }

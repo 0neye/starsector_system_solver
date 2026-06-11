@@ -362,8 +362,12 @@ fn decomp_maximize_mia_bravos_escapes_local_optimum() {
     let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(6));
     let run = || {
         let mut state = State::new(Balance::new(5_000_000.0, 5, 1), system.clone());
-        let result = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 5_000, true)
-            .expect("Mia Bravos can hold stability 6 while earning income");
+        // Generous budget: the time limit is now a hard deadline, and a debug
+        // build that hits it returns a machine-dependent best-effort plan,
+        // which would break the determinism assertion below.
+        let result =
+            decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 120_000, true)
+                .expect("Mia Bravos can hold stability 6 while earning income");
         let log = result
             .solution
             .expect("a successful result carries a solution");
@@ -589,5 +593,70 @@ fn generator_does_not_reoffer_lower_tiers_of_a_completed_chain() {
     assert!(
         reoffered.is_empty(),
         "lower station tiers must not be re-offered once a star fortress exists, got {reoffered:?}"
+    );
+}
+
+/// The `time_limit` argument is a hard wall-clock deadline: a maximize solve
+/// on a real multi-planet system given a tiny budget must return within
+/// seconds (seed generation/scoring plus one poll interval), not run minutes
+/// to climb convergence. Regression for the "--time-limit not enforced on
+/// large systems" bug.
+#[test]
+fn decomp_time_limit_is_a_hard_deadline() {
+    use crate::parser::load_game_data;
+    use crate::solver::state::Balance;
+    use std::time::{Duration, Instant};
+
+    let systems = load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")
+        .expect("game data CSVs load from the crate root during tests");
+    let system = systems
+        .get("Mia Bravos")
+        .expect("Mia Bravos is present in Planets.csv")
+        .clone();
+
+    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(6));
+    let mut state = State::new(Balance::new(5_000_000.0, 5, 1), system);
+    let t0 = Instant::now();
+    let _ = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 200, true);
+    // Generous slack: alone this finishes in <1s, but under `cargo test` the
+    // global rayon pool is shared with the heavy solver tests, so this test's
+    // parallel work can queue behind theirs for tens of seconds. The original
+    // bug ran *minutes* past the budget, so 120s still separates pass/fail.
+    assert!(
+        t0.elapsed() < Duration::from_secs(120),
+        "200ms-budget solve ran {:?}; the wall-clock deadline is not being enforced",
+        t0.elapsed()
+    );
+}
+
+/// Cooperative cancel must stop an in-flight search almost immediately.
+///
+/// Ignored by default: `solver::cancel` is a process-wide flag, so this test
+/// would cut off unrelated solver tests running in parallel. Run it with
+/// `cargo test decomp_cancel -- --ignored --test-threads=1`.
+#[test]
+#[ignore = "uses the process-global cancel flag; run with --ignored --test-threads=1"]
+fn decomp_cancel_stops_search() {
+    use crate::parser::load_game_data;
+    use crate::solver::state::Balance;
+    use std::time::{Duration, Instant};
+
+    let systems = load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")
+        .expect("game data CSVs load from the crate root during tests");
+    let system = systems
+        .get("Mia Bravos")
+        .expect("Mia Bravos is present in Planets.csv")
+        .clone();
+
+    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(6));
+    let mut state = State::new(Balance::new(5_000_000.0, 5, 1), system);
+    crate::solver::cancel::request();
+    let t0 = Instant::now();
+    let _ = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 600_000, true);
+    let elapsed = t0.elapsed();
+    crate::solver::cancel::clear();
+    assert!(
+        elapsed < Duration::from_secs(30),
+        "cancelled solve with a 600s budget ran {elapsed:?}; cancel is not being honored"
     );
 }

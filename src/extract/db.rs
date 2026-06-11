@@ -1,4 +1,4 @@
-//! SQLite persistence, search, and CSV export for extracted save data.
+﻿//! SQLite persistence, search, and CSV export for extracted save data.
 
 use std::collections::HashSet;
 use std::fs;
@@ -9,7 +9,7 @@ use csv::WriterBuilder;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::extract::gamedata::GameData;
-use crate::extract::model::{MappedOutput, MappedSystem, SaveInfo};
+use crate::extract::model::{MappedOutput, MappedSystem, PlayerBalance, SaveInfo};
 use crate::extract::{ExtractError, Result};
 
 pub struct Db {
@@ -166,6 +166,18 @@ impl Db {
                 vanilla_samples INTEGER,
                 PRIMARY KEY(modded_type, vanilla_type)
             );
+            CREATE TABLE IF NOT EXISTS player_balance(
+                save_id INTEGER PRIMARY KEY REFERENCES saves(id) ON DELETE CASCADE,
+                credits REAL NOT NULL,
+                story_points INTEGER NOT NULL,
+                alpha_cores INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS player_items(
+                save_id INTEGER NOT NULL REFERENCES saves(id) ON DELETE CASCADE,
+                item_id TEXT NOT NULL,
+                count INTEGER NOT NULL,
+                PRIMARY KEY(save_id, item_id)
+            );
             CREATE INDEX IF NOT EXISTS idx_systems_name ON systems(name);
             CREATE INDEX IF NOT EXISTS idx_systems_display_name ON systems(display_name);
             "#,
@@ -211,6 +223,31 @@ impl Db {
         )?;
 
         tx.execute("DELETE FROM systems WHERE save_id = ?1", params![save_id])?;
+        tx.execute(
+            "DELETE FROM player_balance WHERE save_id = ?1",
+            params![save_id],
+        )?;
+        tx.execute(
+            "DELETE FROM player_items WHERE save_id = ?1",
+            params![save_id],
+        )?;
+        if let Some(player) = &mapped.player {
+            tx.execute(
+                "INSERT INTO player_balance(save_id, credits, story_points, alpha_cores) VALUES(?1, ?2, ?3, ?4)",
+                params![
+                    save_id,
+                    player.credits,
+                    player.story_points as i64,
+                    player.alpha_cores as i64
+                ],
+            )?;
+            for (item_id, count) in &player.items {
+                tx.execute(
+                    "INSERT INTO player_items(save_id, item_id, count) VALUES(?1, ?2, ?3)",
+                    params![save_id, item_id, *count as i64],
+                )?;
+            }
+        }
         tx.execute("DELETE FROM unknown_conditions", [])?;
         tx.execute("DELETE FROM conditions", [])?;
         tx.execute("DELETE FROM planet_types", [])?;
@@ -640,6 +677,44 @@ impl Db {
             .query_map(params![planet_id], |row| row.get(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// Player balance snapshot for a save (substring match, latest by
+    /// default â€” same semantics as the other save-scoped queries). `None`
+    /// when the save predates the balance extraction or had no player data.
+    pub fn player_balance(&self, save: Option<&str>) -> Result<Option<PlayerBalance>> {
+        let save_id = self.select_save_id(save)?;
+        let row = self
+            .conn
+            .query_row(
+                "SELECT credits, story_points, alpha_cores FROM player_balance WHERE save_id = ?1",
+                params![save_id],
+                |row| {
+                    Ok((
+                        row.get::<_, f64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((credits, story_points, alpha_cores)) = row else {
+            return Ok(None);
+        };
+        let mut stmt = self.conn.prepare(
+            "SELECT item_id, count FROM player_items WHERE save_id = ?1 ORDER BY item_id",
+        )?;
+        let items = stmt
+            .query_map(params![save_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u32))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(Some(PlayerBalance {
+            credits,
+            story_points: story_points as u32,
+            alpha_cores: alpha_cores as u32,
+            items,
+        }))
     }
 
     fn select_save_id(&self, save: Option<&str>) -> Result<i64> {
@@ -1094,6 +1169,7 @@ mod tests {
 
     fn sample_output() -> MappedOutput {
         MappedOutput {
+            player: None,
             systems: vec![MappedSystem {
                 system: SystemRow {
                     name: "Alpha".to_string(),
@@ -1182,6 +1258,7 @@ mod tests {
 
     fn discovery_output() -> MappedOutput {
         MappedOutput {
+            player: None,
             systems: vec![
                 MappedSystem {
                     system: SystemRow {
@@ -1314,6 +1391,51 @@ mod tests {
         assert_eq!(fringe.surveyed_any, 1);
         assert!(!fringe.is_core);
         assert_eq!(fringe.npc_colonized_planets, 1);
+
+        let _ = fs::remove_file(&db_path);
+    }
+
+    /// player_balance/player_items must round-trip through write_extraction
+    /// (idempotently — re-extraction replaces, not duplicates) and come back
+    /// via Db::player_balance with the same substring save matching.
+    #[test]
+    fn player_balance_round_trips() {
+        let db_path = temp_db_path("player_balance");
+        let mut db = Db::open(&db_path).unwrap();
+        let save = SaveInfo {
+            dir_name: "save_alpha".to_string(),
+            path: std::path::PathBuf::from("/tmp/save_alpha"),
+            character_name: "Alpha".to_string(),
+            save_date: "2026-06-09 00:00:00.000 UTC".to_string(),
+            game_version: "0.98a".to_string(),
+            character_level: 15,
+            compressed: false,
+            modified: SystemTime::now(),
+        };
+
+        let mut output = discovery_output();
+        output.player = Some(PlayerBalance {
+            credits: 232141.0,
+            story_points: 20,
+            alpha_cores: 3,
+            items: vec![
+                ("drone_replicator".to_string(), 1),
+                ("synchrotron".to_string(), 2),
+            ],
+        });
+        db.write_extraction(&save, &sample_game_data(), &output)
+            .unwrap();
+        db.write_extraction(&save, &sample_game_data(), &output)
+            .unwrap();
+
+        let balance = db.player_balance(Some("alpha")).unwrap().unwrap();
+        assert_eq!(balance, output.player.unwrap());
+
+        // A save written without player data reports None, not a stale row.
+        output.player = None;
+        db.write_extraction(&save, &sample_game_data(), &output)
+            .unwrap();
+        assert!(db.player_balance(Some("alpha")).unwrap().is_none());
 
         let _ = fs::remove_file(&db_path);
     }

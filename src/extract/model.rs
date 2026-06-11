@@ -75,10 +75,27 @@ pub struct RawSystem {
     pub entities: Vec<RawEntity>,
 }
 
+/// Player wallet/inventory snapshot for seeding the solver `Balance`
+/// (v1.5 balance-from-save). Items are raw special-item spec ids with
+/// counts, summed over the player fleet's cargo and every `storage`
+/// submarket (storage contents are player property regardless of which
+/// market hosts them). Alpha cores are the `alpha_core` commodity stacks
+/// in those same cargos.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlayerBalance {
+    pub credits: f64,
+    pub story_points: u32,
+    pub alpha_cores: u32,
+    /// special-item spec id (e.g. `corrupted_nanoforge`) -> count.
+    pub items: Vec<(String, u32)>,
+}
+
 /// Everything extracted from one campaign.xml.
 #[derive(Debug, Clone)]
 pub struct RawSave {
     pub systems: Vec<RawSystem>,
+    /// None when the save had no recognizable player fleet/character data.
+    pub player: Option<PlayerBalance>,
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +179,8 @@ pub struct UnknownCondition {
 #[derive(Debug, Clone)]
 pub struct MappedOutput {
     pub systems: Vec<MappedSystem>,
+    /// Passed through from [`RawSave::player`].
+    pub player: Option<PlayerBalance>,
     pub unknown_conditions: Vec<UnknownCondition>,
     pub type_mappings: Vec<TypeMapping>,
     /// Planet type ids found in the save but in no planets.json (vanilla or mod).

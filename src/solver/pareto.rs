@@ -96,6 +96,9 @@ pub fn solve_pareto(
             let mut stability_warm = stability_warm;
             let mut points = Vec::new();
             for stability in STABILITY_FLOORS.iter().copied().skip(1) {
+                if crate::solver::cancel::is_cancelled() {
+                    break;
+                }
                 let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stability));
                 if let Some(point) = measure_point_chained(
                     &stability_system,
@@ -119,6 +122,9 @@ pub fn solve_pareto(
             let mut points = Vec::new();
             let mut defense_warm = defense_initial_warm;
             for defense in DEFENSE_FLOORS {
+                if crate::solver::cancel::is_cancelled() {
+                    break;
+                }
                 let floors = Goal::new(f64::NEG_INFINITY, Some(defense), Some(0));
                 if let Some(point) = measure_point_chained(
                     &defense_system,
@@ -230,6 +236,9 @@ pub fn solve_pareto_quick(
     };
 
     for stability in QUICK_STABILITY_FLOORS.iter().copied().skip(1) {
+        if crate::solver::cancel::is_cancelled() {
+            break;
+        }
         let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stability));
         if let Some(point) = measure(
             FrontierKind::Stability,
@@ -241,6 +250,9 @@ pub fn solve_pareto_quick(
         }
     }
     for defense in QUICK_DEFENSE_FLOORS {
+        if crate::solver::cancel::is_cancelled() {
+            break;
+        }
         let floors = Goal::new(f64::NEG_INFINITY, Some(defense), Some(0));
         if let Some(point) = measure(FrontierKind::Defense, defense, &floors, &mut defense_warm) {
             samples.push(point);
@@ -313,6 +325,9 @@ pub fn solve_pareto_template(
     };
 
     for stability in QUICK_STABILITY_FLOORS.iter().copied().skip(1) {
+        if crate::solver::cancel::is_cancelled() {
+            break;
+        }
         let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stability));
         if let Some(point) = measure(
             FrontierKind::Stability,
@@ -324,6 +339,9 @@ pub fn solve_pareto_template(
         }
     }
     for defense in QUICK_DEFENSE_FLOORS {
+        if crate::solver::cancel::is_cancelled() {
+            break;
+        }
         let floors = Goal::new(f64::NEG_INFINITY, Some(defense), Some(0));
         if let Some(point) = measure(FrontierKind::Defense, defense, &floors, &mut defense_warm) {
             samples.push(point);

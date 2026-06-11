@@ -93,6 +93,11 @@ pub fn rank_systems(
 
     let mut rows = Vec::with_capacity(names.len());
     for name in names {
+        // Stop scoring further systems on cooperative cancel; rows scored so
+        // far are still sorted and returned.
+        if crate::solver::cancel::is_cancelled() {
+            break;
+        }
         let t0 = Instant::now();
         let solve = scorer_fn(&systems[*name], balance, horizon, time_limit);
         let row = RankRow {

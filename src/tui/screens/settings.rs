@@ -15,7 +15,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let rows = setting_rows(app);
     let mut state = TableState::default().with_selected(Some(app.settings_selection));
     let table = Table::new(rows, [Constraint::Length(28), Constraint::Min(20)])
-        .block(Block::default().title("Setup").borders(Borders::ALL))
+        .block(
+            Block::default()
+                .title(settings_title(app))
+                .borders(Borders::ALL),
+        )
         .row_highlight_style(selected_style())
         .highlight_symbol("> ");
     frame.render_stateful_widget(table, area, &mut state);
@@ -59,34 +63,92 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
 
 fn setting_rows(app: &App) -> Vec<Row<'_>> {
     let mut rows = vec![
-        Row::new(vec![Cell::from("credits"), Cell::from(format!("{:.0}", app.config.credits))]),
-        Row::new(vec![Cell::from("story points"), Cell::from(app.config.story_points.to_string())]),
-        Row::new(vec![Cell::from("alpha cores"), Cell::from(app.config.alpha_cores.to_string())]),
-        Row::new(vec![Cell::from("horizon months"), Cell::from(app.config.horizon_months.to_string())]),
-        Row::new(vec![Cell::from("time budget ms"), Cell::from(app.config.solver_time_budget_ms.to_string())]),
-        Row::new(vec![Cell::from("discovery definition"), Cell::from(format!("{:?}", app.config.discovery_definition))]),
-        Row::new(vec![Cell::from("include core worlds"), Cell::from(app.config.include_core_worlds.to_string())]),
-        Row::new(vec![Cell::from("db path"), Cell::from(app.config.db_path.display().to_string())]),
+        Row::new(vec![
+            Cell::from("credits"),
+            Cell::from(setting_value(app, 0, format!("{:.0}", app.config.credits))),
+        ]),
+        Row::new(vec![
+            Cell::from("story points"),
+            Cell::from(setting_value(app, 1, app.config.story_points.to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from("alpha cores"),
+            Cell::from(setting_value(app, 2, app.config.alpha_cores.to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from("horizon months"),
+            Cell::from(setting_value(app, 3, app.config.horizon_months.to_string())),
+        ]),
+        Row::new(vec![
+            Cell::from("time budget ms"),
+            Cell::from(setting_value(
+                app,
+                4,
+                app.config.solver_time_budget_ms.to_string(),
+            )),
+        ]),
+        Row::new(vec![
+            Cell::from("discovery definition"),
+            Cell::from(format!("{:?}", app.config.discovery_definition)),
+        ]),
+        Row::new(vec![
+            Cell::from("include core worlds"),
+            Cell::from(app.config.include_core_worlds.to_string()),
+        ]),
+        Row::new(vec![
+            Cell::from("db path"),
+            Cell::from(setting_value(
+                app,
+                7,
+                app.config.db_path.display().to_string(),
+            )),
+        ]),
         Row::new(vec![
             Cell::from("starsector_dir override"),
-            Cell::from(
+            Cell::from(setting_value(
+                app,
+                8,
                 app.config
                     .starsector_dir
                     .as_ref()
                     .map(|path| path.display().to_string())
                     .unwrap_or_default(),
-            ),
+            )),
         ]),
     ];
     for item in ColonyItem::all() {
-        let count = app.config.colony_items.get(item.name()).copied().unwrap_or(0);
+        let count = app
+            .config
+            .colony_items
+            .get(item.name())
+            .copied()
+            .unwrap_or(0);
         rows.push(Row::new(vec![
             Cell::from(format!("item: {}", item.name())),
             Cell::from(count.to_string()),
         ]));
     }
-    rows.push(Row::new(vec![Cell::from("reset to defaults"), Cell::from("Enter")]));
+    rows.push(Row::new(vec![
+        Cell::from("reset to defaults"),
+        Cell::from("Enter"),
+    ]));
     rows
+}
+
+fn settings_title(app: &App) -> &'static str {
+    if app.settings_editing {
+        "Setup - editing (Enter commit, Esc cancel)"
+    } else {
+        "Setup"
+    }
+}
+
+fn setting_value(app: &App, index: usize, value: String) -> String {
+    if app.settings_editing && app.settings_selection == index {
+        format!("editing: {}_", app.settings_input)
+    } else {
+        value
+    }
 }
 
 fn begin_edit_or_toggle(app: &mut App) {
@@ -182,7 +244,11 @@ fn adjust_item(app: &mut App, delta: i32) {
         return;
     }
     let item = ColonyItem::all()[app.settings_selection - BASE_FIELDS];
-    let entry = app.config.colony_items.entry(item.name().to_string()).or_default();
+    let entry = app
+        .config
+        .colony_items
+        .entry(item.name().to_string())
+        .or_default();
     if delta < 0 {
         *entry = entry.saturating_sub(1);
     } else {

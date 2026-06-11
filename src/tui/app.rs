@@ -259,9 +259,39 @@ impl App {
     }
 
     pub fn cancel_job(&mut self) {
-        if let Some(label) = self.job.detach() {
+        if self.job.request_cancel() {
+            self.status = "cancelling - solver stops at the next checkpoint".to_string();
+        } else if let Some(label) = self.job.detach() {
+            // IO-bound jobs (extract/load) have no cancel points; detach only.
             self.status = format!("{label} detached; compute continues in background");
         }
+    }
+
+    /// v1.5 balance-from-save: overwrite the Setup balance with the save's
+    /// credits/story points/alpha cores/colony items when a save's systems
+    /// are loaded. Still freely editable in Setup afterwards; persisted so a
+    /// restart keeps whatever the user last saw. Returns true if anything
+    /// changed.
+    fn seed_balance_from_save(&mut self, balance: crate::extract::model::PlayerBalance) -> bool {
+        use crate::constants::ColonyItem;
+        let mut items = std::collections::BTreeMap::new();
+        for (item_id, count) in &balance.items {
+            if let Some(item) = ColonyItem::from_save_id(item_id) {
+                *items.entry(item.name().to_string()).or_insert(0) += *count;
+            }
+        }
+        let changed = self.config.credits != balance.credits
+            || self.config.story_points != balance.story_points
+            || self.config.alpha_cores != balance.alpha_cores
+            || self.config.colony_items != items;
+        if changed {
+            self.config.credits = balance.credits;
+            self.config.story_points = balance.story_points;
+            self.config.alpha_cores = balance.alpha_cores;
+            self.config.colony_items = items;
+            let _ = self.config.save(super::config::CONFIG_PATH);
+        }
+        changed
     }
 
     pub fn tick(&mut self) {
@@ -278,13 +308,25 @@ impl App {
                 self.push_rank_row(row);
             }
             JobEvent::Done(output) => {
+                let cancelled = self.job.is_cancelling();
                 self.job.clear();
-                self.apply_output(output);
+                if cancelled {
+                    // Partial result from a cancelled solve/rank: discard so
+                    // caches never hold truncated results.
+                    self.status = "cancelled".to_string();
+                } else {
+                    self.apply_output(output);
+                }
             }
             JobEvent::Failed(err) => {
+                let cancelled = self.job.is_cancelling();
                 self.job.clear();
-                self.error = Some(err.clone());
-                self.status = err;
+                if cancelled {
+                    self.status = "cancelled".to_string();
+                } else {
+                    self.error = Some(err.clone());
+                    self.status = err;
+                }
             }
         }
     }
@@ -317,12 +359,23 @@ impl App {
                 systems,
                 discovery,
                 details,
+                player_balance,
             } => {
                 self.systems = systems;
                 self.discovery = discovery;
                 self.system_details = details;
+                let seeded = player_balance
+                    .map(|balance| self.seed_balance_from_save(balance))
+                    .unwrap_or(false);
                 self.rank_rows = self.cached_rows_for_active().unwrap_or_default();
-                self.status = format!("loaded {} systems", self.systems.len());
+                self.status = if seeded {
+                    format!(
+                        "loaded {} systems · balance seeded from save (editable in Setup)",
+                        self.systems.len()
+                    )
+                } else {
+                    format!("loaded {} systems", self.systems.len())
+                };
                 self.maybe_auto_rank();
             }
             JobOutput::RankComplete(rows) => {
@@ -400,11 +453,16 @@ impl App {
     }
 
     pub fn visible_scope_names(&self) -> Vec<String> {
-        filter_scope(&self.discovery, self.config.discovery_definition, self.config.include_core_worlds, self.scope_mode)
-            .into_iter()
-            .filter(|name| self.systems.contains_key(*name))
-            .cloned()
-            .collect()
+        filter_scope(
+            &self.discovery,
+            self.config.discovery_definition,
+            self.config.include_core_worlds,
+            self.scope_mode,
+        )
+        .into_iter()
+        .filter(|name| self.systems.contains_key(*name))
+        .cloned()
+        .collect()
     }
 
     pub fn visible_rank_rows(&self) -> Vec<RankRow> {
@@ -427,7 +485,8 @@ impl App {
             .get(self.rank_selection)
             .map(|r| r.system.clone())
             .or_else(|| self.selected_system_name.clone());
-        self.rank_rows.retain(|existing| existing.system != row.system);
+        self.rank_rows
+            .retain(|existing| existing.system != row.system);
         self.rank_rows.push(row);
         sort_rows_best_first(&mut self.rank_rows);
         if let Some(name) = selected {
@@ -438,7 +497,9 @@ impl App {
                 return;
             }
         }
-        self.rank_selection = self.rank_selection.min(self.visible_rank_rows().len().saturating_sub(1));
+        self.rank_selection = self
+            .rank_selection
+            .min(self.visible_rank_rows().len().saturating_sub(1));
     }
 
     fn cached_rows_for_active(&self) -> Option<Vec<RankRow>> {
@@ -680,7 +741,10 @@ pub fn merge_saves(disk: Vec<SaveInfo>, extracted: &[SaveRow]) -> Vec<SaveListRo
         });
     }
     for row in extracted {
-        if rows.iter().any(|existing| existing.dir_name == row.dir_name) {
+        if rows
+            .iter()
+            .any(|existing| existing.dir_name == row.dir_name)
+        {
             continue;
         }
         rows.push(SaveListRow {

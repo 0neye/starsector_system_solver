@@ -49,9 +49,11 @@ fn draw_params(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
 fn draw_results(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let Some(result) = app.solve_result.as_ref() else {
         frame.render_widget(
-            Paragraph::new("Press R to run. Large systems can overrun the time budget; cancel detaches only.")
-                .wrap(Wrap { trim: true })
-                .block(Block::default().title("Results").borders(Borders::ALL)),
+            Paragraph::new(
+                "Press R to run. The time budget is enforced; x cancels a running solve.",
+            )
+            .wrap(Wrap { trim: true })
+            .block(Block::default().title("Results").borders(Borders::ALL)),
             area,
         );
         return;
@@ -123,7 +125,10 @@ fn draw_pareto(frame: &mut Frame<'_>, app: &App, area: Rect, solve: &ParetoSolve
         })
         .collect();
     let selected = if app.solve_focus == SolveFocus::Results {
-        Some(app.solve_result_selection.min(points.len().saturating_sub(1)))
+        Some(
+            app.solve_result_selection
+                .min(points.len().saturating_sub(1)),
+        )
     } else {
         None
     };
@@ -140,7 +145,15 @@ fn draw_pareto(frame: &mut Frame<'_>, app: &App, area: Rect, solve: &ParetoSolve
             Constraint::Length(7),
         ],
     )
-    .header(Row::new(["", "frontier", "floor", "income", "stability", "defense", "month"]))
+    .header(Row::new([
+        "",
+        "frontier",
+        "floor",
+        "income",
+        "stability",
+        "defense",
+        "month",
+    ]))
     .block(Block::default().title("Frontiers").borders(Borders::ALL))
     .row_highlight_style(selected_style())
     .highlight_symbol("> ");
@@ -270,7 +283,9 @@ fn cycle_mode(app: &mut App, delta: i32) {
         (current + 1) % modes.len()
     };
     app.solve_params.mode = modes[next];
-    app.solve_param_selection = app.solve_param_selection.min(param_rows(app).len().saturating_sub(1));
+    app.solve_param_selection = app
+        .solve_param_selection
+        .min(param_rows(app).len().saturating_sub(1));
 }
 
 fn commit_edit(app: &mut App) {
@@ -287,7 +302,9 @@ fn commit_edit(app: &mut App) {
         }
         (SolveMode::Maximize, selection) => match max_floor_field(app, selection) {
             Some(MaxFloorField::Income) => parse_f64(value, &mut app.solve_params.floor_income),
-            Some(MaxFloorField::Stability) => parse_i32(value, &mut app.solve_params.floor_stability),
+            Some(MaxFloorField::Stability) => {
+                parse_i32(value, &mut app.solve_params.floor_stability)
+            }
             Some(MaxFloorField::Defense) => parse_f64(value, &mut app.solve_params.floor_defense),
             None => {}
         },
@@ -338,31 +355,65 @@ fn current_param_value(app: &App) -> String {
 
 fn param_rows(app: &App) -> Vec<Row<'_>> {
     let p = &app.solve_params;
-    let mut rows = vec![Row::new(vec![Cell::from("mode"), Cell::from(p.mode.as_str())])];
+    let mut rows = vec![Row::new(vec![
+        Cell::from("mode"),
+        Cell::from(p.mode.as_str()),
+    ])];
     match p.mode {
         SolveMode::Pareto => {}
         SolveMode::Goal => {
-            rows.push(Row::new(vec![Cell::from("income"), Cell::from(format!("{:.0}", p.goal_income))]));
-            rows.push(Row::new(vec![Cell::from("stability"), Cell::from(p.goal_stability.to_string())]));
-            rows.push(Row::new(vec![Cell::from("defense"), Cell::from(format!("{:.0}", p.goal_defense))]));
+            rows.push(Row::new(vec![
+                Cell::from("income"),
+                Cell::from(format!("{:.0}", p.goal_income)),
+            ]));
+            rows.push(Row::new(vec![
+                Cell::from("stability"),
+                Cell::from(p.goal_stability.to_string()),
+            ]));
+            rows.push(Row::new(vec![
+                Cell::from("defense"),
+                Cell::from(format!("{:.0}", p.goal_defense)),
+            ]));
         }
         SolveMode::Maximize => {
-            rows.push(Row::new(vec![Cell::from("metric"), Cell::from(p.maximize_metric.as_str())]));
+            rows.push(Row::new(vec![
+                Cell::from("metric"),
+                Cell::from(p.maximize_metric.as_str()),
+            ]));
             if p.maximize_metric != Metric::Income {
-                rows.push(Row::new(vec![Cell::from("income floor"), Cell::from(format!("{:.0}", p.floor_income))]));
+                rows.push(Row::new(vec![
+                    Cell::from("income floor"),
+                    Cell::from(format!("{:.0}", p.floor_income)),
+                ]));
             }
             if p.maximize_metric != Metric::Stability {
-                rows.push(Row::new(vec![Cell::from("stability floor"), Cell::from(p.floor_stability.to_string())]));
+                rows.push(Row::new(vec![
+                    Cell::from("stability floor"),
+                    Cell::from(p.floor_stability.to_string()),
+                ]));
             }
             if p.maximize_metric != Metric::Defense {
-                rows.push(Row::new(vec![Cell::from("defense floor"), Cell::from(format!("{:.0}", p.floor_defense))]));
+                rows.push(Row::new(vec![
+                    Cell::from("defense floor"),
+                    Cell::from(format!("{:.0}", p.floor_defense)),
+                ]));
             }
         }
     }
-    rows.push(Row::new(vec![Cell::from("horizon"), Cell::from(p.horizon.to_string())]));
-    rows.push(Row::new(vec![Cell::from("time budget ms"), Cell::from(p.time_limit.to_string())]));
     rows.push(Row::new(vec![
-        Cell::from("[Run]").style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Green)),
+        Cell::from("horizon"),
+        Cell::from(p.horizon.to_string()),
+    ]));
+    rows.push(Row::new(vec![
+        Cell::from("time budget ms"),
+        Cell::from(p.time_limit.to_string()),
+    ]));
+    rows.push(Row::new(vec![
+        Cell::from("[Run]").style(
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(Color::Green),
+        ),
         Cell::from("Enter or R"),
     ]));
     rows
@@ -384,5 +435,7 @@ fn max_floor_field(app: &App, selection: usize) -> Option<MaxFloorField> {
     .into_iter()
     .filter_map(|(metric, field)| (metric != app.solve_params.maximize_metric).then_some(field))
     .collect();
-    selection.checked_sub(2).and_then(|index| fields.get(index).copied())
+    selection
+        .checked_sub(2)
+        .and_then(|index| fields.get(index).copied())
 }

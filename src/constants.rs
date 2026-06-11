@@ -310,6 +310,27 @@ impl ColonyItem {
         }
     }
 
+    /// Map a save-file special-item spec id (campaign.xml `SpID` `i` attr) to
+    /// the solver's colony item. Vanilla ids; note "synchrotron" (not
+    /// "synchrotron_core") is the in-game id. Modded items return None.
+    pub fn from_save_id(id: &str) -> Option<Self> {
+        match id {
+            "soil_nanites" => Some(Self::SoilNanites),
+            "mantle_bore" => Some(Self::MantleBore),
+            "biofactory_embryo" => Some(Self::BiofactoryEmbryo),
+            "catalytic_core" => Some(Self::CatalyticCore),
+            "drone_replicator" => Some(Self::DroneReplicator),
+            "corrupted_nanoforge" => Some(Self::CorruptedNanoforge),
+            "pristine_nanoforge" => Some(Self::PristineNanoforge),
+            "cryoarithmetic_engine" => Some(Self::CryoarithmeticEngine),
+            "dealmaker_holosuite" => Some(Self::DealmakerHolosuite),
+            "fullerene_spool" => Some(Self::FullereneSpool),
+            "plasma_dynamo" => Some(Self::PlasmaDynamo),
+            "synchrotron" => Some(Self::SynchrotronCore),
+            _ => None,
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             Self::SoilNanites => "soil nanites",

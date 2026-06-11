@@ -39,8 +39,20 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
                 Cell::from(planet.row.name.clone()),
                 Cell::from(planet.row.planet_type.clone()),
                 Cell::from(format!("{:.0}%", planet.row.hazard_percent)),
-                Cell::from(planet.row.survey_level.clone().unwrap_or_else(|| "-".to_string())),
-                Cell::from(planet.row.owner_faction.clone().unwrap_or_else(|| "-".to_string())),
+                Cell::from(
+                    planet
+                        .row
+                        .survey_level
+                        .clone()
+                        .unwrap_or_else(|| "-".to_string()),
+                ),
+                Cell::from(
+                    planet
+                        .row
+                        .owner_faction
+                        .clone()
+                        .unwrap_or_else(|| "-".to_string()),
+                ),
                 Cell::from(planet.conditions.join(", ")),
             ])
         })
@@ -67,7 +79,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     ]))
     .block(
         Block::default()
-            .title(format!("System · {selected_name} · {} planets", detail.planets.len()))
+            .title(format!(
+                "System · {selected_name} · {} planets",
+                detail.planets.len()
+            ))
             .borders(Borders::ALL),
     )
     .row_highlight_style(selected_style())
@@ -105,9 +120,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
         })
         .unwrap_or_else(|| "No planets in system.".to_string());
     frame.render_widget(
-        Paragraph::new(body)
-            .wrap(Wrap { trim: true })
-            .block(Block::default().title("Planet detail").borders(Borders::ALL)),
+        Paragraph::new(body).wrap(Wrap { trim: true }).block(
+            Block::default()
+                .title("Planet detail")
+                .borders(Borders::ALL),
+        ),
         chunks[1],
     );
 }

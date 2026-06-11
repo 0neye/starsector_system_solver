@@ -1,19 +1,19 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use crate::constants::{ColonyItem, FacilityType};
 use crate::extract::db::{SaveRow, SystemDiscovery};
 use crate::rank::{RankRow, RankScorer};
 use crate::solve::{solve_goal, solve_maximize};
-use crate::solver::state::format_action;
 use crate::solver::pareto::ParetoSolve;
+use crate::solver::state::format_action;
 use crate::solver::{Action, Goal, Metric};
 use crate::system::System;
 use crate::tui::app::{
-    estimate_rank_cost, filter_scope, format_system_time, group_plan_actions, solve_cache_key,
-    App, RankCache, ScopeMode, SolveMode, SolveParams,
+    estimate_rank_cost, filter_scope, format_system_time, group_plan_actions, solve_cache_key, App,
+    RankCache, ScopeMode, SolveMode, SolveParams,
 };
 use crate::tui::config::{DiscoveryDefinition, TuiConfig};
-use crate::constants::{ColonyItem, FacilityType};
 
 use super::support::{rich_balance, single_planet_system, PlanetBuilder};
 
@@ -68,11 +68,21 @@ fn tui_action_formatter_covers_every_action_variant() {
         "Build Megaport on Corvus II"
     );
     assert_eq!(
-        format_action(&Action::InstallItem(hash, FacilityType::HeavyIndustry, ColonyItem::CorruptedNanoforge), &names),
+        format_action(
+            &Action::InstallItem(
+                hash,
+                FacilityType::HeavyIndustry,
+                ColonyItem::CorruptedNanoforge
+            ),
+            &names
+        ),
         "Install Corrupted Nanoforge in Heavy Industry on Corvus II"
     );
     assert_eq!(
-        format_action(&Action::AddImprovement(hash, FacilityType::Megaport), &names),
+        format_action(
+            &Action::AddImprovement(hash, FacilityType::Megaport),
+            &names
+        ),
         "Improve Megaport on Corvus II"
     );
     assert_eq!(
@@ -104,10 +114,7 @@ fn tui_action_formatter_covers_every_action_variant() {
         "Build makeshift comm relay"
     );
     assert_eq!(format_action(&Action::Wait(3), &names), "Wait 3 months");
-    assert_eq!(
-        format_action(&Action::Colonize(99), &names),
-        "Colonize 99"
-    );
+    assert_eq!(format_action(&Action::Colonize(99), &names), "Colonize 99");
 }
 
 #[test]
@@ -180,8 +187,14 @@ fn tui_scope_filters_discovery_definition_and_core_worlds() {
 
 #[test]
 fn tui_rank_cost_estimate_matches_m1_constants() {
-    assert_eq!(estimate_rank_cost(3, RankScorer::Quick), Duration::from_secs(30));
-    assert_eq!(estimate_rank_cost(3, RankScorer::Bound), Duration::from_secs(3));
+    assert_eq!(
+        estimate_rank_cost(3, RankScorer::Quick),
+        Duration::from_secs(30)
+    );
+    assert_eq!(
+        estimate_rank_cost(3, RankScorer::Bound),
+        Duration::from_secs(3)
+    );
     assert_eq!(
         estimate_rank_cost(10, RankScorer::Template),
         Duration::from_millis(1500)

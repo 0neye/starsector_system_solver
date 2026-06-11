@@ -1624,6 +1624,8 @@ fn climb_from_seed(
     plan: SystemPlan,
     node_budget: u32,
     cache: &PlanCache,
+    start: Instant,
+    deadline: Duration,
 ) -> (SystemPlan, PlanScore, u32) {
     let mut nodes = 1;
     let score = run_plan_cached(state, objective, &plan, slim, cache);
@@ -1637,8 +1639,19 @@ fn climb_from_seed(
         node_budget,
         &mut nodes,
         cache,
+        start,
+        deadline,
     );
     (plan, score, nodes)
+}
+
+/// Hard stop for the search loops: wall-clock deadline exceeded or a
+/// cooperative cancel was requested ([`crate::solver::cancel`]). Polled at
+/// node granularity — each node is a full plan simulation, so the
+/// `Instant::now()` cost is negligible. When this fires mid-climb the climb
+/// returns its best-so-far plan (best-effort, no longer machine-independent).
+fn should_stop(start: Instant, deadline: Duration) -> bool {
+    crate::solver::cancel::is_cancelled() || start.elapsed() >= deadline
 }
 
 fn choose_planet_set(
@@ -2124,8 +2137,11 @@ fn steepest_improving_move(
 ///
 /// Cost per accepted move is the handful of stale refreshes that outrank it,
 /// not a whole neighborhood pass. Determinism: the queue order is total
-/// (insertion sequence breaks ties) and no wall clock is consulted; the node
-/// budget cuts off identically on every run.
+/// (insertion sequence breaks ties) and the node budget cuts off identically
+/// on every run — *unless* the wall-clock deadline or a cooperative cancel
+/// fires first ([`should_stop`]), which returns the best-so-far plan and is
+/// inherently machine-dependent. Within the time limit the result is still
+/// deterministic.
 #[allow(clippy::too_many_arguments)]
 fn lazy_hill_climb(
     state: &State,
@@ -2137,6 +2153,8 @@ fn lazy_hill_climb(
     node_budget: u32,
     nodes_searched: &mut u32,
     cache: &PlanCache,
+    start: Instant,
+    deadline: Duration,
 ) -> (SystemPlan, PlanScore) {
     use std::collections::BinaryHeap;
     use std::collections::HashSet as StdHashSet;
@@ -2172,7 +2190,7 @@ fn lazy_hill_climb(
     }
 
     loop {
-        if *nodes_searched >= node_budget {
+        if *nodes_searched >= node_budget || should_stop(start, deadline) {
             return (best_plan, best);
         }
 
@@ -2186,7 +2204,7 @@ fn lazy_hill_climb(
             let mut next_parked = Vec::with_capacity(old_parked.len());
             let mut found_improver = false;
             for entry in old_parked {
-                if *nodes_searched >= node_budget {
+                if *nodes_searched >= node_budget || should_stop(start, deadline) {
                     next_parked.push(entry);
                     parked = next_parked;
                     return (best_plan, best);
@@ -2302,12 +2320,14 @@ fn lazy_hill_climb(
 /// each basin is hill-climbed independently, and the best finished basin wins.
 ///
 /// **Determinism:** the climbs are bounded by a fixed [`MAX_NODES_PER_SEED`] node
-/// budget, *not* by the wall clock, so the result is identical on every machine
-/// and run. `time_limit` (ms) now bounds only the (cheap, deterministic-for-real-
-/// inputs) seed *generation*; for the small systems this solver targets the
-/// climbs converge well under the node budget, so the search always runs to the
-/// same converged optimum. Returns the best plan found, or `None` if no refined
-/// seed satisfies the objective's floors.
+/// budget; while the search finishes inside `time_limit` the result is
+/// identical on every machine and run. `time_limit` (ms) is additionally a
+/// *hard* wall-clock deadline: climbs poll it (and the cooperative cancel
+/// flag, [`crate::solver::cancel`]) at node granularity and return their
+/// best-so-far plan when it fires, so a solve never runs meaningfully past
+/// its budget — at the cost of machine-dependent results in the cutoff case
+/// (reported via `cutoff_occurred`). Returns the best plan found, or `None`
+/// if no refined seed satisfies the objective's floors.
 fn decomp_search_objective(
     initial_state: &mut State,
     objective: &Objective,
@@ -2405,18 +2425,21 @@ fn decomp_search_objective(
                 seed,
                 profile.max_nodes_per_seed,
                 &cache,
+                start,
+                deadline,
             )
         })
         .collect();
 
     let nodes_searched = seed_evals + climbed.iter().map(|(_, _, nodes)| *nodes).sum::<u32>();
-    // A real cutoff is now a *deterministic* event: some seed exhausted the node
-    // budget before converging (pathological only for FULL; routine for the
-    // capped QUICK_* profiles). Wall-clock elapsed time no longer affects the
-    // result, so it must not be reported as a cutoff.
-    let cutoff_occurred = climbed
-        .iter()
-        .any(|(_, _, nodes)| *nodes >= profile.max_nodes_per_seed);
+    // Cutoff: a seed exhausted its node budget (deterministic; pathological
+    // only for FULL, routine for the capped QUICK_* profiles), or the hard
+    // wall-clock deadline / cooperative cancel stopped the climbs early
+    // (machine-dependent best-effort result).
+    let cutoff_occurred = should_stop(start, deadline)
+        || climbed
+            .iter()
+            .any(|(_, _, nodes)| *nodes >= profile.max_nodes_per_seed);
     let (best_plan, best, _) = match climbed.into_iter().reduce(|best, cand| {
         if is_better(objective, &cand.1, &cand.0, &best.1, &best.0) {
             cand

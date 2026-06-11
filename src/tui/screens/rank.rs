@@ -6,7 +6,7 @@ use ratatui::Frame;
 
 use crate::rank::{peak_income, RankScorer};
 
-use super::super::app::{format_duration, estimate_rank_cost, App, Modal, ScopeMode};
+use super::super::app::{estimate_rank_cost, format_duration, App, Modal, ScopeMode};
 use super::selected_style;
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
@@ -78,7 +78,11 @@ pub fn draw_scorer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     ]
     .into_iter()
     .map(|(name, desc)| {
-        let marker = if scorer_name(app.scorer) == name { "> " } else { "  " };
+        let marker = if scorer_name(app.scorer) == name {
+            "> "
+        } else {
+            "  "
+        };
         format!("{marker}{name:<9} {desc}")
     })
     .collect::<Vec<_>>()
@@ -106,7 +110,9 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
             app.rank_selection =
                 (app.rank_selection + 1).min(app.visible_rank_rows().len().saturating_sub(1));
         }
-        KeyCode::Char('k') | KeyCode::Up => app.rank_selection = app.rank_selection.saturating_sub(1),
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.rank_selection = app.rank_selection.saturating_sub(1)
+        }
         KeyCode::Char('/') => {
             app.editing_filter = true;
             app.rank_filter.clear();

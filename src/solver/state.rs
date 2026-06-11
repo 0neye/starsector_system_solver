@@ -57,11 +57,20 @@ pub fn format_action(action: &Action, planet_names: &HashMap<u64, String>) -> St
             planet_name(*planet_hash, planet_names)
         ),
         Action::UpgradeAdmin(planet_hash) => {
-            format!("Install alpha-core administrator on {}", planet_name(*planet_hash, planet_names))
+            format!(
+                "Install alpha-core administrator on {}",
+                planet_name(*planet_hash, planet_names)
+            )
         }
         Action::BuildMakeshiftCommRelay => "Build makeshift comm relay".to_string(),
-        Action::Colonize(planet_hash) => format!("Colonize {}", planet_name(*planet_hash, planet_names)),
-        Action::Wait(months) => format!("Wait {} {}", months, if *months == 1 { "month" } else { "months" }),
+        Action::Colonize(planet_hash) => {
+            format!("Colonize {}", planet_name(*planet_hash, planet_names))
+        }
+        Action::Wait(months) => format!(
+            "Wait {} {}",
+            months,
+            if *months == 1 { "month" } else { "months" }
+        ),
     }
 }
 

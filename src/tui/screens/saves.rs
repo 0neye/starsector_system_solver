@@ -40,7 +40,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
             Constraint::Length(10),
         ],
     )
-    .header(Row::new(["character", "save dir", "modified", "extracted", ""]))
+    .header(Row::new([
+        "character",
+        "save dir",
+        "modified",
+        "extracted",
+        "",
+    ]))
     .block(
         Block::default()
             .title(format!("Saves · db {}", app.config.db_path.display()))

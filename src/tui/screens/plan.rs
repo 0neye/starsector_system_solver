@@ -31,9 +31,17 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let mut state = TableState::default().with_selected(Some(plan.selection));
     let table = Table::new(
         rows,
-        [Constraint::Length(10), Constraint::Length(5), Constraint::Min(30)],
+        [
+            Constraint::Length(10),
+            Constraint::Length(5),
+            Constraint::Min(30),
+        ],
     )
-    .block(Block::default().title(plan.header.clone()).borders(Borders::ALL))
+    .block(
+        Block::default()
+            .title(plan.header.clone())
+            .borders(Borders::ALL),
+    )
     .row_highlight_style(selected_style())
     .highlight_symbol("> ");
     frame.render_stateful_widget(table, area, &mut state);

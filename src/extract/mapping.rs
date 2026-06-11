@@ -1,4 +1,4 @@
-//! campaign.xml extraction rows mapped into solver/DB-friendly records.
+﻿//! campaign.xml extraction rows mapped into solver/DB-friendly records.
 
 use std::collections::{HashMap, HashSet};
 
@@ -186,6 +186,7 @@ pub fn map_save(raw: RawSave, game_data: &GameData) -> MappedOutput {
 
     MappedOutput {
         systems,
+        player: raw.player,
         unknown_conditions,
         type_mappings,
         unknown_types,
@@ -717,6 +718,7 @@ mod tests {
     #[test]
     fn maps_hazard_accessibility_and_type_similarity() {
         let raw = RawSave {
+            player: None,
             systems: vec![
                 RawSystem {
                     name: "Alpha".to_string(),

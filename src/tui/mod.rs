@@ -15,7 +15,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use self::app::{App, Modal, Screen, ScopeMode};
+use self::app::{App, Modal, ScopeMode, Screen};
 use self::config::{TuiConfig, CONFIG_PATH};
 
 type PanicHook = Box<dyn Fn(&panic::PanicHookInfo<'_>) + Sync + Send + 'static>;
@@ -92,7 +92,9 @@ fn handle_key(app: &mut App, code: KeyCode) {
         return;
     }
 
-    if app.active_screen == Screen::System && matches!(code, KeyCode::Char('s') | KeyCode::Char('S')) {
+    if app.active_screen == Screen::System
+        && matches!(code, KeyCode::Char('s') | KeyCode::Char('S'))
+    {
         route_screen_key(app, code);
         return;
     }

@@ -1,11 +1,11 @@
-//! CSV- and DB-loading regression tests against the bundled game data.
+﻿//! CSV- and DB-loading regression tests against the bundled game data.
 
 use crate::parser::{load_game_data, load_game_data_from_db};
 use crate::system::Infrastructure;
 
 /// The bundled `Infrastructure.csv` spells nav buoys with Starsector's internal
 /// typo "NavBouy" (e.g. the Mia Bravos row). The parser must accept that spelling
-/// — matching only "NavBuoy" silently dropped the row into the unknown-type arm,
+/// â€” matching only "NavBuoy" silently dropped the row into the unknown-type arm,
 /// so the system lost its nav buoy. (Regression: P2 nav-buoy parsing.)
 #[test]
 fn nav_buoy_csv_spelling_loads() {
@@ -74,6 +74,7 @@ fn db_loader_matches_csv_semantics() {
         planetary_conditions: Default::default(),
     };
     let output = MappedOutput {
+        player: None,
         systems: vec![MappedSystem {
             system: SystemRow {
                 name: "Alpha".to_string(),

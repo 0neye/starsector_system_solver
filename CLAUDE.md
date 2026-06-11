@@ -10,10 +10,12 @@ cargo test
 cargo clippy
 cargo run -- --system "Mia's Star" --income 200000 --stability 8 --time-limit 25000
 
-# Interactive TUI (see TUI_DESIGN.md): Saves -> Rank -> System detail, with a
-# discovered-only scope filter (>=1 surveyed planet, core worlds excluded by
-# default) and settings persisted to solver_tui.toml. Rank/extract run as
-# background jobs; "cancel" only detaches until cooperative cancel lands (v1.5).
+# Interactive TUI (see TUI_DESIGN.md): Saves -> Rank -> System -> Solve -> Plan,
+# with a discovered-only scope filter (>=1 surveyed planet, core worlds excluded
+# by default) and settings persisted to solver_tui.toml. Rank/extract/solve run
+# as background jobs; x cooperatively cancels rank/solve (solver::cancel flag),
+# extract/load only detach. Loading a save's systems seeds the Setup balance
+# from the save (credits/SP/alpha cores/colony items; player_balance table).
 cargo run --release -- tui
 
 # A/B test decomp vs IDA* across all systems/goals
@@ -45,6 +47,12 @@ SYSTEM_SOLVER_BOUND_MS=5000 cargo run   # budget per point. See OPTIMAL_SOLVER_B
 ```
 
 Key CLI flags: `--income`, `--stability`, `--defense`, `--credits`, `--story-points`, `--alpha-cores`, `--item <NAME>` (repeatable), `--time-limit <MS>`.
+
+`--time-limit` is a hard wall-clock deadline: the decomp climbs poll it (and the
+cooperative-cancel flag, `solver::cancel`) at node granularity and return their
+best-so-far plan when it fires. Results are deterministic only when the solve
+finishes inside the budget; a cutoff is machine-dependent and reported via
+`cutoff_occurred`.
 
 ```bash
 # Quick ranking: score every system with a reduced deterministic sweep (sparse

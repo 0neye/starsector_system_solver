@@ -1,7 +1,5 @@
-use crate::solver::{
-    search_system_decomp, search_system_maximize, Balance, Goal, Metric, State,
-};
 use crate::solver::state::Action;
+use crate::solver::{search_system_decomp, search_system_maximize, Balance, Goal, Metric, State};
 use crate::system::System;
 
 #[derive(Debug, Clone)]

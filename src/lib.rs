@@ -7,9 +7,9 @@ pub mod rank;
 pub mod solve;
 pub mod solver;
 pub mod system;
-pub mod tui;
 #[cfg(test)]
 mod tests;
+pub mod tui;
 pub mod utils;
 
 pub use planet::{Facility, Planet};
