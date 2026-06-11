@@ -28,5 +28,6 @@ mod support;
 mod facility;
 mod parser;
 mod planet;
+mod rank;
 mod solver;
 mod system;

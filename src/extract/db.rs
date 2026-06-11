@@ -10,7 +10,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::extract::gamedata::GameData;
 use crate::extract::model::{MappedOutput, MappedSystem, SaveInfo};
-use crate::extract::Result;
+use crate::extract::{ExtractError, Result};
 
 pub struct Db {
     conn: Connection,
@@ -43,6 +43,20 @@ pub struct SearchSystemRow {
     pub remnant_damaged: bool,
     pub star_types: Vec<String>,
     pub planet_count: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct SystemDiscovery {
+    pub system_name: String,
+    pub planet_count: u32,
+    /// Planets with survey_level = 'FULL'.
+    pub surveyed_full: u32,
+    /// Planets with survey_level IN ('PRELIMINARY','FULL').
+    pub surveyed_any: u32,
+    /// System has the `theme_core_populated` tag.
+    pub is_core: bool,
+    /// Planets with owner_faction NOT IN ('neutral','player') AND NOT NULL.
+    pub npc_colonized_planets: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +131,10 @@ impl Db {
             CREATE TABLE IF NOT EXISTS planet_conditions(
                 planet_id INTEGER REFERENCES planets(id) ON DELETE CASCADE,
                 condition_id TEXT
+            );
+            CREATE TABLE IF NOT EXISTS system_tags(
+                system_id INTEGER NOT NULL REFERENCES systems(id) ON DELETE CASCADE,
+                tag TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS infrastructure(
                 system_id INTEGER REFERENCES systems(id) ON DELETE CASCADE,
@@ -248,6 +266,12 @@ impl Db {
         for mapped_system in &mapped.systems {
             let system_id = insert_system(&tx, save_id, mapped_system)?;
             system_count += 1;
+            for tag in &mapped_system.system.tags {
+                tx.execute(
+                    "INSERT INTO system_tags(system_id, tag) VALUES(?1, ?2)",
+                    params![system_id, tag],
+                )?;
+            }
             for infra in &mapped_system.infrastructure {
                 tx.execute(
                     "INSERT INTO infrastructure(system_id, infrastructure_type, is_domain, is_damaged) VALUES(?1, ?2, ?3, ?4)",
@@ -397,6 +421,45 @@ impl Db {
                 planet_count: candidate.planet_count,
             })
             .collect())
+    }
+
+    pub fn system_discovery(&self, save: Option<&str>) -> Result<Vec<SystemDiscovery>> {
+        let save_id = self.select_save_id(save)?;
+        let mut stmt = self.conn.prepare(
+            r#"
+            SELECT s.name,
+                   COUNT(p.id) AS planet_count,
+                   SUM(CASE WHEN p.survey_level = 'FULL' THEN 1 ELSE 0 END) AS surveyed_full,
+                   SUM(CASE WHEN p.survey_level IN ('PRELIMINARY', 'FULL') THEN 1 ELSE 0 END) AS surveyed_any,
+                   EXISTS(
+                       SELECT 1 FROM system_tags st
+                       WHERE st.system_id = s.id AND st.tag = 'theme_core_populated'
+                   ) AS is_core,
+                   SUM(CASE
+                       WHEN p.owner_faction IS NOT NULL
+                            AND p.owner_faction NOT IN ('neutral', 'player')
+                       THEN 1 ELSE 0
+                   END) AS npc_colonized_planets
+            FROM systems s
+            LEFT JOIN planets p ON p.system_id = s.id
+            WHERE s.save_id = ?1
+            GROUP BY s.id
+            ORDER BY s.name ASC
+            "#,
+        )?;
+        let rows = stmt
+            .query_map(params![save_id], |row| {
+                Ok(SystemDiscovery {
+                    system_name: row.get(0)?,
+                    planet_count: row.get::<_, i64>(1)? as u32,
+                    surveyed_full: row.get::<_, i64>(2)? as u32,
+                    surveyed_any: row.get::<_, i64>(3)? as u32,
+                    is_core: row.get::<_, i64>(4)? != 0,
+                    npc_colonized_planets: row.get::<_, i64>(5)? as u32,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     pub fn export_csvs(
@@ -562,6 +625,42 @@ impl Db {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    fn select_save_id(&self, save: Option<&str>) -> Result<i64> {
+        if let Some(save) = save {
+            let needle = format!("%{}%", save.to_lowercase());
+            let id = self
+                .conn
+                .query_row(
+                    r#"
+                    SELECT id
+                    FROM saves
+                    WHERE LOWER(dir_name) LIKE ?1 OR LOWER(character_name) LIKE ?1
+                    ORDER BY save_date DESC, extracted_at DESC, dir_name ASC
+                    LIMIT 1
+                    "#,
+                    params![needle],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            return id.ok_or_else(|| ExtractError::NotFound(format!("no save matching {save}")));
+        }
+
+        let id = self
+            .conn
+            .query_row(
+                r#"
+                SELECT id
+                FROM saves
+                ORDER BY save_date DESC, extracted_at DESC, dir_name ASC
+                LIMIT 1
+                "#,
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        id.ok_or_else(|| ExtractError::NotFound("no extracted saves found".to_string()))
     }
 }
 
@@ -993,6 +1092,7 @@ mod tests {
                     has_remnants: false,
                     remnant_damaged: false,
                     star_types: vec!["star_yellow".to_string()],
+                    tags: vec![],
                 },
                 planets: vec![PlanetRow {
                     name: "A".to_string(),
@@ -1032,6 +1132,94 @@ mod tests {
         }
     }
 
+    fn discovery_planet(
+        name: &str,
+        survey_level: Option<&str>,
+        owner_faction: Option<&str>,
+    ) -> PlanetRow {
+        PlanetRow {
+            name: name.to_string(),
+            internal_id: Some(name.to_string()),
+            planet_type: "water".to_string(),
+            mapped_vanilla_type: Some("water".to_string()),
+            is_moon: false,
+            survey_level: survey_level.map(|s| s.to_string()),
+            owner_faction: owner_faction.map(|s| s.to_string()),
+            radius: 100.0,
+            ruins: None,
+            farmland: None,
+            rare_ores: None,
+            ores: None,
+            volatiles: None,
+            organics: None,
+            accessibility_percent: None,
+            hazard_percent: 100.0,
+            hazard_incomplete: false,
+            no_atmosphere: false,
+            very_hot: false,
+            gas_giant: false,
+            habitable: false,
+            extreme_activity: false,
+            water: false,
+            conditions: vec![],
+        }
+    }
+
+    fn discovery_output() -> MappedOutput {
+        MappedOutput {
+            systems: vec![
+                MappedSystem {
+                    system: SystemRow {
+                        name: "Core".to_string(),
+                        display_name: "Core Star System".to_string(),
+                        internal_id: "core".to_string(),
+                        x_ly: None,
+                        y_ly: None,
+                        dist_from_com_ly: None,
+                        stable_points: 0,
+                        has_gate: false,
+                        has_remnants: false,
+                        remnant_damaged: false,
+                        star_types: vec![],
+                        tags: vec!["theme_core".to_string(), "theme_core_populated".to_string()],
+                    },
+                    planets: vec![
+                        discovery_planet("Core Null", None, Some("neutral")),
+                        discovery_planet("Core Seen", Some("SEEN"), Some("hegemony")),
+                        discovery_planet("Core Preliminary", Some("PRELIMINARY"), None),
+                        discovery_planet("Core Full", Some("FULL"), Some("player")),
+                    ],
+                    infrastructure: vec![],
+                },
+                MappedSystem {
+                    system: SystemRow {
+                        name: "Fringe".to_string(),
+                        display_name: "Fringe Star System".to_string(),
+                        internal_id: "fringe".to_string(),
+                        x_ly: None,
+                        y_ly: None,
+                        dist_from_com_ly: None,
+                        stable_points: 0,
+                        has_gate: false,
+                        has_remnants: false,
+                        remnant_damaged: false,
+                        star_types: vec![],
+                        tags: vec!["theme_misc".to_string()],
+                    },
+                    planets: vec![discovery_planet(
+                        "Fringe Full",
+                        Some("FULL"),
+                        Some("hegemony"),
+                    )],
+                    infrastructure: vec![],
+                },
+            ],
+            unknown_conditions: vec![],
+            type_mappings: vec![],
+            unknown_types: vec![],
+        }
+    }
+
     #[test]
     fn write_search_and_export_round_trip() {
         let db_path = temp_db_path("round_trip");
@@ -1064,5 +1252,54 @@ mod tests {
 
         let _ = fs::remove_file(&db_path);
         let _ = fs::remove_dir_all(&out_dir);
+    }
+
+    #[test]
+    fn system_discovery_round_trips_tags_and_survey_metadata() {
+        let db_path = temp_db_path("discovery");
+        let mut db = Db::open(&db_path).unwrap();
+        let save = SaveInfo {
+            dir_name: "save_alpha".to_string(),
+            path: std::path::PathBuf::from("/tmp/save_alpha"),
+            character_name: "Alpha".to_string(),
+            save_date: "2026-06-09 00:00:00.000 UTC".to_string(),
+            game_version: "0.98a".to_string(),
+            character_level: 15,
+            compressed: false,
+            modified: SystemTime::now(),
+        };
+
+        let output = discovery_output();
+        db.write_extraction(&save, &sample_game_data(), &output)
+            .unwrap();
+        db.write_extraction(&save, &sample_game_data(), &output)
+            .unwrap();
+
+        let tag_count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM system_tags", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(tag_count, 3);
+
+        let rows = db.system_discovery(Some("alpha")).unwrap();
+        assert_eq!(rows.len(), 2);
+
+        let core = &rows[0];
+        assert_eq!(core.system_name, "Core");
+        assert_eq!(core.planet_count, 4);
+        assert_eq!(core.surveyed_full, 1);
+        assert_eq!(core.surveyed_any, 2);
+        assert!(core.is_core);
+        assert_eq!(core.npc_colonized_planets, 1);
+
+        let fringe = &rows[1];
+        assert_eq!(fringe.system_name, "Fringe");
+        assert_eq!(fringe.planet_count, 1);
+        assert_eq!(fringe.surveyed_full, 1);
+        assert_eq!(fringe.surveyed_any, 1);
+        assert!(!fringe.is_core);
+        assert_eq!(fringe.npc_colonized_planets, 1);
+
+        let _ = fs::remove_file(&db_path);
     }
 }

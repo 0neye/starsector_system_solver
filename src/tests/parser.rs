@@ -87,6 +87,7 @@ fn db_loader_matches_csv_semantics() {
                 has_remnants: false,
                 remnant_damaged: false,
                 star_types: vec!["star_yellow".to_string()],
+                tags: vec![],
             },
             planets: vec![PlanetRow {
                 name: "A".to_string(),

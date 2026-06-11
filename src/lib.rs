@@ -2,6 +2,7 @@ pub mod constants;
 pub mod extract;
 pub mod parser;
 pub mod planet;
+pub mod rank;
 pub mod solver;
 pub mod system;
 #[cfg(test)]

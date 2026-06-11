@@ -45,7 +45,7 @@ pub struct RawPlanet {
     pub tags: Vec<String>,
     /// Market condition ids in save order.
     pub conditions: Vec<String>,
-    /// `<surveyLevel>` if present (NONE/PRELIMINARY/FULL).
+    /// `<surveyLevel>` if present (NONE/SEEN/PRELIMINARY/FULL).
     pub survey_level: Option<String>,
     /// Owner faction id if the market is colonized (e.g. `hegemony`, `player`).
     pub owner_faction: Option<String>,
@@ -99,6 +99,7 @@ pub struct SystemRow {
     pub has_remnants: bool,
     pub remnant_damaged: bool,
     pub star_types: Vec<String>,
+    pub tags: Vec<String>,
 }
 
 /// Mirrors a Planets.csv row plus extras. `None` resource = empty CSV cell.

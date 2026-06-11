@@ -388,6 +388,7 @@ fn map_system(
         });
     }
 
+    let tags = system.tags.clone();
     let planets = system
         .planets
         .into_iter()
@@ -407,6 +408,7 @@ fn map_system(
             has_remnants: remnant_state.0,
             remnant_damaged: remnant_state.1,
             star_types: system.star_types,
+            tags,
         },
         planets,
         infrastructure,
@@ -734,7 +736,10 @@ mod tests {
                     display_name: "Beta Star System".to_string(),
                     internal_id: "2".to_string(),
                     hyper_loc: Some((2000.0, 0.0)),
-                    tags: vec!["theme_remnant_suppressed".to_string()],
+                    tags: vec![
+                        "theme_outer".to_string(),
+                        "theme_remnant_suppressed".to_string(),
+                    ],
                     star_types: vec!["star_yellow".to_string()],
                     planets: vec![planet(
                         "B",
@@ -767,6 +772,13 @@ mod tests {
         assert_eq!(alpha.planets[0].accessibility_percent, Some(99.0));
         assert!(alpha.planets[0].gas_giant);
         let beta = &mapped.systems[1];
+        assert_eq!(
+            beta.system.tags,
+            vec![
+                "theme_outer".to_string(),
+                "theme_remnant_suppressed".to_string()
+            ]
+        );
         assert!(beta.system.has_remnants);
         assert!(beta.system.remnant_damaged);
         assert_eq!(beta.planets[0].ores, Some(0.0));

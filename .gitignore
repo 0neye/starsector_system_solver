@@ -22,3 +22,5 @@ QUICK_RANKING_DESIGN.md
 rank_validation.py
 rank_quick.csv
 rank_quick_log.txt
+TUI_DESIGN.md
+specs/

@@ -3,15 +3,17 @@ mod cpu_affinity;
 mod extract;
 mod parser;
 mod planet;
+mod rank;
 mod solver;
 mod system;
 mod utils;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use planet::Planet;
+use rank::{filter_system_names, peak_income, rank_systems, RankScorer};
 use solver::{
-    diagnose_maximize_gap, search_system_decomp, search_system_maximize, solve_pareto,
-    solve_pareto_bound, solve_pareto_quick, solve_pareto_template, Balance, Goal, Metric, State,
+    diagnose_maximize_gap, search_system_decomp, search_system_maximize, solve_pareto, Balance,
+    Goal, Metric, State,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -119,17 +121,6 @@ enum Command {
     /// Save-game extraction tools (parse saves into the DB, search, export)
     #[command(subcommand)]
     Extract(extract::cli::ExtractCommand),
-}
-
-/// `--rank` scoring strategy. `Quick` is the Tier-1 budgeted search; `Template`
-/// and `Bound` are the two Tier-0 instant scorers (in practice a lower and an
-/// upper bound on the score, respectively — see the soundness caveats on
-/// `solve_pareto_template` / `solve_pareto_bound`). See QUICK_RANKING_DESIGN.md.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-enum RankScorer {
-    Quick,
-    Template,
-    Bound,
 }
 
 /// Load solver game data from the extraction DB. Env-var modes use
@@ -271,58 +262,40 @@ fn run_rank(
     csv: bool,
     scorer: RankScorer,
 ) {
-    let mut names: Vec<&String> = systems.keys().collect();
-    names.sort();
-    if !filters.is_empty() {
-        let needles: Vec<String> = filters.iter().map(|f| f.to_lowercase()).collect();
-        names.retain(|n| {
-            let lower = n.to_lowercase();
-            needles.iter().any(|needle| lower.contains(needle))
-        });
-        if names.is_empty() {
-            eprintln!("error: no system matches the --rank-system filter(s)");
-            std::process::exit(1);
-        }
-    }
-
-    let scorer_fn: fn(&System, &Balance, i32, u32) -> solver::pareto::ParetoSolve = match scorer {
-        RankScorer::Quick => solve_pareto_quick,
-        RankScorer::Template => solve_pareto_template,
-        RankScorer::Bound => solve_pareto_bound,
-    };
+    let names = filter_system_names(systems, filters).unwrap_or_else(|_| {
+        eprintln!("error: no system matches the --rank-system filter(s)");
+        std::process::exit(1);
+    });
 
     eprintln!(
         "Ranking {} systems ({scorer:?} scorer, horizon {horizon} months)...",
         names.len()
     );
 
-    let mut ranked: Vec<(&String, solver::pareto::ParetoSolve, f64)> = Vec::new();
-    for name in names {
-        let t0 = std::time::Instant::now();
-        let solve = scorer_fn(&systems[name], balance, horizon, time_limit);
-        let secs = t0.elapsed().as_secs_f64();
-        eprintln!("  [{name}] score {:.1} in {secs:.1}s", solve.score);
-        ranked.push((name, solve, secs));
-    }
-    // Best first; name breaks exact ties so the order is total and reproducible.
-    ranked.sort_by(|a, b| b.1.score.total_cmp(&a.1.score).then_with(|| a.0.cmp(b.0)));
-
-    let peak_income = |solve: &solver::pareto::ParetoSolve| {
-        solve
-            .stability_frontier
-            .iter()
-            .chain(solve.defense_frontier.iter())
-            .map(|p| p.income)
-            .fold(0.0_f64, f64::max)
-    };
+    let ranked = rank_systems(
+        systems,
+        balance,
+        &names,
+        horizon,
+        time_limit,
+        scorer,
+        &mut |row| {
+            eprintln!(
+                "  [{}] score {:.1} in {:.1}s",
+                row.system, row.solve.score, row.seconds
+            );
+        },
+    );
 
     if csv {
         println!("system,score,peak_income,seconds");
-        for (name, solve, secs) in &ranked {
+        for row in &ranked {
             println!(
-                "{name},{:.3},{:.0},{secs:.2}",
-                solve.score,
-                peak_income(solve)
+                "{},{:.3},{:.0},{:.2}",
+                row.system,
+                row.solve.score,
+                peak_income(&row.solve),
+                row.seconds
             );
         }
         return;
@@ -332,14 +305,14 @@ fn run_rank(
         "\n#   {:<24} {:>8}  {:>12}  {:>7}",
         "system", "score", "peak income", "time"
     );
-    for (i, (name, solve, secs)) in ranked.iter().enumerate() {
+    for (i, row) in ranked.iter().enumerate() {
         println!(
             "{:<3} {:<24} {:>8.1}  {:>12.0}  {:>6.1}s",
             i + 1,
-            name,
-            solve.score,
-            peak_income(solve),
-            secs,
+            row.system,
+            row.solve.score,
+            peak_income(&row.solve),
+            row.seconds,
         );
     }
     println!(
