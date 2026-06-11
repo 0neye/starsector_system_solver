@@ -150,6 +150,22 @@ impl SearchProfile {
         max_nodes_per_seed: 2_000,
         warm_seeds_only: true,
     };
+    /// Tier-0 "instant paint": score the fixed template portfolio — the
+    /// planet-set seeds (max-build-out plus each single-planet drop, in both
+    /// free-port variants, see [`planet_set_seed_plans`]) — and take the best,
+    /// with **no** hill-climb at all. `max_nodes_per_seed: 1` makes
+    /// [`lazy_hill_climb`] return before evaluating a single neighbor, so each
+    /// floor costs only one forced simulation per template (roughly linear in
+    /// planets → milliseconds per system). The same templates run on every
+    /// system, so the approximation error is correlated across systems, which
+    /// is what rank preservation wants. Because it never climbs, its score is a
+    /// lower bound on `QUICK`'s (which climbs from these same seeds). See
+    /// `QUICK_RANKING_DESIGN.md`.
+    pub const TEMPLATE: Self = Self {
+        top_seed_climbs: 1,
+        max_nodes_per_seed: 1,
+        warm_seeds_only: false,
+    };
 }
 
 /// Static facts about the search instance, computed once per solve and threaded

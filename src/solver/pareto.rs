@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use crate::constants::ColonyItem;
 use crate::solver::decomp::{search_system_maximize_seeded, SearchProfile, SystemPlan};
 use crate::solver::goal::{Goal, Metric};
 use crate::solver::state::{Action, Balance, State};
@@ -238,6 +241,333 @@ pub fn solve_pareto_quick(
     }
 
     assemble_solve(samples)
+}
+
+/// Tier-0 "instant paint" variant of [`solve_pareto`]: scores the fixed
+/// template portfolio with **no** hill-climb ([`SearchProfile::TEMPLATE`]) over
+/// the same sparse floor grid as [`solve_pareto_quick`], chaining each floor's
+/// winning template forward as a warm seed. One forced simulation per template,
+/// so it paints a rough ranking in milliseconds (the UI shows this immediately
+/// and refines to Tier 1 in the background). Shares the frontier/AUC/score code
+/// with the full sweep so its scores stay comparable, and because it never
+/// climbs, each point is a lower bound on the corresponding `solve_pareto_quick`
+/// point — refinement only moves scores up. See `QUICK_RANKING_DESIGN.md`.
+pub fn solve_pareto_template(
+    system: &System,
+    balance: &Balance,
+    horizon: i32,
+    time_limit: u32,
+) -> ParetoSolve {
+    let mut samples = Vec::new();
+
+    // Anchor: the stability-5 template winner, warm-starting everything else.
+    let mut stability_warm = None;
+    let first_stability = QUICK_STABILITY_FLOORS[0];
+    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(first_stability));
+    if let Some(point) = measure_point_seeded(
+        system,
+        balance,
+        FrontierKind::Stability,
+        first_stability as f64,
+        &floors,
+        horizon,
+        time_limit,
+        &mut stability_warm,
+        &[],
+        SearchProfile::TEMPLATE,
+    ) {
+        samples.push(point);
+    }
+    let mut defense_warm = stability_warm.clone();
+
+    // Every floor uses the same no-climb template scoring; the warm plan from
+    // the previous floor joins the template set so a higher floor can reuse a
+    // lower floor's winner verbatim. No QUICK_REPAIR/QUICK fallback here —
+    // there is only one (cheapest) profile to fall back to.
+    let mut measure = |kind: FrontierKind,
+                       x: f64,
+                       floors: &Goal,
+                       warm: &mut Option<SystemPlan>|
+     -> Option<ParetoPoint> {
+        measure_point_seeded(
+            system,
+            balance,
+            kind,
+            x,
+            floors,
+            horizon,
+            time_limit,
+            warm,
+            &[],
+            SearchProfile::TEMPLATE,
+        )
+    };
+
+    for stability in QUICK_STABILITY_FLOORS.iter().copied().skip(1) {
+        let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stability));
+        if let Some(point) = measure(
+            FrontierKind::Stability,
+            stability as f64,
+            &floors,
+            &mut stability_warm,
+        ) {
+            samples.push(point);
+        }
+    }
+    for defense in QUICK_DEFENSE_FLOORS {
+        let floors = Goal::new(f64::NEG_INFINITY, Some(defense), Some(0));
+        if let Some(point) = measure(FrontierKind::Defense, defense, &floors, &mut defense_warm) {
+            samples.push(point);
+        }
+    }
+
+    assemble_solve(samples)
+}
+
+/// Tier-0 *upper-bound* variant: the per-planet decomposed, credit-relaxed
+/// income ceiling ([`per_planet_income_bound`]), reported as a `ParetoSolve`
+/// whose score is an upper bound on the full-sweep score. Unlike
+/// [`solve_pareto_template`] (a lower bound that approximates the frontier), this
+/// is the "potential" certificate the interval-escalation step wants: the real
+/// score can never exceed it. No frontier search at all — one FULL solve per
+/// single-planet sub-system, rationing the shared one-shots. See
+/// `QUICK_RANKING_DESIGN.md` step 1.
+pub fn solve_pareto_bound(
+    system: &System,
+    balance: &Balance,
+    horizon: i32,
+    time_limit: u32,
+) -> ParetoSolve {
+    let ceiling = per_planet_income_bound(system, balance, horizon, time_limit);
+
+    // Income is non-increasing as either floor tightens, so the unconstrained
+    // per-planet ceiling bounds the achievable income at *every* floor. A
+    // frontier flat at that ceiling has normalized AUC equal to the ceiling on
+    // both axes, so the score it implies — an upper bound on the real AUC score —
+    // is `ceiling / SCORE_INCOME_UNIT`. We construct the `ParetoSolve` directly
+    // rather than feed a flat frontier through `pareto_frontier` (which would
+    // dedup the equal-income points to one and collapse the AUC to zero).
+    let (smin, smax) = frontier_bounds(FrontierKind::Stability);
+    let (dmin, dmax) = frontier_bounds(FrontierKind::Defense);
+    let stability_point = |x: f64| ParetoPoint {
+        kind: FrontierKind::Stability,
+        floor: x,
+        income: ceiling,
+        stability: x,
+        defense: 0.0,
+        months: 0,
+        actions: Vec::new(),
+    };
+    let defense_point = |x: f64| ParetoPoint {
+        kind: FrontierKind::Defense,
+        floor: x,
+        income: ceiling,
+        stability: 0.0,
+        defense: x,
+        months: 0,
+        actions: Vec::new(),
+    };
+
+    ParetoSolve {
+        stability_frontier: vec![stability_point(smin), stability_point(smax)],
+        defense_frontier: vec![defense_point(dmin), defense_point(dmax)],
+        stability_auc: ceiling,
+        defense_auc: ceiling,
+        score: ceiling / SCORE_INCOME_UNIT,
+        recommendation: None,
+    }
+}
+
+/// Per-planet decomposed, credit-relaxed **upper bound** on the system's net
+/// income — the Tier-0 "potential" ceiling. Two relaxations make it a true
+/// ceiling that is also cheap to compute:
+///
+/// * **Drop cross-planet contention.** Net income is a pure sum of per-planet
+///   incomes, so solving each planet on its own infinite-credit timeline (no
+///   shared credit pool, no shared `Wait`) and summing can only *exceed* the
+///   joint optimum, where those resources are contended. The one system-wide
+///   coupling — the comm-relay stability bonus — is preserved exactly by
+///   [`single_planet_system`], so it is not a source of error.
+/// * **Relax credits, keep the one-shot caps real.** Per `bound.rs`, credits are
+///   the renewable resource; relaxing them removes the schedule ruggedness so a
+///   single-planet FULL search reliably reaches the planet's ceiling. Story
+///   points, alpha cores and colony items stay scarce and are rationed across
+///   planets by greedy marginal income (each unit to the planet it helps most),
+///   so the bound is not the vacuous "a core on every planet" number.
+///
+/// The result is an upper bound on the joint optimum, exact when each planet's
+/// income is concave in its one-shot allocation (which diminishing returns make
+/// near-true). See `QUICK_RANKING_DESIGN.md` step 1.
+fn per_planet_income_bound(
+    system: &System,
+    balance: &Balance,
+    horizon: i32,
+    time_limit: u32,
+) -> f64 {
+    let mut hashes: Vec<u64> = system.planets().keys().copied().collect();
+    hashes.sort_unstable();
+    let subs: Vec<System> = hashes
+        .iter()
+        .map(|h| single_planet_system(system, *h))
+        .collect();
+    let n = subs.len();
+    if n == 0 {
+        return 0.0;
+    }
+
+    // Shared one-shot pool. Item types are held in a fixed sorted order so a
+    // planet's item allocation is a count vector aligned to `item_types`.
+    let mut item_types: Vec<ColonyItem> = balance.colony_items().keys().copied().collect();
+    item_types.sort_unstable();
+    let item_totals: Vec<u32> = item_types
+        .iter()
+        .map(|it| *balance.colony_items().get(it).unwrap_or(&0))
+        .collect();
+    let n_items = item_types.len();
+
+    // Memoized single-planet solve. After a greedy step only the chosen planet's
+    // allocation changes, so every other planet's trials in the next pass hit the
+    // memo — the whole sweep costs ~`(planets + units) * resource_kinds` solves.
+    let mut memo: HashMap<(usize, u32, u32, Vec<u32>), f64> = HashMap::new();
+    let mut solve = |idx: usize, cores: u32, sps: u32, items: &[u32]| -> f64 {
+        let key = (idx, cores, sps, items.to_vec());
+        if let Some(value) = memo.get(&key) {
+            return *value;
+        }
+        let alloc: Vec<(ColonyItem, u32)> = item_types
+            .iter()
+            .copied()
+            .zip(items.iter().copied())
+            .filter(|(_, count)| *count > 0)
+            .collect();
+        let value = solve_planet_income(&subs[idx], cores, sps, &alloc, horizon, time_limit);
+        memo.insert(key, value);
+        value
+    };
+
+    // Per-planet running allocation and its achieved income.
+    let mut cores = vec![0u32; n];
+    let mut sps = vec![0u32; n];
+    let mut items = vec![vec![0u32; n_items]; n];
+    let mut incomes: Vec<f64> = (0..n).map(|p| solve(p, 0, 0, &items[p])).collect();
+
+    let mut cores_rem = balance.alpha_cores();
+    let mut sps_rem = balance.story_points();
+    let mut items_rem = item_totals;
+
+    // Greedy: assign each remaining one-shot unit to the (planet, resource) with
+    // the largest marginal income gain, until the pool is spent or no unit helps.
+    #[derive(Clone, Copy)]
+    enum Unit {
+        Core,
+        Sp,
+        Item(usize),
+    }
+    loop {
+        let mut best: Option<(f64, usize, Unit)> = None;
+        let mut consider = |gain: f64, p: usize, unit: Unit| {
+            // 1 credit threshold treats float noise as no gain (incomes are in
+            // the hundreds of thousands).
+            if gain > 1.0 && best.is_none_or(|(g, _, _)| gain > g) {
+                best = Some((gain, p, unit));
+            }
+        };
+        for p in 0..n {
+            let cur = incomes[p];
+            if cores_rem > 0 {
+                consider(solve(p, cores[p] + 1, sps[p], &items[p]) - cur, p, Unit::Core);
+            }
+            if sps_rem > 0 {
+                consider(solve(p, cores[p], sps[p] + 1, &items[p]) - cur, p, Unit::Sp);
+            }
+            for j in 0..n_items {
+                if items_rem[j] > 0 {
+                    let mut trial = items[p].clone();
+                    trial[j] += 1;
+                    consider(solve(p, cores[p], sps[p], &trial) - cur, p, Unit::Item(j));
+                }
+            }
+        }
+
+        match best {
+            Some((_, p, Unit::Core)) => {
+                cores[p] += 1;
+                cores_rem -= 1;
+            }
+            Some((_, p, Unit::Sp)) => {
+                sps[p] += 1;
+                sps_rem -= 1;
+            }
+            Some((_, p, Unit::Item(j))) => {
+                items[p][j] += 1;
+                items_rem[j] -= 1;
+            }
+            None => break,
+        }
+        if let Some((_, p, _)) = best {
+            incomes[p] = solve(p, cores[p], sps[p], &items[p]);
+        }
+    }
+
+    incomes.iter().sum()
+}
+
+/// One-planet view of `system`: a clone with every other planet removed, so the
+/// kept planet retains the system's stable points and infrastructure — hence its
+/// comm-relay status and the system-wide stability bonus that depends on it.
+/// Each per-planet solve can build its own relay; because a relay benefits every
+/// planet identically in the real joint problem, granting it per planet is exact,
+/// not a relaxation.
+fn single_planet_system(system: &System, keep: u64) -> System {
+    let mut sub = system.clone();
+    let drop: Vec<u64> = sub
+        .planets()
+        .keys()
+        .copied()
+        .filter(|hash| *hash != keep)
+        .collect();
+    for hash in drop {
+        sub.remove_planet_by_hash(hash);
+    }
+    sub
+}
+
+/// Max net income at the horizon for a single-planet sub-system under relaxed
+/// credits and a fixed one-shot allocation. Credits are inflated so nothing is
+/// ever credit-gated (the renewable resource, per `bound.rs`); the supplied
+/// `cores`/`sps`/`items` pin the scarce one-shots so the caller can ration them
+/// across planets. A FULL search converges trivially on one planet, and the
+/// credit relaxation removes the schedule ruggedness, so the value is a
+/// trustworthy per-planet ceiling.
+fn solve_planet_income(
+    sub_system: &System,
+    cores: u32,
+    sps: u32,
+    items: &[(ColonyItem, u32)],
+    horizon: i32,
+    time_limit: u32,
+) -> f64 {
+    let mut balance = Balance::new(1e15, sps, cores);
+    for (item, count) in items {
+        for _ in 0..*count {
+            balance.add_colony_item(*item);
+        }
+    }
+    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(0));
+    let mut warm = None;
+    measure_point_seeded(
+        sub_system,
+        &balance,
+        FrontierKind::Stability,
+        0.0,
+        &floors,
+        horizon,
+        time_limit,
+        &mut warm,
+        &[],
+        SearchProfile::FULL,
+    )
+    .map_or(0.0, |point| point.income)
 }
 
 /// Shared back half of [`solve_pareto`] / [`solve_pareto_quick`]: frontier

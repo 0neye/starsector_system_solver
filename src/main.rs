@@ -7,11 +7,11 @@ mod solver;
 mod system;
 mod utils;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use planet::Planet;
 use solver::{
     diagnose_maximize_gap, search_system_decomp, search_system_maximize, solve_pareto,
-    solve_pareto_quick, Balance, Goal, Metric, State,
+    solve_pareto_bound, solve_pareto_quick, solve_pareto_template, Balance, Goal, Metric, State,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -88,6 +88,14 @@ struct Cli {
     #[arg(long = "rank-system")]
     rank_systems: Vec<String>,
 
+    /// Which `--rank` scorer to use: `quick` (default) = budgeted real search
+    /// (`solve_pareto_quick`, Tier 1); `template` = instant template portfolio,
+    /// a Tier-0 lower bound (`solve_pareto_template`); `bound` = per-planet
+    /// decomposed credit-relaxed upper bound, the Tier-0 "potential" ceiling
+    /// (`solve_pareto_bound`). See QUICK_RANKING_DESIGN.md.
+    #[arg(long = "rank-scorer", value_enum, default_value_t = RankScorer::Quick)]
+    rank_scorer: RankScorer,
+
     /// Emit `--rank` results as CSV (system,score,peak_income,seconds) instead
     /// of the human-readable table — used by the rank-validation harness.
     #[arg(long)]
@@ -110,6 +118,16 @@ enum Command {
     /// Save-game extraction tools (parse saves into the DB, search, export)
     #[command(subcommand)]
     Extract(extract::cli::ExtractCommand),
+}
+
+/// `--rank` scoring strategy. `Quick` is the Tier-1 budgeted search; `Template`
+/// and `Bound` are the two Tier-0 instant scorers (a lower and an upper bound on
+/// the score, respectively). See QUICK_RANKING_DESIGN.md.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum RankScorer {
+    Quick,
+    Template,
+    Bound,
 }
 
 /// Load solver game data from the extraction DB. Env-var modes use
@@ -235,11 +253,12 @@ fn run_solve(system_name: &str, system: &System, balance: &Balance, horizon: i32
     }
 }
 
-/// `--rank`: score every selected system with the quick Pareto sweep
-/// (`solve_pareto_quick`) and print them best-first. Deterministic; quick
-/// scores are lower bounds on full-sweep scores and are meant for *ordering*
-/// systems, not as final numbers — `--solve` on the chosen system gives the
-/// real frontier. See QUICK_RANKING_DESIGN.md.
+/// `--rank`: score every selected system with a quick Pareto sweep and print
+/// them best-first. `scorer` selects the strategy (see [`RankScorer`]): `Quick`
+/// is the Tier-1 budgeted search; `Template` and `Bound` are the Tier-0 instant
+/// scorers (a lower and an upper bound on the score). All are deterministic and
+/// meant for *ordering* systems, not as final numbers — `--solve` on the chosen
+/// system gives the real frontier. See QUICK_RANKING_DESIGN.md.
 fn run_rank(
     systems: &HashMap<String, System>,
     balance: &Balance,
@@ -247,6 +266,7 @@ fn run_rank(
     horizon: i32,
     time_limit: u32,
     csv: bool,
+    scorer: RankScorer,
 ) {
     let mut names: Vec<&String> = systems.keys().collect();
     names.sort();
@@ -262,15 +282,21 @@ fn run_rank(
         }
     }
 
+    let scorer_fn: fn(&System, &Balance, i32, u32) -> solver::pareto::ParetoSolve = match scorer {
+        RankScorer::Quick => solve_pareto_quick,
+        RankScorer::Template => solve_pareto_template,
+        RankScorer::Bound => solve_pareto_bound,
+    };
+
     eprintln!(
-        "Ranking {} systems (quick profile, horizon {horizon} months)...",
+        "Ranking {} systems ({scorer:?} scorer, horizon {horizon} months)...",
         names.len()
     );
 
     let mut ranked: Vec<(&String, solver::pareto::ParetoSolve, f64)> = Vec::new();
     for name in names {
         let t0 = std::time::Instant::now();
-        let solve = solve_pareto_quick(&systems[name], balance, horizon, time_limit);
+        let solve = scorer_fn(&systems[name], balance, horizon, time_limit);
         let secs = t0.elapsed().as_secs_f64();
         eprintln!("  [{name}] score {:.1} in {secs:.1}s", solve.score);
         ranked.push((name, solve, secs));
@@ -1012,6 +1038,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             cli.horizon,
             cli.time_limit,
             cli.rank_csv,
+            cli.rank_scorer,
         );
         return Ok(());
     }
