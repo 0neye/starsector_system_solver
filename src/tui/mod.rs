@@ -5,6 +5,7 @@ mod screens;
 
 use std::io::{self, stdout};
 use std::panic;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -20,8 +21,8 @@ use self::config::{TuiConfig, CONFIG_PATH};
 
 type PanicHook = Box<dyn Fn(&panic::PanicHookInfo<'_>) + Sync + Send + 'static>;
 
-pub fn run() -> io::Result<()> {
-    let (config, status) = TuiConfig::load(CONFIG_PATH);
+pub fn run(starsector_dir: Option<PathBuf>) -> io::Result<()> {
+    let (config, status) = load_config_for_start(starsector_dir, CONFIG_PATH);
     let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;
@@ -41,6 +42,21 @@ pub fn run() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+pub(crate) fn load_config_for_start(
+    starsector_dir: Option<PathBuf>,
+    config_path: impl AsRef<Path>,
+) -> (TuiConfig, Option<String>) {
+    let config_path = config_path.as_ref();
+    let (mut config, mut status) = TuiConfig::load(config_path);
+    if let Some(starsector_dir) = starsector_dir {
+        config.starsector_dir = Some(starsector_dir);
+        if let Err(err) = config.save(config_path) {
+            status = Some(err);
+        }
+    }
+    (config, status)
 }
 
 fn handle_key(app: &mut App, code: KeyCode) {

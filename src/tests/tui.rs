@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::constants::{ColonyItem, FacilityType};
@@ -390,6 +391,7 @@ fn tui_config_round_trips_toml() {
         discovery_definition: DiscoveryDefinition::FullySurveyed,
         include_core_worlds: true,
         colony_items: BTreeMap::from([("soil nanites".to_string(), 2)]),
+        starsector_dir: Some(PathBuf::from(r"C:\Games\Starsector")),
         ..Default::default()
     };
 
@@ -399,4 +401,26 @@ fn tui_config_round_trips_toml() {
 
     assert_eq!(status, None);
     assert_eq!(loaded, config);
+}
+
+#[test]
+fn tui_startup_starsector_dir_override_is_saved_to_config() {
+    let path = std::env::temp_dir().join(format!(
+        "system_solver_tui_startup_config_test_{}_{}.toml",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let starsector_dir = PathBuf::from(r"C:\Games\Starsector");
+
+    let (config, status) = crate::tui::load_config_for_start(Some(starsector_dir.clone()), &path);
+    let (loaded, load_status) = TuiConfig::load(&path);
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(status, None);
+    assert_eq!(load_status, None);
+    assert_eq!(config.starsector_dir, Some(starsector_dir.clone()));
+    assert_eq!(loaded.starsector_dir, Some(starsector_dir));
 }

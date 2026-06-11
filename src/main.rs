@@ -118,13 +118,17 @@ struct Cli {
     horizon: i32,
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum Command {
     /// Save-game extraction tools (parse saves into the DB, search, export)
     #[command(subcommand)]
     Extract(extract::cli::ExtractCommand),
     /// Open the interactive terminal UI.
-    Tui,
+    Tui {
+        /// Starsector install directory. Overrides solver_tui.toml for this run.
+        #[arg(long)]
+        starsector_dir: Option<PathBuf>,
+    },
 }
 
 /// Load solver game data from the extraction DB. Env-var modes use
@@ -1033,8 +1037,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     std::process::exit(1);
                 }
             }
-            Command::Tui => {
-                if let Err(err) = tui::run() {
+            Command::Tui { starsector_dir } => {
+                if let Err(err) = tui::run(starsector_dir) {
                     eprintln!("{err}");
                     std::process::exit(1);
                 }
@@ -1224,6 +1228,29 @@ fn main() -> Result<(), Box<dyn Error>> {
     crate::solver::_test_path_undo_consistency(&state);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn tui_subcommand_accepts_starsector_dir() {
+        let cli = Cli::parse_from([
+            "system_solver",
+            "tui",
+            "--starsector-dir",
+            r"C:\Games\Starsector",
+        ]);
+
+        match cli.command {
+            Some(Command::Tui {
+                starsector_dir: Some(path),
+            }) => assert_eq!(path, PathBuf::from(r"C:\Games\Starsector")),
+            other => panic!("expected tui --starsector-dir, got {other:?}"),
+        }
+    }
 }
 
 /*
