@@ -398,7 +398,7 @@ fn ida_star(
     initial_state: &mut State,
     goal: &Goal,
     time_limit: u32,
-    slim: bool,
+    exclude_upgrades: bool,
 ) -> Option<AStarSearchResult> {
     println!("Starting IDA* search with time limit: {} ms", time_limit);
     let start_time = Instant::now();
@@ -428,7 +428,7 @@ fn ida_star(
         visited.insert(initial_state.get_deep_hash(), 0);
 
         if debug {
-            let actions_len = initial_state.get_possible_actions(slim).len();
+            let actions_len = initial_state.get_possible_actions(exclude_upgrades).len();
             let colonized = initial_state
                 .system()
                 .planets()
@@ -451,7 +451,7 @@ fn ida_star(
             bound,
             &mut visited,
             &precompute_map,
-            slim,
+            exclude_upgrades,
         );
         total_nodes_searched += result.nodes_searched;
         total_nodes_pruned += result.nodes_pruned_by_bound;
@@ -533,7 +533,7 @@ fn depth_limited_search(
         HashMap<FacilityType, PrecomputedFacilityData, BuildNoHashHasher<u8>>,
         BuildNoHashHasher<u64>,
     >,
-    slim: bool,
+    exclude_upgrades: bool,
 ) -> AStarSearchResult {
     if goal.is_satisfied(state) {
         return AStarSearchResult {
@@ -564,7 +564,7 @@ fn depth_limited_search(
     let mut cutoff_occurred = false;
     let mut best_next_bound = i32::MAX;
 
-    for action in state.get_ordered_possible_actions(slim) {
+    for action in state.get_ordered_possible_actions(exclude_upgrades) {
         let cost = action_cost(&action);
         state.apply_action_raw(&action, false);
         let next_hash = state.get_deep_hash();
@@ -578,8 +578,15 @@ fn depth_limited_search(
         }
         visited.insert(next_hash, next_g);
 
-        let result =
-            depth_limited_search(state, goal, next_g, bound, visited, precompute_map, slim);
+        let result = depth_limited_search(
+            state,
+            goal,
+            next_g,
+            bound,
+            visited,
+            precompute_map,
+            exclude_upgrades,
+        );
         state.undo_last_action(false);
 
         if result.solution.is_some() {
@@ -614,7 +621,7 @@ pub fn search_all_planets(
     initial_state: &mut State,
     goal: &Goal,
     time_limit: u32,
-    slim: bool,
+    exclude_upgrades: bool,
 ) -> Vec<AStarSearchResult> {
     // Split state into per-planet states
     let planet_states = initial_state.to_vec_by_planet();
@@ -622,7 +629,7 @@ pub fn search_all_planets(
     // Search each planet in parallel
     planet_states
         .into_par_iter()
-        .filter_map(|mut state| ida_star(&mut state, goal, time_limit, slim))
+        .filter_map(|mut state| ida_star(&mut state, goal, time_limit, exclude_upgrades))
         .collect()
 }
 

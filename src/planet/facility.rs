@@ -668,11 +668,11 @@ impl Facility {
         &self,
         planet: &dyn PlanetConditionChecker,
         balance: &Balance,
-        slim: bool,
+        exclude_upgrades: bool,
     ) -> Vec<Action> {
         // TODO: experiment with allowing adding items before building is done
 
-        let mut actions = Vec::with_capacity(if !slim { 4 } else { 2 });
+        let mut actions = Vec::with_capacity(if !exclude_upgrades { 4 } else { 2 });
         let planet_name_hash = planet.name_hash();
 
         // Add possible colony items if none present
@@ -689,7 +689,7 @@ impl Facility {
             }
         }
 
-        if !slim {
+        if !exclude_upgrades {
             // Add improvements if not present
             if !self.has_improvements() {
                 let improvement_cost = 2_u32.pow(planet.improvements());

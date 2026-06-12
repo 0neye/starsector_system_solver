@@ -411,8 +411,9 @@ impl State {
         &mut self.action_log
     }
 
-    pub fn get_possible_actions(&self, slim: bool) -> Vec<Action> {
-        self.system.get_possible_actions(&self.balance, slim)
+    pub fn get_possible_actions(&self, exclude_upgrades: bool) -> Vec<Action> {
+        self.system
+            .get_possible_actions(&self.balance, exclude_upgrades)
     }
 
     /// Returns a vector of State objects with each planet in their own State
@@ -826,10 +827,10 @@ impl State {
     //     rating
     // }
 
-    pub fn get_ordered_possible_actions(&self, slim: bool) -> Vec<Action> {
+    pub fn get_ordered_possible_actions(&self, exclude_upgrades: bool) -> Vec<Action> {
         // println!("Starting get_ordered_possible_actions");
         // println!(" Getting possible actions");
-        let mut actions = self.get_possible_actions(slim);
+        let mut actions = self.get_possible_actions(exclude_upgrades);
         // println!(" Got {} possible actions", actions.len());
 
         // println!(" Sorting actions");

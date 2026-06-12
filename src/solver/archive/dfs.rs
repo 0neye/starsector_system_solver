@@ -48,7 +48,7 @@ pub struct SearchResult {
 
 const MAX_DEPTH: u32 = 100;
 
-pub fn search(initial_state: &State, time_limit: u32, slim: bool) -> SearchResult {
+pub fn search(initial_state: &State, time_limit: u32, exclude_upgrades: bool) -> SearchResult {
     println!("Starting search with time limit: {} ms", time_limit);
 
     let mut info = SearchInfo {
@@ -77,7 +77,7 @@ pub fn search(initial_state: &State, time_limit: u32, slim: bool) -> SearchResul
 
         let depth_start_time = std::time::Instant::now();
         println!("\nSearching at depth {}", depth);
-        let result = dfs(&mut info, depth, best_score, &mut tt, slim);
+        let result = dfs(&mut info, depth, best_score, &mut tt, exclude_upgrades);
         if result.is_none() {
             println!("Search interrupted at depth {}", depth);
             break;
@@ -127,7 +127,7 @@ fn dfs(
     depth: u32,
     alpha: f64,
     tt: &mut HashSet<u64, BuildNoHashHasher<u64>>,
-    slim: bool,
+    exclude_upgrades: bool,
 ) -> Option<SearchResult> {
     if info.is_time_up() {
         return None;
@@ -144,7 +144,7 @@ fn dfs(
         return Some(result);
     }
 
-    let actions = info.state.get_ordered_possible_actions(slim);
+    let actions = info.state.get_ordered_possible_actions(exclude_upgrades);
     let mut orig_action_log = info.state.action_log().clone();
     let mut best_action_log = info.state.action_log().clone();
     let mut best_score = alpha;
@@ -161,7 +161,7 @@ fn dfs(
 
         info.state.apply_action_raw(action, false);
 
-        let sub_result = dfs(info, depth - 1, best_score, tt, slim);
+        let sub_result = dfs(info, depth - 1, best_score, tt, exclude_upgrades);
 
         if let Some(sub_result) = sub_result {
             result.nodes_explored += sub_result.nodes_explored;

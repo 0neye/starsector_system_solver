@@ -1185,7 +1185,7 @@ impl Planet {
     }
 
     /// Get all possible actions for this planet
-    pub fn get_possible_actions(&self, balance: &Balance, slim: bool) -> Vec<Action> {
+    pub fn get_possible_actions(&self, balance: &Balance, exclude_upgrades: bool) -> Vec<Action> {
         let num_actions_estimate = 4 + self.facilities.len() * 2;
         let mut actions = Vec::with_capacity(num_actions_estimate);
 
@@ -1282,7 +1282,7 @@ impl Planet {
 
         // Get facility-specific actions
         for facility in &self.facilities {
-            actions.extend(facility.get_possible_actions(self, balance, slim));
+            actions.extend(facility.get_possible_actions(self, balance, exclude_upgrades));
         }
 
         // Deduplicate Wait actions

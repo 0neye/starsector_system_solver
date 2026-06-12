@@ -108,10 +108,10 @@ fn replay_satisfies(base: &State, log: &[Action], goal: &Goal) -> bool {
 /// Independent oracle for a *reachable* net income: greedily take any legal
 /// non-wait action, otherwise wait, for a number of steps. Uses only
 /// generator-approved actions so it doesn't assume specific facility gating.
-fn reachable_income(base: &State, steps: u32) -> f64 {
+fn reachable_income(base: &State, steps: u32, exclude_upgrades: bool) -> f64 {
     let mut s = base.clone();
     for _ in 0..steps {
-        let actions = s.get_ordered_possible_actions(true);
+        let actions = s.get_ordered_possible_actions(exclude_upgrades);
         if let Some(a) = actions
             .iter()
             .find(|a| !matches!(a, Action::Wait(_)))
@@ -141,7 +141,7 @@ fn decomp_inner_sim_zero_months_when_already_satisfied() {
 
     let plan = SystemPlan::permit_all(&state);
     let (actions, months) =
-        simulate_plan(&state, &goal, &plan, true).expect("a trivially-satisfied goal is solvable");
+        simulate_plan(&state, &goal, &plan, false).expect("a trivially-satisfied goal is solvable");
 
     assert_eq!(months, 0, "no waiting needed when the goal holds at t=0");
     assert!(
@@ -159,7 +159,7 @@ fn decomp_inner_sim_log_is_consistent_and_correct() {
     let mut colonized = base.clone();
     colonized.apply_action_raw(&Action::Colonize(hash), false);
 
-    let target = reachable_income(&colonized, 60);
+    let target = reachable_income(&colonized, 60, true);
     assert!(
         target > 0.0,
         "test setup expects a built-up Terran colony to reach positive income, got {target}"
@@ -168,7 +168,7 @@ fn decomp_inner_sim_log_is_consistent_and_correct() {
     let goal = Goal::new(target * 0.5, None, None);
 
     let plan = SystemPlan::permit_all(&colonized);
-    let (log, months) = simulate_plan(&colonized, &goal, &plan, true)
+    let (log, months) = simulate_plan(&colonized, &goal, &plan, false)
         .expect("half the reachable income is solvable");
 
     assert_eq!(
@@ -190,12 +190,12 @@ fn decomp_inner_sim_is_deterministic() {
     let mut colonized = base.clone();
     colonized.apply_action_raw(&Action::Colonize(hash), false);
 
-    let target = reachable_income(&colonized, 60);
+    let target = reachable_income(&colonized, 60, true);
     let goal = Goal::new((target * 0.5).max(1.0), None, None);
     let plan = SystemPlan::permit_all(&colonized);
 
-    let first = simulate_plan(&colonized, &goal, &plan, true);
-    let second = simulate_plan(&colonized, &goal, &plan, true);
+    let first = simulate_plan(&colonized, &goal, &plan, false);
+    let second = simulate_plan(&colonized, &goal, &plan, false);
     assert_eq!(first, second, "the inner simulator must be deterministic");
 }
 
@@ -207,14 +207,14 @@ fn decomp_search_returns_satisfying_plan() {
     let mut colonized = base.clone();
     colonized.apply_action_raw(&Action::Colonize(hash), false);
 
-    let target = reachable_income(&colonized, 60);
+    let target = reachable_income(&colonized, 60, true);
     assert!(
         target > 0.0,
         "expected a reachable positive income, got {target}"
     );
     let goal = Goal::new(target * 0.5, None, None);
 
-    let result = decomp_search(&mut colonized, &goal, 2_000, true)
+    let result = decomp_search(&mut colonized, &goal, 2_000, false)
         .expect("outer search should find a plan for a reachable goal");
     let log = result
         .solution
@@ -240,7 +240,7 @@ fn decomp_maximize_income_holds_stability_floor() {
     let mut colonized = base.clone();
     colonized.apply_action_raw(&Action::Colonize(hash), false);
 
-    let target = reachable_income(&colonized, 60);
+    let target = reachable_income(&colonized, 60, true);
     assert!(
         target > 0.0,
         "expected a reachable positive income, got {target}"
@@ -248,7 +248,7 @@ fn decomp_maximize_income_holds_stability_floor() {
 
     // Maximize income with no income floor but a stability floor of 5.
     let floors = Goal::new(f64::NEG_INFINITY, None, Some(5));
-    let result = decomp_search_maximize(&mut colonized, Metric::Income, &floors, 120, 3_000, true)
+    let result = decomp_search_maximize(&mut colonized, Metric::Income, &floors, 120, 3_000, false)
         .expect("a single colony can hold stability 5 while earning income");
     let log = result
         .solution
@@ -289,9 +289,9 @@ fn decomp_maximize_longer_horizon_is_no_worse_for_fixed_plan() {
     let plan = SystemPlan::permit_all(&colonized);
     let floors = Goal::new(f64::NEG_INFINITY, None, None);
 
-    let (short, _) = simulate_plan_maximize(&colonized, Metric::Income, &floors, 12, &plan, true)
+    let (short, _) = simulate_plan_maximize(&colonized, Metric::Income, &floors, 12, &plan, false)
         .expect("income is maximizable with no floor");
-    let (long, _) = simulate_plan_maximize(&colonized, Metric::Income, &floors, 120, &plan, true)
+    let (long, _) = simulate_plan_maximize(&colonized, Metric::Income, &floors, 120, &plan, false)
         .expect("income is maximizable with no floor");
 
     assert!(
@@ -315,7 +315,7 @@ fn decomp_maximize_schedules_production_before_commerce_multiplier() {
     let plan = SystemPlan::permit_all(&colonized);
     let floors = Goal::new(f64::NEG_INFINITY, None, None);
     let (_income, _months, log) =
-        simulate_plan_maximize_with_log(&colonized, Metric::Income, &floors, 12, &plan, true)
+        simulate_plan_maximize_with_log(&colonized, Metric::Income, &floors, 12, &plan, false)
             .expect("income is maximizable with no floor");
 
     let first_facility = log
@@ -343,7 +343,10 @@ fn decomp_maximize_schedules_production_before_commerce_multiplier() {
 /// now all land on the same 271797 (no gap). So this test no longer exercises a
 /// trap escape — it pins the deterministic maximize optimum, holds the floor,
 /// and confirms run-to-run determinism. Any regression below the optimum (e.g.
-/// back toward the 268797 seed) fails.
+/// back toward the 268797 seed) fails. The 271797/268797 figures were measured
+/// with upgrades excluded; the search now runs with improvements/alpha cores
+/// included (the default), which can only raise the optimum, so the >270k
+/// threshold still holds.
 ///
 /// Uses the real game data (loaded from the crate-root CSVs during tests).
 #[test]
@@ -366,7 +369,7 @@ fn decomp_maximize_mia_bravos_escapes_local_optimum() {
         // build that hits it returns a machine-dependent best-effort plan,
         // which would break the determinism assertion below.
         let result =
-            decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 120_000, true)
+            decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 120_000, false)
                 .expect("Mia Bravos can hold stability 6 while earning income");
         let log = result
             .solution
@@ -418,7 +421,7 @@ fn decomp_maximize_mia_bravos_stability_8_keeps_three_planet_basin() {
     // Generous budget: the climb needs ~15s alone in debug, and the time
     // limit is now a hard deadline — a cutoff under `cargo test` rayon-pool
     // contention would return a weaker basin and fail the assertion below.
-    let result = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 120_000, true)
+    let result = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 120_000, false)
         .expect("Mia Bravos can hold stability 8 while earning income");
     let log = result
         .solution
@@ -460,7 +463,7 @@ fn decomp_factored_lookahead_matches_reference_on_mia_bravos() {
         &floors,
         120,
         &plan,
-        true,
+        false,
         250,
     );
 
@@ -493,13 +496,19 @@ fn distinct_colonized(log: &[Action]) -> usize {
 /// reach alone by developing several planets on one shared timeline — and the
 /// legacy per-planet split must fail at the same goal. This is the core proof of
 /// multi-planet interleaving.
+///
+/// Runs upgrade-free (`exclude_upgrades = true`) on purpose: the test needs a
+/// goal sandwiched strictly between one planet's ceiling and two planets'
+/// combined ceiling, and the upgrade-free oracle gives a tight solo bound.
+/// With improvements/alpha cores enabled, a single planet overshoots 1.5x that
+/// bound, collapsing the contrast the test depends on.
 #[test]
 fn decomp_joint_interleaves_planets_for_system_goal() {
     // Solo income one Terran colony can reach on its own.
     let (solo_base, hash) = terran_base();
     let mut solo = solo_base.clone();
     solo.apply_action_raw(&Action::Colonize(hash), false);
-    let solo_income = reachable_income(&solo, 80);
+    let solo_income = reachable_income(&solo, 80, true);
     assert!(
         solo_income > 0.0,
         "expected positive solo income, got {solo_income}"
@@ -583,7 +592,7 @@ fn generator_does_not_reoffer_lower_tiers_of_a_completed_chain() {
     );
 
     let reoffered: Vec<_> = state
-        .get_ordered_possible_actions(true)
+        .get_ordered_possible_actions(false)
         .into_iter()
         .filter(|a| {
             matches!(
@@ -628,7 +637,7 @@ fn decomp_time_limit_is_a_hard_deadline() {
         .unwrap();
     let t0 = Instant::now();
     let _ = pool
-        .install(|| decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 200, true));
+        .install(|| decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 200, false));
     // Alone this finishes in <1s even in debug; the original bug ran minutes.
     assert!(
         t0.elapsed() < Duration::from_secs(30),
@@ -660,7 +669,7 @@ fn decomp_cancel_stops_search() {
     let mut state = State::new(Balance::new(5_000_000.0, 5, 1), system);
     crate::solver::cancel::request();
     let t0 = Instant::now();
-    let _ = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 600_000, true);
+    let _ = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 600_000, false);
     let elapsed = t0.elapsed();
     crate::solver::cancel::clear();
     assert!(

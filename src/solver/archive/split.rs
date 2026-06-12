@@ -17,12 +17,12 @@ pub fn search_all_planets_decomp(
     initial_state: &mut State,
     goal: &Goal,
     time_limit: u32,
-    slim: bool,
+    exclude_upgrades: bool,
 ) -> Vec<AStarSearchResult> {
     let planet_states = initial_state.to_vec_by_planet();
 
     planet_states
         .into_par_iter()
-        .filter_map(|mut state| decomp_search(&mut state, goal, time_limit, slim))
+        .filter_map(|mut state| decomp_search(&mut state, goal, time_limit, exclude_upgrades))
         .collect()
 }

@@ -252,7 +252,7 @@ impl System {
         sum / count as f64
     }
 
-    pub fn get_possible_actions(&self, balance: &Balance, slim: bool) -> Vec<Action> {
+    pub fn get_possible_actions(&self, balance: &Balance, exclude_upgrades: bool) -> Vec<Action> {
         let mut actions = Vec::new();
 
         if self.can_build_makeshift_comm_relay() {
@@ -269,7 +269,7 @@ impl System {
         // Then get actions from each colonized planet
         for planet in self.planets.values() {
             if planet.has_colony() {
-                actions.extend(planet.get_possible_actions(balance, slim));
+                actions.extend(planet.get_possible_actions(balance, exclude_upgrades));
             }
         }
 
