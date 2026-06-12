@@ -1,5 +1,4 @@
-//! Save-extraction CLI subcommands, shared by the main binary
-//! (`system_solver extract ...`) and the standalone `extract` binary.
+//! Save-extraction CLI subcommands for `system_solver extract ...`.
 //! See SAVE_EXTRACTION_DESIGN.md.
 
 use std::io::IsTerminal;
