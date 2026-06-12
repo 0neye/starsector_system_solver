@@ -33,6 +33,9 @@ python plot_pareto_frontiers.py   # writes pareto_frontiers.png
 #   SYSTEM_SOLVER_STATS=1                    per-point timings + per-system search counters (stderr)
 #   SYSTEM_SOLVER_QUALITY=1                  slow max-quality reference config (full climb
 #                                            refresh; used to gate speed optimizations)
+#   SYSTEM_SOLVER_NO_UPGRADES=1              disable SP improvements / alpha-core installs
+#                                            (matches --no-industry-upgrades; also honored
+#                                            by the bound sweep)
 # Benchmark workflow (see SOLVER_OPTIMIZATION_REPORT.md): run a sweep against
 # system_benchmark.db, then `python compare_pareto.py <ref.csv> <cand.csv> [tol_pct]`
 # (exit 1 on income regression).
@@ -46,7 +49,8 @@ SYSTEM_SOLVER_BOUND_MS=5000 cargo run   # budget per point. See OPTIMAL_SOLVER_B
 # greedy plan, so bound >= greedy by construction (negative gaps = solver bug).
 ```
 
-Key CLI flags: `--income`, `--stability`, `--defense`, `--credits`, `--story-points`, `--alpha-cores`, `--item <NAME>` (repeatable), `--time-limit <MS>`.
+Key CLI flags: `--income`, `--stability`, `--defense`, `--credits`, `--story-points`, `--alpha-cores`, `--item <NAME>` (repeatable), `--time-limit <MS>`, `--no-industry-upgrades`
+(SP improvements and industry/structure alpha cores are searched by default).
 
 `--time-limit` is a hard wall-clock deadline: the decomp climbs poll it (and the
 cooperative-cancel flag, `solver::cancel`) at node granularity and return their
@@ -56,18 +60,19 @@ finishes inside the budget; a cutoff is machine-dependent and reported via
 
 ```bash
 # Quick ranking: score every system with a reduced deterministic sweep (sparse
-# floors + capped repair climbs; see QUICK_RANKING_DESIGN.md), print best-first.
+# floors + mini-anchor repair climbs with a feasibility bridge; see
+# QUICK_RANKING_DESIGN.md), print best-first.
+# SYSTEM_SOLVER_RANK_POINTS=1: per-point income/months/profile trace (stderr).
 cargo run --release -- --db system_benchmark.db --rank
 cargo run --release -- --rank --rank-system askonia --rank-system corvus  # filter
 cargo run --release -- --rank --rank-csv > rank.csv  # machine-readable
 python rank_validation.py final_sweep.csv rank.csv   # rank-agreement gate vs full sweep
 # --rank-scorer picks the scorer (default `quick` = Tier-1 budgeted search):
-#   bound    = per-planet decomposed credit-relaxed upper bound (solve_pareto_bound,
-#              ~1s/system, ranks perfectly on the benchmark). A near-certain
-#              ceiling, not a certified one: the greedy one-shot rationing is
-#              exact only under concavity (see per_planet_income_bound) — don't
-#              build hard pruning that assumes it can never undershoot.
-#              Validate the same way: bound/full should be >= 1.
+#   bound    = floor-aware per-planet credit-relaxed upper bound
+#              (solve_pareto_bound): floor-0 one-shot rationing, per-floor
+#              menus, integer average-floor DP, and flat-left AUC. Near-certain
+#              ceiling, not certified: rationing is exact only under concavity
+#              and is fixed at floor 0. Validate: bound/full should be >= 1.
 #   template = instant template portfolio, no search, in practice a lower bound
 #              (solve_pareto_template, ~ms/system, rougher ordering).
 cargo run --release -- --rank --rank-scorer bound
@@ -87,13 +92,12 @@ output; the DB loader is verified to match its semantics exactly
 
 ```bash
 # Save-game extraction (see SAVE_EXTRACTION_DESIGN.md): parses a Starsector save
-# into save_data.db with tables mirroring the three CSVs. Available both as a
-# subcommand of the main CLI and as a standalone bin (same code, extract/cli.rs):
+# into save_data.db with tables mirroring the three CSVs. Available as a
+# subcommand of the main CLI:
 cargo run --release -- extract list-saves
 cargo run --release -- extract run --save DEMIURGE --latest
 cargo run --release -- extract search "askonia"
 cargo run --release -- extract export --system Corvus --out-dir out/extract_test
-cargo run --release --bin extract -- list-saves   # standalone equivalent
 ```
 
 ## Architecture
