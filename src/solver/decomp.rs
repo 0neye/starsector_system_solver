@@ -144,13 +144,25 @@ impl SearchProfile {
         max_nodes_per_seed: 50_000,
         warm_seeds_only: false,
     };
-    /// Quick-ranking repair point: climb only the warm plan from the previous
-    /// floor, with a small node cap — most floored optima differ from the
-    /// anchor by a few toggles/swaps.
+    /// Quick-ranking repair point: a mini-anchor. Full planet-set seeding plus
+    /// the chain's warm plan, top-2 climbs at a reduced node cap. Warm-only
+    /// 2k-node repairs compounded the anchor's error on large systems (Beta
+    /// Bhel undershot the reference 22-34% per point with upgrades on).
     pub const QUICK_REPAIR: Self = Self {
+        top_seed_climbs: 2,
+        max_nodes_per_seed: 10_000,
+        warm_seeds_only: false,
+    };
+    /// Bound-ranker per-planet solves: full seeding but a single climbed
+    /// seed. The bound's solves are warm-chained (the previous floor's /
+    /// allocation's plan is force-included past truncation), so the second
+    /// climb mostly re-finds the same basin; dropping it roughly halves the
+    /// per-solve cost. Income losses show up directly in the bound/full
+    /// ratio gate, which is how this profile is validated.
+    pub const BOUND: Self = Self {
         top_seed_climbs: 1,
-        max_nodes_per_seed: 2_000,
-        warm_seeds_only: true,
+        max_nodes_per_seed: MAX_NODES_PER_SEED,
+        warm_seeds_only: false,
     };
     /// Tier-0 "instant paint": score the fixed template portfolio — the
     /// planet-set seeds (max-build-out plus each single-planet drop, in both
@@ -531,9 +543,14 @@ pub(crate) fn simulate_plan(
     initial_state: &State,
     goal: &Goal,
     plan: &SystemPlan,
-    slim: bool,
+    exclude_upgrades: bool,
 ) -> Option<PlanOutcome> {
-    let score = run_plan(initial_state, &Objective::Reach(goal), plan, slim);
+    let score = run_plan(
+        initial_state,
+        &Objective::Reach(goal),
+        plan,
+        exclude_upgrades,
+    );
     score.feasible.then_some((score.log, score.months))
 }
 
@@ -550,14 +567,14 @@ pub(crate) fn simulate_plan_maximize(
     floors: &Goal,
     horizon_months: i32,
     plan: &SystemPlan,
-    slim: bool,
+    exclude_upgrades: bool,
 ) -> Option<(f64, i32)> {
     let objective = Objective::Maximize {
         metric,
         floors,
         horizon_months,
     };
-    let score = run_plan(initial_state, &objective, plan, slim);
+    let score = run_plan(initial_state, &objective, plan, exclude_upgrades);
     score.feasible.then_some((score.value, score.months))
 }
 
@@ -569,14 +586,14 @@ pub(crate) fn simulate_plan_maximize_with_log(
     floors: &Goal,
     horizon_months: i32,
     plan: &SystemPlan,
-    slim: bool,
+    exclude_upgrades: bool,
 ) -> Option<(f64, i32, Vec<Action>)> {
     let objective = Objective::Maximize {
         metric,
         floors,
         horizon_months,
     };
-    let score = run_plan(initial_state, &objective, plan, slim);
+    let score = run_plan(initial_state, &objective, plan, exclude_upgrades);
     score
         .feasible
         .then_some((score.value, score.months, score.log))
@@ -598,7 +615,7 @@ fn run_plan(
     initial_state: &State,
     objective: &Objective,
     plan: &SystemPlan,
-    slim: bool,
+    exclude_upgrades: bool,
 ) -> PlanScore {
     stats::RUN_PLAN_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let floors = objective.floors();
@@ -673,7 +690,7 @@ fn run_plan(
             break;
         }
 
-        let actions = state.get_possible_actions(slim);
+        let actions = state.get_possible_actions(exclude_upgrades);
 
         // 1) Take the best immediately-applicable plan action. The static
         // action priority is only a tie-breaker here; for fixed-plan scheduling
@@ -919,12 +936,8 @@ fn action_lookahead_scores(
     let horizon = objective.horizon_months().max(0) as u32;
     let mut waits: Vec<u32> = actions
         .iter()
-        .filter_map(|action| match action {
-            Action::AddFacility(_, _) => {
-                let wait = natural_action_wait(action).min(horizon);
-                (wait > 0).then_some(wait)
-            }
-            _ => None,
+        .filter_map(|action| {
+            factored_planet(action).map(|_| natural_action_wait(action).min(horizon))
         })
         .collect();
     waits.sort_unstable();
@@ -948,34 +961,48 @@ fn action_lookahead_scores(
     );
     actions
         .iter()
-        .map(|action| match action {
-            Action::AddFacility(planet_hash, _) => {
+        .map(|action| match factored_planet(action) {
+            Some(planet_hash) => {
                 let wait_months = natural_action_wait(action).min(horizon);
-                if wait_months > 0 {
-                    #[cfg(test)]
-                    let before_candidate = state.get_deep_hash();
-                    let score = factored_add_facility_lookahead_score(
-                        state,
-                        objective,
-                        action,
-                        *planet_hash,
-                        wait_months,
-                        &base,
-                    );
-                    #[cfg(test)]
-                    assert_eq!(
-                        state.get_deep_hash(),
-                        before_candidate,
-                        "factored candidate scoring must restore state after {action:?}"
-                    );
-                    score
-                } else {
-                    action_lookahead_score_reference(state, objective, action)
-                }
+                #[cfg(test)]
+                let before_candidate = state.get_deep_hash();
+                let score = factored_single_planet_lookahead_score(
+                    state,
+                    objective,
+                    action,
+                    planet_hash,
+                    wait_months,
+                    &base,
+                );
+                #[cfg(test)]
+                assert_eq!(
+                    state.get_deep_hash(),
+                    before_candidate,
+                    "factored candidate scoring must restore state after {action:?}"
+                );
+                score
             }
-            _ => action_lookahead_score_reference(state, objective, action),
+            None => action_lookahead_score_reference(state, objective, action),
         })
         .collect()
+}
+
+/// The single planet whose score inputs `action` can change, when the action
+/// factors into a one-planet input swap against cached system totals.
+/// System-wide actions (comm relay pushes a stability bonus into every
+/// planet) and `Wait` return `None` and take the reference scoring path.
+fn factored_planet(action: &Action) -> Option<u64> {
+    match action {
+        Action::AddFacility(planet_hash, _)
+        | Action::AddImprovement(planet_hash, _)
+        | Action::AddAlphaCore(planet_hash, _)
+        | Action::InstallItem(planet_hash, _, _)
+        | Action::SetFreePort(planet_hash, _)
+        | Action::SetHazardPay(planet_hash, _)
+        | Action::UpgradeAdmin(planet_hash)
+        | Action::Colonize(planet_hash) => Some(*planet_hash),
+        Action::BuildMakeshiftCommRelay | Action::Wait(_) => None,
+    }
 }
 
 fn action_lookahead_score_reference(
@@ -1155,7 +1182,7 @@ impl SystemScoreInputs {
     }
 }
 
-fn factored_add_facility_lookahead_score(
+fn factored_single_planet_lookahead_score(
     state: &mut State,
     objective: &Objective,
     action: &Action,
@@ -1171,14 +1198,16 @@ fn factored_add_facility_lookahead_score(
         let planet = state
             .system_mut()
             .get_planet_mut_by_hash(planet_hash)
-            .expect("AddFacility planet must exist after applying action");
-        let snapshot = planet.snapshot_wait_state();
-        if planet.has_colony() {
+            .expect("factored action planet must exist after applying action");
+        if wait_months > 0 && planet.has_colony() {
+            let snapshot = planet.snapshot_wait_state();
             planet.wait(wait_months, false);
+            let inputs = PlanetScoreInputs::from_planet(planet);
+            planet.restore_wait_state(&snapshot);
+            inputs
+        } else {
+            PlanetScoreInputs::from_planet(planet)
         }
-        let inputs = PlanetScoreInputs::from_planet(planet);
-        planet.restore_wait_state(&snapshot);
-        inputs
     };
 
     state.undo_last_action(false);
@@ -1244,7 +1273,7 @@ pub(crate) fn assert_factored_lookahead_matches_reference(
     floors: &Goal,
     horizon_months: i32,
     plan: &SystemPlan,
-    slim: bool,
+    exclude_upgrades: bool,
     min_candidate_scores: usize,
 ) -> usize {
     let objective = Objective::Maximize {
@@ -1262,7 +1291,7 @@ pub(crate) fn assert_factored_lookahead_matches_reference(
 
     while iters <= MAX_SIM_ITERS && total_months <= horizon_months {
         iters += 1;
-        let actions = state.get_possible_actions(slim);
+        let actions = state.get_possible_actions(exclude_upgrades);
         let candidates: Vec<_> = actions
             .iter()
             .filter(|a| !is_wait(a) && plan.allows(a))
@@ -1564,7 +1593,7 @@ fn planet_set_seed_plans(
 type PlanKey = (Vec<(u64, u64)>, bool);
 
 /// Shared memo of plan -> simulated score for one solve. [`run_plan`] is a pure
-/// deterministic function of `(initial_state, objective, plan, slim)`, and all
+/// deterministic function of `(initial_state, objective, plan, exclude_upgrades)`, and all
 /// climbs in one [`decomp_search_objective`] call share the same state and
 /// objective, so a cached score is bit-identical to a fresh simulation. The
 /// seeds' climbs overlap heavily (they converge into similar plans), which is
@@ -1598,7 +1627,7 @@ fn run_plan_cached(
     state: &State,
     objective: &Objective,
     plan: &SystemPlan,
-    slim: bool,
+    exclude_upgrades: bool,
     cache: &PlanCache,
 ) -> PlanScore {
     let key = plan_key(plan);
@@ -1606,7 +1635,7 @@ fn run_plan_cached(
         stats::CACHE_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return score.clone();
     }
-    let score = run_plan(state, objective, plan, slim);
+    let score = run_plan(state, objective, plan, exclude_upgrades);
     cache.lock().unwrap().insert(key, score.clone());
     score
 }
@@ -1620,7 +1649,7 @@ fn climb_from_seed(
     state: &State,
     ctx: &SearchContext,
     objective: &Objective,
-    slim: bool,
+    exclude_upgrades: bool,
     plan: SystemPlan,
     node_budget: u32,
     cache: &PlanCache,
@@ -1628,12 +1657,12 @@ fn climb_from_seed(
     deadline: Duration,
 ) -> (SystemPlan, PlanScore, u32) {
     let mut nodes = 1;
-    let score = run_plan_cached(state, objective, &plan, slim, cache);
+    let score = run_plan_cached(state, objective, &plan, exclude_upgrades, cache);
     let (plan, score) = lazy_hill_climb(
         state,
         ctx,
         objective,
-        slim,
+        exclude_upgrades,
         plan,
         score,
         node_budget,
@@ -1658,7 +1687,7 @@ fn choose_planet_set(
     state: &State,
     ctx: &SearchContext,
     objective: &Objective,
-    slim: bool,
+    exclude_upgrades: bool,
     start: Instant,
     deadline: Duration,
     nodes_searched: &mut u32,
@@ -1666,7 +1695,7 @@ fn choose_planet_set(
     let mut best: Option<(SystemPlan, PlanScore)> = None;
     for plan in planet_set_seed_plans(state, ctx, objective, start, deadline) {
         *nodes_searched += 1;
-        let score = run_plan(state, objective, &plan, slim);
+        let score = run_plan(state, objective, &plan, exclude_upgrades);
         let better = best
             .as_ref()
             .map_or(true, |(bp, bo)| is_better(objective, &score, &plan, bo, bp));
@@ -1974,7 +2003,7 @@ fn hill_climb(
     state: &State,
     ctx: &SearchContext,
     objective: &Objective,
-    slim: bool,
+    exclude_upgrades: bool,
     mut best_plan: SystemPlan,
     mut best: PlanScore,
     use_swaps: bool,
@@ -1998,7 +2027,7 @@ fn hill_climb(
                 break;
             }
             *nodes_searched += 1;
-            let cand = run_plan_cached(state, objective, &trial, slim, cache);
+            let cand = run_plan_cached(state, objective, &trial, exclude_upgrades, cache);
             // Must beat the incumbent, then be the steepest such move this pass.
             if !is_better(objective, &cand, &trial, &best, &best_plan) {
                 continue;
@@ -2087,7 +2116,7 @@ fn steepest_improving_move(
     state: &State,
     ctx: &SearchContext,
     objective: &Objective,
-    slim: bool,
+    exclude_upgrades: bool,
     plan: &SystemPlan,
     score: &PlanScore,
     node_budget: u32,
@@ -2103,7 +2132,7 @@ fn steepest_improving_move(
             continue;
         };
         *nodes_searched += 1;
-        let cand = run_plan_cached(state, objective, &trial, slim, cache);
+        let cand = run_plan_cached(state, objective, &trial, exclude_upgrades, cache);
         if !is_better(objective, &cand, &trial, score, plan) {
             continue;
         }
@@ -2147,7 +2176,7 @@ fn lazy_hill_climb(
     state: &State,
     ctx: &SearchContext,
     objective: &Objective,
-    slim: bool,
+    exclude_upgrades: bool,
     mut best_plan: SystemPlan,
     mut best: PlanScore,
     node_budget: u32,
@@ -2216,7 +2245,7 @@ fn lazy_hill_climb(
                 };
 
                 *nodes_searched += 1;
-                let cand = run_plan_cached(state, objective, &trial, slim, cache);
+                let cand = run_plan_cached(state, objective, &trial, exclude_upgrades, cache);
                 let (feasible, primary, months_neg, size_neg) =
                     lazy_rank(objective, &cand, trial.size());
                 let refreshed = LazyEntry {
@@ -2255,7 +2284,7 @@ fn lazy_hill_climb(
         if entry.sentinel || entry.version != version {
             // Stale or never scored: evaluate against the current plan.
             *nodes_searched += 1;
-            let cand = run_plan_cached(state, objective, &trial, slim, cache);
+            let cand = run_plan_cached(state, objective, &trial, exclude_upgrades, cache);
             let (feasible, primary, months_neg, size_neg) =
                 lazy_rank(objective, &cand, trial.size());
             let refreshed = LazyEntry {
@@ -2280,7 +2309,7 @@ fn lazy_hill_climb(
         // Fresh entry: scored against the current plan and pushed only if
         // improving, so accept it. (Deterministic simulation: the cached score
         // it was ranked with is the score it still has.)
-        let cand = run_plan_cached(state, objective, &trial, slim, cache);
+        let cand = run_plan_cached(state, objective, &trial, exclude_upgrades, cache);
         best_plan = trial;
         best = cand;
         version += 1;
@@ -2332,7 +2361,7 @@ fn decomp_search_objective(
     initial_state: &mut State,
     objective: &Objective,
     time_limit: u32,
-    slim: bool,
+    exclude_upgrades: bool,
     extra_seeds: &[SystemPlan],
     profile: SearchProfile,
 ) -> (Option<AStarSearchResult>, Option<SystemPlan>) {
@@ -2371,7 +2400,7 @@ fn decomp_search_objective(
         seeds
             .into_par_iter()
             .map(|(state, seed)| {
-                let score = run_plan_cached(&state, objective, &seed, slim, &cache);
+                let score = run_plan_cached(&state, objective, &seed, exclude_upgrades, &cache);
                 (seed, score)
             })
             .collect()
@@ -2421,7 +2450,7 @@ fn decomp_search_objective(
                 &state,
                 &ctx,
                 objective,
-                slim,
+                exclude_upgrades,
                 seed,
                 profile.max_nodes_per_seed,
                 &cache,
@@ -2475,13 +2504,13 @@ pub fn decomp_search(
     initial_state: &mut State,
     goal: &Goal,
     time_limit: u32,
-    slim: bool,
+    exclude_upgrades: bool,
 ) -> Option<AStarSearchResult> {
     decomp_search_objective(
         initial_state,
         &Objective::Reach(goal),
         time_limit,
-        slim,
+        exclude_upgrades,
         &[],
         SearchProfile::FULL,
     )
@@ -2498,7 +2527,7 @@ pub fn decomp_search_maximize(
     floors: &Goal,
     horizon_months: i32,
     time_limit: u32,
-    slim: bool,
+    exclude_upgrades: bool,
 ) -> Option<AStarSearchResult> {
     decomp_search_maximize_seeded(
         initial_state,
@@ -2506,7 +2535,7 @@ pub fn decomp_search_maximize(
         floors,
         horizon_months,
         time_limit,
-        slim,
+        exclude_upgrades,
         &[],
         SearchProfile::FULL,
     )
@@ -2520,7 +2549,7 @@ pub(crate) fn decomp_search_maximize_seeded(
     floors: &Goal,
     horizon_months: i32,
     time_limit: u32,
-    slim: bool,
+    exclude_upgrades: bool,
     extra_seeds: &[SystemPlan],
     profile: SearchProfile,
 ) -> (Option<AStarSearchResult>, Option<SystemPlan>) {
@@ -2533,7 +2562,7 @@ pub(crate) fn decomp_search_maximize_seeded(
         initial_state,
         &objective,
         time_limit,
-        slim,
+        exclude_upgrades,
         extra_seeds,
         profile,
     )
@@ -2546,9 +2575,9 @@ pub fn search_system_decomp(
     initial_state: &mut State,
     goal: &Goal,
     time_limit: u32,
-    slim: bool,
+    exclude_upgrades: bool,
 ) -> Vec<AStarSearchResult> {
-    decomp_search(initial_state, goal, time_limit, slim)
+    decomp_search(initial_state, goal, time_limit, exclude_upgrades)
         .into_iter()
         .collect()
 }
@@ -2561,7 +2590,7 @@ pub fn search_system_maximize(
     floors: &Goal,
     horizon_months: i32,
     time_limit: u32,
-    slim: bool,
+    exclude_upgrades: bool,
 ) -> Vec<AStarSearchResult> {
     decomp_search_maximize(
         initial_state,
@@ -2569,7 +2598,7 @@ pub fn search_system_maximize(
         floors,
         horizon_months,
         time_limit,
-        slim,
+        exclude_upgrades,
     )
     .into_iter()
     .collect()
@@ -2585,7 +2614,7 @@ pub(crate) fn search_system_maximize_seeded(
     floors: &Goal,
     horizon_months: i32,
     time_limit: u32,
-    slim: bool,
+    exclude_upgrades: bool,
     extra_seeds: &[SystemPlan],
     profile: SearchProfile,
 ) -> (Vec<AStarSearchResult>, Option<SystemPlan>) {
@@ -2595,7 +2624,7 @@ pub(crate) fn search_system_maximize_seeded(
         floors,
         horizon_months,
         time_limit,
-        slim,
+        exclude_upgrades,
         extra_seeds,
         profile,
     );
@@ -2616,7 +2645,7 @@ pub fn diagnose_maximize_gap(
     metric: Metric,
     floors: &Goal,
     horizon_months: i32,
-    slim: bool,
+    exclude_upgrades: bool,
 ) -> String {
     let objective = Objective::Maximize {
         metric,
@@ -2633,7 +2662,7 @@ pub fn diagnose_maximize_gap(
         initial_state,
         &ctx,
         &objective,
-        slim,
+        exclude_upgrades,
         start,
         deadline,
         &mut nodes,
@@ -2649,7 +2678,7 @@ pub fn diagnose_maximize_gap(
         initial_state,
         &ctx,
         &objective,
-        slim,
+        exclude_upgrades,
         seed_plan.clone(),
         seed_score.clone(),
         false,
@@ -2662,7 +2691,7 @@ pub fn diagnose_maximize_gap(
     let best_of = |plans: Vec<SystemPlan>| -> f64 {
         plans
             .into_iter()
-            .map(|p| run_plan(initial_state, &objective, &p, slim))
+            .map(|p| run_plan(initial_state, &objective, &p, exclude_upgrades))
             .filter(|s| s.feasible)
             .map(|s| s.value)
             .fold(f64::NEG_INFINITY, f64::max)
@@ -2675,7 +2704,7 @@ pub fn diagnose_maximize_gap(
         initial_state,
         &ctx,
         &objective,
-        slim,
+        exclude_upgrades,
         seed_plan,
         seed_score,
         true,
