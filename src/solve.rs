@@ -16,10 +16,11 @@ pub fn solve_goal(
     balance: &Balance,
     goal: &Goal,
     time_limit: u32,
+    include_industry_upgrades: bool,
 ) -> Option<SolveOutcome> {
     let mut state = State::new(balance.clone(), system.clone());
     let replay_base = state.clone();
-    let result = search_system_decomp(&mut state, goal, time_limit, true)
+    let result = search_system_decomp(&mut state, goal, time_limit, !include_industry_upgrades)
         .into_iter()
         .find(|result| result.solution.is_some())?;
     replay_outcome(replay_base, result.cost, result.solution.unwrap())
@@ -32,12 +33,20 @@ pub fn solve_maximize(
     floors: &Goal,
     horizon: i32,
     time_limit: u32,
+    include_industry_upgrades: bool,
 ) -> Option<SolveOutcome> {
     let mut state = State::new(balance.clone(), system.clone());
     let replay_base = state.clone();
-    let result = search_system_maximize(&mut state, metric, floors, horizon, time_limit, true)
-        .into_iter()
-        .find(|result| result.solution.is_some())?;
+    let result = search_system_maximize(
+        &mut state,
+        metric,
+        floors,
+        horizon,
+        time_limit,
+        !include_industry_upgrades,
+    )
+    .into_iter()
+    .find(|result| result.solution.is_some())?;
     replay_outcome(replay_base, result.cost, result.solution.unwrap())
 }
 

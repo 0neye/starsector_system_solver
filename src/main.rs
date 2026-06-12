@@ -74,6 +74,11 @@ struct Cli {
     #[arg(long, default_value_t = 1)]
     alpha_cores: u32,
 
+    /// Disable story-point improvements and industry/structure alpha-core installs.
+    /// They are included by default.
+    #[arg(long = "no-industry-upgrades", action = clap::ArgAction::SetFalse, default_value_t = true)]
+    include_industry_upgrades: bool,
+
     /// Colony item to start with (repeatable, e.g. --item "corrupted nanoforge")
     #[arg(long = "item")]
     items: Vec<ColonyItem>,
@@ -141,7 +146,14 @@ fn load_systems_from_env() -> Result<HashMap<String, System>, Box<dyn Error>> {
 
 /// Run the maximize-mode solver and report the best plan plus the metric values
 /// it actually achieves (by replaying the solution onto a fresh copy of `state`).
-fn test_maximize(mut state: State, metric: Metric, floors: &Goal, horizon: i32, time_limit: u32) {
+fn test_maximize(
+    mut state: State,
+    metric: Metric,
+    floors: &Goal,
+    horizon: i32,
+    time_limit: u32,
+    include_industry_upgrades: bool,
+) {
     println!(
         "\nStarting maximize solver ({}, horizon {} months)...",
         metric.as_str(),
@@ -149,7 +161,14 @@ fn test_maximize(mut state: State, metric: Metric, floors: &Goal, horizon: i32, 
     );
 
     let replay_base = state.clone();
-    let results = search_system_maximize(&mut state, metric, floors, horizon, time_limit, true);
+    let results = search_system_maximize(
+        &mut state,
+        metric,
+        floors,
+        horizon,
+        time_limit,
+        !include_industry_upgrades,
+    );
 
     if results.is_empty() {
         println!("No plan satisfies the floors within the horizon.");
@@ -177,12 +196,12 @@ fn test_maximize(mut state: State, metric: Metric, floors: &Goal, horizon: i32, 
     }
 }
 
-fn test_solver(mut state: State, goal: &Goal, time_limit: u32) {
+fn test_solver(mut state: State, goal: &Goal, time_limit: u32, include_industry_upgrades: bool) {
     println!("\nStarting solver test...");
     println!("Initial state score: {}", state.score() as i32);
 
     // Default solver: the joint two-level decomposition (shared timeline).
-    let results = search_system_decomp(&mut state, goal, time_limit, true);
+    let results = search_system_decomp(&mut state, goal, time_limit, !include_industry_upgrades);
 
     if results.is_empty() {
         println!("No solution found within time limit.");
@@ -212,7 +231,14 @@ fn print_action_log(actions: &[Action], planet_names: &HashMap<u64, String>) {
     }
 }
 
-fn run_solve(system_name: &str, system: &System, balance: &Balance, horizon: i32, time_limit: u32) {
+fn run_solve(
+    system_name: &str,
+    system: &System,
+    balance: &Balance,
+    horizon: i32,
+    time_limit: u32,
+    include_industry_upgrades: bool,
+) {
     println!("Pareto solve for {system_name} (horizon {horizon} months)");
     println!(
         "Starting balance: credits={:.0}, story_points={}, alpha_cores={}",
@@ -221,7 +247,13 @@ fn run_solve(system_name: &str, system: &System, balance: &Balance, horizon: i32
         balance.alpha_cores(),
     );
 
-    let solution = solve_pareto(system, balance, horizon, time_limit);
+    let solution = solve_pareto(
+        system,
+        balance,
+        horizon,
+        time_limit,
+        include_industry_upgrades,
+    );
 
     println!("\nSystem score: {:.1}", solution.score);
     println!(
@@ -281,6 +313,7 @@ fn run_rank(
     time_limit: u32,
     csv: bool,
     scorer: RankScorer,
+    include_industry_upgrades: bool,
 ) {
     let names = filter_system_names(systems, filters).unwrap_or_else(|_| {
         eprintln!("error: no system matches the --rank-system filter(s)");
@@ -299,6 +332,7 @@ fn run_rank(
         horizon,
         time_limit,
         scorer,
+        include_industry_upgrades,
         &mut |row| {
             eprintln!(
                 "  [{}] score {:.1} ({:.1}/planet) in {:.1}s",
@@ -515,7 +549,9 @@ fn verify_decomp(systems: &HashMap<String, System>) {
 /// longer reflects bound-search suboptimality.
 /// Triggered by `SYSTEM_SOLVER_BOUND=1`; horizon/budget via
 /// `SYSTEM_SOLVER_BOUND_HORIZON` / `SYSTEM_SOLVER_BOUND_MS`;
-/// `SYSTEM_SOLVER_BOUND_SYSTEM=<substring>` limits the sweep to one system.
+/// `SYSTEM_SOLVER_BOUND_SYSTEM=<substring>` limits the sweep to one system;
+/// `SYSTEM_SOLVER_NO_UPGRADES=1` disables improvements/alpha-core installs
+/// (matches the CLI's `--no-industry-upgrades`).
 fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
     use solver::decomp::{SearchProfile, SystemPlan};
     use solver::pareto::{
@@ -542,6 +578,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
         floors: &Goal,
         horizon: i32,
         time_limit: u32,
+        include_upgrades: bool,
         warm_greedy: &mut Option<SystemPlan>,
         warm_bound: &mut Option<SystemPlan>,
     ) -> (Option<ParetoPoint>, Option<ParetoPoint>) {
@@ -553,6 +590,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
             floors,
             horizon,
             time_limit,
+            include_upgrades,
             warm_greedy,
             &[],
             SearchProfile::FULL,
@@ -566,12 +604,15 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
             floors,
             horizon,
             time_limit,
+            include_upgrades,
             warm_bound,
             &cross,
             SearchProfile::FULL,
         );
         (greedy, bound)
     }
+
+    let include_upgrades = std::env::var_os("SYSTEM_SOLVER_NO_UPGRADES").is_none();
 
     let mut names: Vec<&String> = systems.keys().collect();
     names.sort();
@@ -612,6 +653,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
             &first_floors,
             horizon,
             time_limit,
+            include_upgrades,
             &mut stab_warm_greedy,
             &mut stab_warm_bound,
         );
@@ -642,6 +684,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
                             &floors,
                             horizon,
                             time_limit,
+                            include_upgrades,
                             &mut stab_warm_greedy,
                             &mut stab_warm_bound,
                         ),
@@ -666,6 +709,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
                             &floors,
                             horizon,
                             time_limit,
+                            include_upgrades,
                             &mut def_warm_greedy,
                             &mut def_warm_bound,
                         ),
@@ -838,7 +882,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Pareto-frontier sweep used by plot_pareto_frontiers.py. For each system,
-    // maximize income (slim/CLI path) while sweeping the stability floor (5..=10)
+    // maximize income while sweeping the stability floor (5..=10)
     // and the ground-defense floor, printing CSV rows of the achieved
     // (income, stability, defense). Triggered by SYSTEM_SOLVER_PARETO=1.
     //
@@ -895,6 +939,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         let show_stats = std::env::var_os("SYSTEM_SOLVER_STATS").is_some();
+        // SYSTEM_SOLVER_NO_UPGRADES=1 disables improvements/alpha-core installs
+        // (matches the CLI's `--no-industry-upgrades`).
+        let include_upgrades = std::env::var_os("SYSTEM_SOLVER_NO_UPGRADES").is_none();
 
         // Reuse the maximize-then-replay measurement and floor grids from the
         // Pareto library so the CSV sweep and `--solve` can't drift apart. The
@@ -939,6 +986,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &floors,
                 horizon,
                 time_limit,
+                include_upgrades,
                 &mut stability_warm,
             );
             let first_elapsed = t0.elapsed().as_secs_f64();
@@ -965,6 +1013,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             &floors,
                             horizon,
                             time_limit,
+                            include_upgrades,
                             &mut warm,
                         );
                         points.push((stab as f64, point, t0.elapsed().as_secs_f64()));
@@ -988,6 +1037,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             &floors,
                             horizon,
                             time_limit,
+                            include_upgrades,
                             &mut warm,
                         );
                         points.push((def_floor, point, t0.elapsed().as_secs_f64()));
@@ -1065,6 +1115,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             cli.time_limit,
             cli.rank_csv,
             cli.rank_scorer,
+            cli.include_industry_upgrades,
         );
         return Ok(());
     }
@@ -1094,6 +1145,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             state.balance(),
             cli.horizon,
             cli.time_limit,
+            cli.include_industry_upgrades,
         );
         return Ok(());
     }
@@ -1140,7 +1192,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             floors_desc,
         );
 
-        test_maximize(state, metric, &floors, cli.horizon, cli.time_limit);
+        test_maximize(
+            state,
+            metric,
+            &floors,
+            cli.horizon,
+            cli.time_limit,
+            cli.include_industry_upgrades,
+        );
         return Ok(());
     }
 
@@ -1156,7 +1215,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map_or(String::new(), |d| format!(", defense >= {d}")),
     );
 
-    test_solver(state, &goal, cli.time_limit);
+    test_solver(state, &goal, cli.time_limit, cli.include_industry_upgrades);
     return Ok(());
 
     // Test growth update
@@ -1280,8 +1339,8 @@ TODOS:
 
 
 Since the search space for the full tree is quintillions of nodes the plan to do things in stages:
-1. Search each planet individually using state.to_vec_by_planet; in 'slim' mode to limit the search space; this should be parallelizable
-2. Run a quick algorithm to insert AddImprovement and AddAlphaCore actions into the sequence where they'd be most effective, for each optimal action sequence returned from the slim searches
+1. Search each planet individually using state.to_vec_by_planet; in 'exclude_upgrades' mode to limit the search space; this should be parallelizable
+2. Run a quick algorithm to insert AddImprovement and AddAlphaCore actions into the sequence where they'd be most effective, for each optimal action sequence returned from the exclude_upgrades searches
 3. Use these near-optimal action sequences and other data from each individual planet to do one big combined search on the full tree relying on the heuristic data gathered to traverse it quickly and find the optimal solution
 
 */

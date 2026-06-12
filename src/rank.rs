@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
 
 use crate::solver::pareto::ParetoSolve;
 use crate::solver::{solve_pareto_bound, solve_pareto_quick, solve_pareto_template, Balance};
@@ -11,7 +12,7 @@ use crate::system::System;
 /// and `Bound` are the two Tier-0 instant scorers (in practice a lower and an
 /// upper bound on the score, respectively -- see the soundness caveats on
 /// `solve_pareto_template` / `solve_pareto_bound`). See QUICK_RANKING_DESIGN.md.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 pub enum RankScorer {
     Quick,
     Template,
@@ -104,9 +105,10 @@ pub fn rank_systems(
     horizon: i32,
     time_limit: u32,
     scorer: RankScorer,
+    include_industry_upgrades: bool,
     on_scored: &mut dyn FnMut(&RankRow),
 ) -> Vec<RankRow> {
-    let scorer_fn: fn(&System, &Balance, i32, u32) -> ParetoSolve = match scorer {
+    let scorer_fn: fn(&System, &Balance, i32, u32, bool) -> ParetoSolve = match scorer {
         RankScorer::Quick => solve_pareto_quick,
         RankScorer::Template => solve_pareto_template,
         RankScorer::Bound => solve_pareto_bound,
@@ -120,7 +122,13 @@ pub fn rank_systems(
             break;
         }
         let t0 = Instant::now();
-        let solve = scorer_fn(&systems[*name], balance, horizon, time_limit);
+        let solve = scorer_fn(
+            &systems[*name],
+            balance,
+            horizon,
+            time_limit,
+            include_industry_upgrades,
+        );
         let row = RankRow {
             system: (*name).clone(),
             planet_count: systems[*name].planets().len(),
