@@ -4,7 +4,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 use ratatui::Frame;
 
-use crate::rank::{peak_income, score_per_planet, RankScorer};
+use crate::rank::{peak_income, score_per_planet, RankScorer, RankSortMode};
 
 use super::super::app::{estimate_rank_cost, format_duration, App, Modal, ScopeMode};
 use super::selected_style;
@@ -115,6 +115,36 @@ pub fn draw_scorer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
+pub fn draw_sort(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let text = [
+        (
+            RankSortMode::ScorePerPlanet,
+            "score/planet",
+            "favor concentrated high-value systems",
+        ),
+        (
+            RankSortMode::TotalScore,
+            "score",
+            "favor highest total system potential",
+        ),
+    ]
+    .into_iter()
+    .map(|(mode, name, desc)| {
+        let marker = if app.rank_sort_mode() == mode {
+            "> "
+        } else {
+            "  "
+        };
+        format!("{marker}{name:<14} {desc}")
+    })
+    .collect::<Vec<_>>()
+    .join("\n");
+    frame.render_widget(
+        Paragraph::new(text).block(Block::default().title("Sort").borders(Borders::ALL)),
+        area,
+    );
+}
+
 pub fn handle_key(app: &mut App, code: KeyCode) {
     if app.editing_filter {
         match code {
@@ -144,6 +174,7 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
             app.scorer_picker_original = Some(app.scorer);
             app.modal = Some(Modal::Scorer);
         }
+        KeyCode::Char('o') => app.open_rank_sort_picker(),
         KeyCode::Char('u') => cycle_scope(app),
         KeyCode::Char('x') => app.export_rank_csv(),
         KeyCode::Enter => app.open_selected_system(),
@@ -164,6 +195,16 @@ pub fn handle_scorer_key(app: &mut App, code: KeyCode) {
             }
             app.close_scorer_picker();
         }
+        _ => {}
+    }
+}
+
+pub fn handle_sort_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Char('j') | KeyCode::Down => app.move_rank_sort_picker(1),
+        KeyCode::Char('k') | KeyCode::Up => app.move_rank_sort_picker(-1),
+        KeyCode::Enter => app.close_rank_sort_picker(),
+        KeyCode::Esc => app.cancel_rank_sort_picker(),
         _ => {}
     }
 }

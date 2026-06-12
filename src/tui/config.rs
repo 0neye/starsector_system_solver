@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::constants::ColonyItem;
+use crate::rank::RankScorer;
 use crate::solver::Balance;
 
 pub const CONFIG_PATH: &str = "solver_tui.toml";
@@ -27,13 +28,25 @@ pub struct TuiConfig {
     pub solver_time_budget_ms: u32,
     pub discovery_definition: DiscoveryDefinition,
     pub include_core_worlds: bool,
+    #[serde(default = "default_include_industry_upgrades")]
+    pub include_industry_upgrades: bool,
     #[serde(default = "default_rank_by_score_per_planet")]
     pub rank_by_score_per_planet: bool,
+    #[serde(default = "default_rank_scorer")]
+    pub rank_scorer: RankScorer,
     pub db_path: PathBuf,
     pub starsector_dir: Option<PathBuf>,
 }
 
+pub const fn default_rank_scorer() -> RankScorer {
+    RankScorer::Bound
+}
+
 fn default_rank_by_score_per_planet() -> bool {
+    true
+}
+
+fn default_include_industry_upgrades() -> bool {
     true
 }
 
@@ -48,7 +61,9 @@ impl Default for TuiConfig {
             solver_time_budget_ms: 25_000,
             discovery_definition: DiscoveryDefinition::AtLeastOneSurveyed,
             include_core_worlds: false,
+            include_industry_upgrades: true,
             rank_by_score_per_planet: true,
+            rank_scorer: default_rank_scorer(),
             db_path: PathBuf::from(DEFAULT_DB_PATH),
             starsector_dir: None,
         }
@@ -100,6 +115,7 @@ impl TuiConfig {
             colony_items: self.colony_items.clone(),
             horizon_months: self.horizon_months,
             solver_time_budget_ms: self.solver_time_budget_ms,
+            include_industry_upgrades: self.include_industry_upgrades,
         }
     }
 }
@@ -112,4 +128,5 @@ pub struct BalanceSignature {
     colony_items: BTreeMap<String, u32>,
     horizon_months: i32,
     solver_time_budget_ms: u32,
+    include_industry_upgrades: bool,
 }

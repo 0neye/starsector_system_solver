@@ -96,6 +96,10 @@ fn handle_key(app: &mut App, code: KeyCode) {
                 screens::rank::handle_scorer_key(app, code);
                 return;
             }
+            Modal::RankSort => {
+                screens::rank::handle_sort_key(app, code);
+                return;
+            }
             Modal::Settings => {
                 screens::settings::handle_key(app, code);
                 return;

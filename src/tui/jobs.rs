@@ -40,6 +40,7 @@ pub enum Job {
         horizon: i32,
         time_limit: u32,
         scorer: RankScorer,
+        include_industry_upgrades: bool,
     },
     Solve {
         key: String,
@@ -47,6 +48,7 @@ pub enum Job {
         system: System,
         balance: Balance,
         params: SolveParams,
+        include_industry_upgrades: bool,
     },
 }
 
@@ -211,14 +213,33 @@ fn run_job(job: Job, tx: Sender<JobEvent>) {
             horizon,
             time_limit,
             scorer,
-        } => rank(systems, names, balance, horizon, time_limit, scorer, &tx),
+            include_industry_upgrades,
+        } => rank(
+            systems,
+            names,
+            balance,
+            horizon,
+            time_limit,
+            scorer,
+            include_industry_upgrades,
+            &tx,
+        ),
         Job::Solve {
             key,
             system_name,
             system,
             balance,
             params,
-        } => solve_job(key, system_name, system, balance, params, &tx),
+            include_industry_upgrades,
+        } => solve_job(
+            key,
+            system_name,
+            system,
+            balance,
+            params,
+            include_industry_upgrades,
+            &tx,
+        ),
     };
 
     match result {
@@ -364,6 +385,7 @@ fn rank(
     horizon: i32,
     time_limit: u32,
     scorer: RankScorer,
+    include_industry_upgrades: bool,
     tx: &Sender<JobEvent>,
 ) -> Result<JobOutput, String> {
     let name_refs: Vec<&String> = names.iter().collect();
@@ -376,6 +398,7 @@ fn rank(
         horizon,
         time_limit,
         scorer,
+        include_industry_upgrades,
         &mut |row| {
             sent += 1;
             let _ = tx.send(JobEvent::RankRow(row.clone()));
@@ -391,6 +414,7 @@ fn solve_job(
     system: System,
     balance: Balance,
     params: SolveParams,
+    include_industry_upgrades: bool,
     tx: &Sender<JobEvent>,
 ) -> Result<JobOutput, String> {
     let _ = tx.send(JobEvent::Progress(format!(
@@ -402,6 +426,7 @@ fn solve_job(
             &balance,
             params.horizon,
             params.time_limit,
+            include_industry_upgrades,
         )),
         SolveMode::Goal => {
             let goal = Goal::new(
@@ -414,6 +439,7 @@ fn solve_job(
                 &balance,
                 &goal,
                 params.time_limit,
+                include_industry_upgrades,
             ))
         }
         SolveMode::Maximize => {
@@ -437,6 +463,7 @@ fn solve_job(
                 &floors,
                 params.horizon,
                 params.time_limit,
+                include_industry_upgrades,
             ))
         }
     };

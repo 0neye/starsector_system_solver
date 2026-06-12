@@ -44,6 +44,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let upgrades = if app.config.include_industry_upgrades {
+        "on"
+    } else {
+        "off"
+    };
     let text = format!(
         "System Solver · save: {} · credits {:.1}M · SP {} · alpha {}",
         app.active_save_label(),
@@ -52,7 +57,8 @@ fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
         app.config.alpha_cores
     );
     frame.render_widget(
-        Paragraph::new(text).style(Style::default().fg(Color::Cyan)),
+        Paragraph::new(format!("{text} | upgrades {upgrades}"))
+            .style(Style::default().fg(Color::Cyan)),
         area,
     );
 }
@@ -140,7 +146,7 @@ fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
         match app.active_screen {
             Screen::Saves => "Enter activate/extract · e extract · j/k move · ? help · q quit",
             Screen::Rank => {
-                "Enter inspect · c scorer · u scope · r re-rank · / filter · x export csv"
+                "Enter inspect · c scorer · o sort · u scope · r re-rank · / filter · x export csv"
             }
             Screen::System => "b/Esc back · / search active scope · j/k planet · s solve · S setup",
             Screen::Solve => "Tab focus · Enter edit/cycle · R run · m mode · p plan · b back",
@@ -160,7 +166,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut App, modal: Modal) {
         Modal::Help => {
             let text = "Global: 1 Saves · 2 Rank · 3 System · 4 Solve · 5 Plan · s Setup · ? Help · q Quit\n\
                         Move: j/k or arrows · Enter drill in · Esc back/close\n\
-                        Rank: r rank · c scorer · u scope · / filter · x export CSV\n\
+                        Rank: r rank · c scorer · o sort · u scope · / filter · x export CSV\n\
                         System: / jump to system · s solve this system · S setup\n\
                         Solve: Tab panes · Enter edit/cycle · R run · p plan\n\
                         Jobs: x cancels rank/solve (extract/load detach)";
@@ -173,6 +179,7 @@ fn draw_modal(frame: &mut Frame<'_>, app: &mut App, modal: Modal) {
         }
         Modal::Settings => settings::draw(frame, app, area),
         Modal::Scorer => rank::draw_scorer(frame, app, area),
+        Modal::RankSort => rank::draw_sort(frame, app, area),
         Modal::SpoilerConfirm => {
             frame.render_widget(
                 Paragraph::new("Show all systems? This can reveal undiscovered save content. y/n")

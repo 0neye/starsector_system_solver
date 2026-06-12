@@ -12,7 +12,7 @@ use crate::solver::{Action, Goal, Metric};
 use crate::system::System;
 use crate::tui::app::{
     estimate_rank_cost, filter_scope, format_system_time, group_plan_actions, solve_cache_key, App,
-    RankCache, ScopeMode, SolveMode, SolveParams,
+    Modal, RankCache, ScopeMode, SolveMode, SolveParams, DEFAULT_TUI_RANK_SCORER,
 };
 use crate::tui::config::{DiscoveryDefinition, TuiConfig};
 
@@ -57,6 +57,17 @@ fn rank_row_with_planets(system: &str, score: f64, planet_count: usize) -> RankR
         solve: solve_with_score(score),
         seconds: 0.1,
     }
+}
+
+fn temp_config_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "system_solver_tui_{name}_{}_{}.toml",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
 }
 
 #[test]
@@ -208,6 +219,20 @@ fn tui_rank_cost_estimate_matches_m1_constants() {
 }
 
 #[test]
+fn tui_defaults_to_bound_rank_scorer() {
+    let app = App::new(TuiConfig::default(), None);
+
+    assert_eq!(DEFAULT_TUI_RANK_SCORER, RankScorer::Bound);
+    assert_eq!(TuiConfig::default().rank_scorer, RankScorer::Bound);
+    assert_eq!(app.scorer, RankScorer::Bound);
+
+    let mut config = TuiConfig::default();
+    config.rank_scorer = RankScorer::Template;
+    let app = App::new(config, None);
+    assert_eq!(app.scorer, RankScorer::Template);
+}
+
+#[test]
 fn tui_mark_rank_stale_marks_existing_caches() {
     let config = TuiConfig::default();
     let mut app = App::new(config.clone(), None);
@@ -291,6 +316,47 @@ fn tui_rank_sort_defaults_to_score_per_planet_and_toggle_uses_total_score() {
 }
 
 #[test]
+fn tui_rank_sort_picker_preserves_selection_and_cancel_restores_mode() {
+    let config = TuiConfig::default();
+    let mut app = App::new(config, None);
+    app.systems
+        .insert("Wide".to_string(), System::new("Wide".to_string()));
+    app.systems
+        .insert("Focused".to_string(), System::new("Focused".to_string()));
+    app.discovery = vec![
+        discovery("Wide", 4, 1, 1, false),
+        discovery("Focused", 1, 1, 1, false),
+    ];
+    app.rank_rows = vec![
+        rank_row_with_planets("Wide", 20.0, 4),
+        rank_row_with_planets("Focused", 8.0, 1),
+    ];
+    app.rank_selection = 0;
+
+    app.open_rank_sort_picker();
+    assert_eq!(app.modal, Some(Modal::RankSort));
+    assert_eq!(
+        app.visible_rank_rows()[app.rank_selection].system,
+        "Focused"
+    );
+
+    app.move_rank_sort_picker(1);
+    assert!(!app.config.rank_by_score_per_planet);
+    assert_eq!(
+        app.visible_rank_rows()[app.rank_selection].system,
+        "Focused"
+    );
+
+    app.cancel_rank_sort_picker();
+    assert!(app.config.rank_by_score_per_planet);
+    assert_eq!(app.modal, None);
+    assert_eq!(
+        app.visible_rank_rows()[app.rank_selection].system,
+        "Focused"
+    );
+}
+
+#[test]
 fn tui_solve_cache_key_includes_mode_params_and_balance() {
     let config = TuiConfig::default();
     let mut params = SolveParams::from_config(&config);
@@ -316,11 +382,12 @@ fn solve_wrappers_replay_tiny_fixture_results() {
     let balance = rich_balance();
 
     let goal = Goal::new(0.0, None, None);
-    let goal_outcome = solve_goal(&system, &balance, &goal, 1).expect("goal should be reachable");
+    let goal_outcome =
+        solve_goal(&system, &balance, &goal, 1, true).expect("goal should be reachable");
     assert!(goal_outcome.achieved_income >= 0.0);
 
     let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(0));
-    let max_outcome = solve_maximize(&system, &balance, Metric::Income, &floors, 1, 1)
+    let max_outcome = solve_maximize(&system, &balance, Metric::Income, &floors, 1, 1, true)
         .expect("maximize should return a tiny result");
     assert!(max_outcome.months >= 0);
 }
@@ -329,7 +396,9 @@ fn solve_wrappers_replay_tiny_fixture_results() {
 fn tui_scorer_change_restores_cached_rows_and_resets_missing_selection() {
     let config = TuiConfig::default();
     let signature = config.balance_signature();
+    let path = temp_config_path("scorer_change");
     let mut app = App::new(config, None);
+    app.set_config_path_for_test(path.clone());
     app.active_save = Some(SaveRow {
         id: 1,
         dir_name: "save_alpha".to_string(),
@@ -366,6 +435,11 @@ fn tui_scorer_change_restores_cached_rows_and_resets_missing_selection() {
     assert_eq!(app.rank_rows[0].system, "Alpha");
     assert_eq!(app.rank_selection, 0);
     assert_eq!(app.status, "scorer: template - r to re-rank");
+
+    let (loaded, status) = TuiConfig::load(&path);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(status, None);
+    assert_eq!(loaded.rank_scorer, RankScorer::Template);
 }
 
 #[test]
@@ -377,19 +451,13 @@ fn tui_format_system_time_renders_utc_date() {
 
 #[test]
 fn tui_config_round_trips_toml() {
-    let path = std::env::temp_dir().join(format!(
-        "system_solver_tui_config_test_{}_{}.toml",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let path = temp_config_path("config_test");
     let config = TuiConfig {
         credits: 123.0,
         story_points: 7,
         discovery_definition: DiscoveryDefinition::FullySurveyed,
         include_core_worlds: true,
+        rank_scorer: RankScorer::Quick,
         colony_items: BTreeMap::from([("soil nanites".to_string(), 2)]),
         starsector_dir: Some(PathBuf::from(r"C:\Games\Starsector")),
         ..Default::default()
@@ -405,14 +473,7 @@ fn tui_config_round_trips_toml() {
 
 #[test]
 fn tui_startup_starsector_dir_override_is_saved_to_config() {
-    let path = std::env::temp_dir().join(format!(
-        "system_solver_tui_startup_config_test_{}_{}.toml",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let path = temp_config_path("startup_config_test");
     let starsector_dir = PathBuf::from(r"C:\Games\Starsector");
 
     let (config, status) = crate::tui::load_config_for_start(Some(starsector_dir.clone()), &path);

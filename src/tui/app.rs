@@ -10,13 +10,14 @@ use crate::solver::pareto::{FrontierKind, ParetoPoint, ParetoSolve};
 use crate::solver::{Action, Metric};
 use crate::system::System;
 
-use super::config::{BalanceSignature, DiscoveryDefinition, TuiConfig};
+use super::config::{default_rank_scorer, BalanceSignature, DiscoveryDefinition, TuiConfig};
 use super::jobs::{Job, JobEvent, JobOutput, JobRunner};
 
 const AUTO_RANK_SCOPE_LIMIT: usize = 50;
 const QUICK_SECONDS_PER_SYSTEM: f64 = 10.0;
 const BOUND_SECONDS_PER_SYSTEM: f64 = 1.0;
 const TEMPLATE_SECONDS_PER_SYSTEM: f64 = 0.15;
+pub const DEFAULT_TUI_RANK_SCORER: RankScorer = default_rank_scorer();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
@@ -32,6 +33,7 @@ pub enum Modal {
     Help,
     Settings,
     Scorer,
+    RankSort,
     SpoilerConfirm,
     QuitConfirm,
 }
@@ -158,6 +160,7 @@ pub struct PlanState {
 
 pub struct App {
     pub config: TuiConfig,
+    config_path: PathBuf,
     pub active_screen: Screen,
     pub modal: Option<Modal>,
     pub saves: Vec<SaveListRow>,
@@ -169,6 +172,8 @@ pub struct App {
     pub spoiler_confirmed: bool,
     pub scorer: RankScorer,
     pub scorer_picker_original: Option<RankScorer>,
+    pub rank_sort_picker_original: Option<bool>,
+    pub rank_sort_picker_selected: Option<String>,
     pub rank_rows: Vec<RankRow>,
     pub rank_selection: usize,
     pub selected_system_name: Option<String>,
@@ -203,8 +208,10 @@ pub struct App {
 impl App {
     pub fn new(config: TuiConfig, status: Option<String>) -> Self {
         let solve_params = SolveParams::from_config(&config);
+        let scorer = config.rank_scorer;
         Self {
             config,
+            config_path: PathBuf::from(super::config::CONFIG_PATH),
             active_screen: Screen::Saves,
             modal: None,
             saves: Vec::new(),
@@ -214,8 +221,10 @@ impl App {
             discovery: Vec::new(),
             scope_mode: ScopeMode::Discovered,
             spoiler_confirmed: false,
-            scorer: RankScorer::Quick,
+            scorer,
             scorer_picker_original: None,
+            rank_sort_picker_original: None,
+            rank_sort_picker_selected: None,
             rank_rows: Vec::new(),
             rank_selection: 0,
             selected_system_name: None,
@@ -251,6 +260,11 @@ impl App {
             db_path: self.config.db_path.clone(),
             starsector_dir: self.config.starsector_dir.clone(),
         });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_config_path_for_test(&mut self, path: PathBuf) {
+        self.config_path = path;
     }
 
     pub fn start_job(&mut self, job: Job) {
@@ -293,7 +307,7 @@ impl App {
             self.config.story_points = balance.story_points;
             self.config.alpha_cores = balance.alpha_cores;
             self.config.colony_items = items;
-            let _ = self.config.save(super::config::CONFIG_PATH);
+            let _ = self.config.save(&self.config_path);
         }
         changed
     }
@@ -438,6 +452,7 @@ impl App {
             horizon: self.config.horizon_months,
             time_limit: self.config.solver_time_budget_ms,
             scorer: self.scorer,
+            include_industry_upgrades: self.config.include_industry_upgrades,
         });
     }
 
@@ -556,7 +571,74 @@ impl App {
                 .and_then(|name| visible.iter().position(|row| row.system == name))
                 .unwrap_or(0);
         }
-        self.status = format!("scorer: {} - r to re-rank", scorer_name(self.scorer));
+        self.config.rank_scorer = self.scorer;
+        match self.config.save(&self.config_path) {
+            Ok(()) => {
+                self.status = format!("scorer: {} - r to re-rank", scorer_name(self.scorer));
+            }
+            Err(err) => self.status = err,
+        }
+    }
+
+    pub fn open_rank_sort_picker(&mut self) {
+        self.rank_sort_picker_original = Some(self.config.rank_by_score_per_planet);
+        self.rank_sort_picker_selected = self
+            .visible_rank_rows()
+            .get(self.rank_selection)
+            .map(|row| row.system.clone());
+        self.modal = Some(Modal::RankSort);
+    }
+
+    pub fn move_rank_sort_picker(&mut self, delta: i32) {
+        let modes = [true, false];
+        let current = modes
+            .iter()
+            .position(|mode| *mode == self.config.rank_by_score_per_planet)
+            .unwrap_or(0);
+        let next = if delta < 0 {
+            current.saturating_sub(1)
+        } else {
+            (current + 1).min(modes.len().saturating_sub(1))
+        };
+        self.config.rank_by_score_per_planet = modes[next];
+        self.restore_rank_sort_picker_selection();
+    }
+
+    pub fn close_rank_sort_picker(&mut self) {
+        let original = self.rank_sort_picker_original.take();
+        self.rank_sort_picker_selected = None;
+        self.modal = None;
+        if original == Some(self.config.rank_by_score_per_planet) {
+            return;
+        }
+
+        match self.config.save(&self.config_path) {
+            Ok(()) => {
+                self.status = format!("rank sort: {}", rank_sort_name(self.rank_sort_mode()));
+            }
+            Err(err) => self.status = err,
+        }
+    }
+
+    pub fn cancel_rank_sort_picker(&mut self) {
+        if let Some(original) = self.rank_sort_picker_original {
+            self.config.rank_by_score_per_planet = original;
+            self.restore_rank_sort_picker_selection();
+        }
+        self.close_rank_sort_picker();
+    }
+
+    pub fn restore_rank_sort_picker_selection(&mut self) {
+        let Some(selected) = self.rank_sort_picker_selected.clone() else {
+            return;
+        };
+        if let Some(index) = self
+            .visible_rank_rows()
+            .iter()
+            .position(|row| row.system == selected)
+        {
+            self.rank_selection = index;
+        }
     }
 
     pub fn mark_rank_stale(&mut self) {
@@ -649,6 +731,7 @@ impl App {
             system,
             balance: self.config.balance(),
             params: self.solve_params.clone(),
+            include_industry_upgrades: self.config.include_industry_upgrades,
         });
     }
 
@@ -898,5 +981,12 @@ fn scorer_name(scorer: RankScorer) -> &'static str {
         RankScorer::Quick => "quick",
         RankScorer::Template => "template",
         RankScorer::Bound => "bound",
+    }
+}
+
+fn rank_sort_name(mode: RankSortMode) -> &'static str {
+    match mode {
+        RankSortMode::ScorePerPlanet => "score/planet",
+        RankSortMode::TotalScore => "score",
     }
 }
