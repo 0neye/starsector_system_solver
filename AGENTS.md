@@ -7,6 +7,12 @@ This file provides guidance to Codex (and other coding agents) when working with
 > mirrored in the other in the same commit; they are intended to be identical
 > except for this banner and the heading.
 
+> **`workspace/` is a local-only scratch directory** (gitignored, not part of
+> the repo): design notes, benchmark databases/CSVs, and helper Python scripts
+> live there on the maintainer's machine. Commands below that read or write
+> `workspace/...` paths assume such a local setup; they are not needed to build
+> or use the tool.
+
 ## Commands
 
 ```bash
@@ -15,9 +21,9 @@ cargo test
 cargo clippy
 cargo run -- --system "Mia's Star" --income 200000 --stability 8 --time-limit 25000
 
-# Interactive TUI (see workspace/TUI_DESIGN.md): Saves -> Rank -> System -> Solve -> Plan,
+# Interactive TUI: Saves -> Rank -> System -> Solve -> Plan,
 # with a discovered-only scope filter (>=1 surveyed planet, core worlds excluded
-# by default) and settings persisted to workspace/solver_tui.toml. Rank/extract/solve run
+# by default) and settings persisted to a per-user config dir (src/paths.rs). Rank/extract/solve run
 # as background jobs; x cooperatively cancels rank/solve (solver::cancel flag),
 # extract/load only detach. Loading a save's systems seeds the Setup balance
 # from the save (credits/SP/alpha cores/colony items; player_balance table).
@@ -37,14 +43,14 @@ python plot_pareto_frontiers.py workspace/pareto.csv --output workspace/pareto_f
 #   SYSTEM_SOLVER_NO_UPGRADES=1              disable SP improvements / alpha-core installs
 #                                            (matches --no-industry-upgrades; also honored
 #                                            by the bound sweep)
-# Benchmark workflow (see workspace/SOLVER_OPTIMIZATION_REPORT.md): run a sweep against
+# Benchmark workflow: run a sweep against
 # workspace/system_benchmark.db, then `python workspace/compare_pareto.py <ref.csv> <cand.csv> [tol_pct]`
 # (exit 1 on income regression).
 
 # Measure greedy income vs a credit-relaxed upper bound (how much headroom the
 # greedy leaves on the credit-timing axis). CSV to stdout, summary to stderr.
 SYSTEM_SOLVER_BOUND=1 cargo run
-SYSTEM_SOLVER_BOUND_MS=5000 cargo run   # budget per point. See workspace/OPTIMAL_SOLVER_BOUND.md
+SYSTEM_SOLVER_BOUND_MS=5000 cargo run   # budget per point
 #   SYSTEM_SOLVER_BOUND_SYSTEM=<substring>  limit the bound sweep to one system
 # The bound sweep warm-chains floors and cross-seeds each relaxed solve with the
 # greedy plan, so bound >= greedy by construction (negative gaps = solver bug).
@@ -61,8 +67,7 @@ finishes inside the budget; a cutoff is machine-dependent and reported via
 
 ```bash
 # Quick ranking: score every system with a reduced deterministic sweep (sparse
-# floors + mini-anchor repair climbs with a feasibility bridge; see
-# workspace/QUICK_RANKING_DESIGN.md), print best-first.
+# floors + mini-anchor repair climbs with a feasibility bridge), print best-first.
 # SYSTEM_SOLVER_RANK_POINTS=1: per-point income/months/profile trace (stderr).
 cargo run --release -- --db workspace/system_benchmark.db --rank
 cargo run --release -- --rank --rank-system askonia --rank-system corvus  # filter
@@ -98,7 +103,7 @@ output; the DB loader is verified to match its semantics exactly
 (`db_loader_matches_csv_semantics` in `src/tests/parser.rs`).
 
 ```bash
-# Save-game extraction (see workspace/SAVE_EXTRACTION_DESIGN.md): parses a Starsector save
+# Save-game extraction: parses a Starsector save
 # into save_data.db with tables mirroring the three CSVs. Available as a
 # subcommand of the main CLI:
 cargo run --release -- extract list-saves
