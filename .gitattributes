@@ -1,0 +1,14 @@
+# Keep line endings deterministic across contributors and CI.
+
+# Default: let Git normalize text to LF in the repo.
+* text=auto eol=lf
+
+# Shell scripts MUST be LF or they fail on Linux/macOS (bad interpreter).
+*.sh text eol=lf
+
+# PowerShell is happiest with CRLF on Windows.
+*.ps1 text eol=crlf
+
+# Never normalize binary assets.
+*.db binary
+*.png binary
