@@ -11,7 +11,7 @@ use crate::system::System;
 /// `--rank` scoring strategy. `Quick` is the Tier-1 budgeted search; `Template`
 /// and `Bound` are the two Tier-0 instant scorers (in practice a lower and an
 /// upper bound on the score, respectively -- see the soundness caveats on
-/// `solve_pareto_template` / `solve_pareto_bound`). See QUICK_RANKING_DESIGN.md.
+/// `solve_pareto_template` / `solve_pareto_bound`). See workspace/QUICK_RANKING_DESIGN.md.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 pub enum RankScorer {
     Quick,

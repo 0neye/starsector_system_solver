@@ -9,7 +9,7 @@ use crate::constants::ColonyItem;
 use crate::rank::RankScorer;
 use crate::solver::Balance;
 
-pub const CONFIG_PATH: &str = "solver_tui.toml";
+pub const CONFIG_PATH: &str = "workspace/solver_tui.toml";
 pub const DEFAULT_DB_PATH: &str = "save_data.db";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +90,10 @@ impl TuiConfig {
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|err| format!("create settings dir: {err}"))?;
+        }
         let encoded =
             toml::to_string_pretty(self).map_err(|err| format!("encode settings: {err}"))?;
         fs::write(path, encoded).map_err(|err| format!("write settings: {err}"))

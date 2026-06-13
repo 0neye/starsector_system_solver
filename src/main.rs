@@ -88,7 +88,7 @@ struct Cli {
     time_limit: u32,
 
     /// Rank systems by quick Pareto score (sparse floors, reduced search; see
-    /// QUICK_RANKING_DESIGN.md). Ranks every system in the DB unless
+    /// workspace/QUICK_RANKING_DESIGN.md). Ranks every system in the DB unless
     /// `--rank-system` filters are given. Ignores `--system`.
     #[arg(long)]
     rank: bool,
@@ -102,7 +102,7 @@ struct Cli {
     /// in practice a Tier-0 lower bound (`solve_pareto_template`); `bound` =
     /// per-planet decomposed credit-relaxed near-certain upper bound, the
     /// Tier-0 "potential" ceiling (`solve_pareto_bound`). See
-    /// QUICK_RANKING_DESIGN.md.
+    /// workspace/QUICK_RANKING_DESIGN.md.
     #[arg(long = "rank-scorer", value_enum, default_value_t = RankScorer::Quick)]
     rank_scorer: RankScorer,
 
@@ -130,7 +130,7 @@ enum Command {
     Extract(extract::cli::ExtractCommand),
     /// Open the interactive terminal UI.
     Tui {
-        /// Starsector install directory. Overrides solver_tui.toml for this run.
+        /// Starsector install directory. Overrides workspace/solver_tui.toml for this run.
         #[arg(long)]
         starsector_dir: Option<PathBuf>,
     },
@@ -304,7 +304,7 @@ fn run_solve(
 /// scorers (in practice a lower and an upper bound on the score). All are
 /// deterministic and meant for *ordering* systems, not as final numbers —
 /// `--solve` on the chosen system gives the real frontier. See
-/// QUICK_RANKING_DESIGN.md.
+/// workspace/QUICK_RANKING_DESIGN.md.
 fn run_rank(
     systems: &HashMap<String, System>,
     balance: &Balance,
