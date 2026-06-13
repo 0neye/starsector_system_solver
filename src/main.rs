@@ -14,6 +14,7 @@ mod utils;
 use clap::{Parser, Subcommand, ValueEnum};
 use constants::ColonyItem;
 use extract::db::Db;
+use extract::locate;
 use planet::Planet;
 use rank::{
     filter_system_names, peak_income, rank_systems, score_per_planet, sort_rows_best_first,
@@ -26,9 +27,10 @@ use solver::{
 };
 use std::collections::HashMap;
 use std::error::Error;
+use std::io;
 use std::path::PathBuf;
 use system::System;
-use tui::config::DiscoveryDefinition;
+use tui::config::{DiscoveryDefinition, TuiConfig};
 
 #[derive(Parser)]
 #[command(about = "Starsector colony system solver")]
@@ -159,6 +161,30 @@ enum Command {
     /// Save-game extraction tools (parse saves into the DB, search, export)
     #[command(subcommand)]
     Extract(extract::cli::ExtractCommand),
+    /// Locate the Starsector install and its saves directory.
+    Locate {
+        /// Starsector install directory. When omitted, auto-detected from the
+        /// STARSECTOR_DIR environment variable or common install locations.
+        #[arg(long)]
+        starsector_dir: Option<PathBuf>,
+    },
+    /// Save the Starsector install path and build the first extraction DB.
+    Init {
+        /// Starsector install directory. When omitted, auto-detected from the
+        /// STARSECTOR_DIR environment variable or common install locations.
+        #[arg(long)]
+        starsector_dir: Option<PathBuf>,
+        /// Save substring to extract. When omitted, `--latest` is used by
+        /// default so a no-argument installer run can initialize the DB.
+        #[arg(long)]
+        save: Option<String>,
+        /// Extract the newest save.
+        #[arg(long)]
+        latest: bool,
+        /// Output DB. Defaults to the per-user data dir.
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
     /// Inspect extracted system planet, resource, and infrastructure data.
     Inspect {
         /// Extraction DB to inspect. Defaults to the per-user data dir.
@@ -991,6 +1017,49 @@ fn yes_no(value: bool) -> &'static str {
     }
 }
 
+fn run_locate(starsector_dir: Option<PathBuf>) -> Result<(), Box<dyn Error>> {
+    let starsector_dir = locate::resolve_starsector_dir(starsector_dir.as_deref())?;
+    let saves_dir = locate::default_saves_dir(&starsector_dir);
+    println!("Starsector: {}", starsector_dir.display());
+    println!("Saves: {}", saves_dir.display());
+    Ok(())
+}
+
+fn run_init(
+    starsector_dir: Option<PathBuf>,
+    save: Option<String>,
+    latest: bool,
+    db: Option<PathBuf>,
+) -> Result<(), Box<dyn Error>> {
+    let starsector_dir = locate::resolve_starsector_dir(starsector_dir.as_deref())?;
+    let db = db.unwrap_or_else(paths::default_db_path);
+    let config_path = paths::config_path();
+    let effective_latest = latest || save.is_none();
+
+    let (mut config, warning) = TuiConfig::load(&config_path);
+    if let Some(warning) = warning {
+        eprintln!("warning: {warning}");
+    }
+    config.starsector_dir = Some(starsector_dir.clone());
+    config.db_path = db.clone();
+    config.save(&config_path).map_err(io::Error::other)?;
+
+    extract::cli::run(extract::cli::ExtractCommand::Run {
+        saves_dir: None,
+        save,
+        latest: effective_latest,
+        starsector_dir: Some(starsector_dir.clone()),
+        db: db.clone(),
+        system: vec![],
+    })?;
+
+    println!("Initialized Starsector System Ranker.");
+    println!("Starsector: {}", starsector_dir.display());
+    println!("DB: {}", db.display());
+    println!("Config: {}", config_path.display());
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     cpu_affinity::prefer_performance_cores();
 
@@ -1251,6 +1320,23 @@ fn main() -> Result<(), Box<dyn Error>> {
                     std::process::exit(1);
                 }
             }
+            Command::Locate { starsector_dir } => {
+                if let Err(err) = run_locate(starsector_dir) {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                }
+            }
+            Command::Init {
+                starsector_dir,
+                save,
+                latest,
+                db,
+            } => {
+                if let Err(err) = run_init(starsector_dir, save, latest, db) {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                }
+            }
             Command::Inspect {
                 db,
                 save,
@@ -1416,6 +1502,79 @@ mod cli_tests {
                 starsector_dir: Some(path),
             }) => assert_eq!(path, PathBuf::from(r"C:\Games\Starsector")),
             other => panic!("expected tui --starsector-dir, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn locate_subcommand_accepts_no_args() {
+        let cli = Cli::parse_from(["system_solver", "locate"]);
+
+        match cli.command {
+            Some(Command::Locate {
+                starsector_dir: None,
+            }) => {}
+            other => panic!("expected locate command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn locate_subcommand_accepts_starsector_dir() {
+        let cli = Cli::parse_from([
+            "system_solver",
+            "locate",
+            "--starsector-dir",
+            r"C:\Games\Starsector",
+        ]);
+
+        match cli.command {
+            Some(Command::Locate {
+                starsector_dir: Some(path),
+            }) => assert_eq!(path, PathBuf::from(r"C:\Games\Starsector")),
+            other => panic!("expected locate --starsector-dir, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn init_subcommand_accepts_no_args() {
+        let cli = Cli::parse_from(["system_solver", "init"]);
+
+        match cli.command {
+            Some(Command::Init {
+                starsector_dir: None,
+                save: None,
+                latest: false,
+                db: None,
+            }) => {}
+            other => panic!("expected init command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn init_subcommand_accepts_options() {
+        let cli = Cli::parse_from([
+            "system_solver",
+            "init",
+            "--starsector-dir",
+            r"C:\Games\Starsector",
+            "--save",
+            "DEMIURGE",
+            "--latest",
+            "--db",
+            "workspace/test.db",
+        ]);
+
+        match cli.command {
+            Some(Command::Init {
+                starsector_dir: Some(starsector_dir),
+                save: Some(save),
+                latest: true,
+                db: Some(db),
+            }) => {
+                assert_eq!(starsector_dir, PathBuf::from(r"C:\Games\Starsector"));
+                assert_eq!(save, "DEMIURGE");
+                assert_eq!(db, PathBuf::from("workspace/test.db"));
+            }
+            other => panic!("expected init command with options, got {other:?}"),
         }
     }
 

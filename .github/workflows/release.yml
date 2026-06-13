@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - v*
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.os_name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os_name: windows
+            runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary: system_solver.exe
+            archive_ext: zip
+          - os_name: linux
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            binary: system_solver
+            archive_ext: tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux target dependencies
+        if: matrix.os_name == 'linux'
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Build Windows release
+        if: matrix.os_name == 'windows'
+        run: cargo build --release --locked
+
+      - name: Build Linux release
+        if: matrix.os_name == 'linux'
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Stage Windows archive
+        if: matrix.os_name == 'windows'
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $stage = "starsector-system-ranker-$tag-windows"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "target/release/system_solver.exe" "$stage/system_solver.exe"
+          Copy-Item "install.py" "$stage/install.py"
+          Copy-Item "install.ps1" "$stage/install.ps1"
+          Copy-Item "README.md" "$stage/README.md"
+          Copy-Item "LICENSE" "$stage/LICENSE"
+          Compress-Archive -Path $stage -DestinationPath "$stage.zip" -Force
+
+      - name: Stage Linux archive
+        if: matrix.os_name == 'linux'
+        shell: bash
+        run: |
+          tag="${{ github.ref_name }}"
+          stage="starsector-system-ranker-${tag}-linux"
+          mkdir -p "$stage"
+          cp "target/x86_64-unknown-linux-musl/release/system_solver" "$stage/system_solver"
+          cp install.py "$stage/install.py"
+          cp install.sh "$stage/install.sh"
+          cp README.md "$stage/README.md"
+          cp LICENSE "$stage/LICENSE"
+          chmod +x "$stage/system_solver" "$stage/install.sh"
+          tar -czf "$stage.tar.gz" "$stage"
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: starsector-system-ranker-${{ github.ref_name }}-${{ matrix.os_name }}.${{ matrix.archive_ext }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
