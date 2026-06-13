@@ -10,10 +10,13 @@ mod system;
 mod tui;
 mod utils;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use extract::db::Db;
 use planet::Planet;
-use rank::{filter_system_names, peak_income, rank_systems, score_per_planet, RankScorer};
+use rank::{
+    filter_system_names, peak_income, rank_systems, score_per_planet, sort_rows_best_first,
+    RankScorer, RankSortMode,
+};
 use solver::{
     diagnose_maximize_gap, search_system_decomp, search_system_maximize,
     solve_pareto_with_settings, Balance, Goal, Metric, SolverSettings, State,
@@ -25,6 +28,7 @@ use std::path::PathBuf;
 use constants::{ColonyItem, FacilityType};
 use solver::archive::{astar::search_all_planets, split::search_all_planets_decomp};
 use solver::Action;
+use tui::config::DiscoveryDefinition;
 use system::System;
 
 #[derive(Parser)]
@@ -113,6 +117,26 @@ struct Cli {
     #[arg(long = "rank-scorer", value_enum, default_value_t = RankScorer::Quick)]
     rank_scorer: RankScorer,
 
+    /// Which systems `--rank` considers before name filters are applied.
+    #[arg(long = "rank-scope", value_enum, default_value_t = RankScope::All)]
+    rank_scope: RankScope,
+
+    /// Discovery rule used by `--rank-scope discovered`.
+    #[arg(
+        long = "discovery-definition",
+        value_enum,
+        default_value_t = DiscoveryDefinition::AtLeastOneSurveyed
+    )]
+    discovery_definition: DiscoveryDefinition,
+
+    /// Include core-world systems when using `--rank-scope discovered`.
+    #[arg(long)]
+    include_core_worlds: bool,
+
+    /// Sort `--rank` output by score per planet or total score.
+    #[arg(long = "rank-sort", value_enum, default_value_t = RankSortMode::ScorePerPlanet)]
+    rank_sort: RankSortMode,
+
     /// Emit `--rank` results as CSV (system,score,peak_income,seconds) instead
     /// of the human-readable table — used by the rank-validation harness.
     #[arg(long)]
@@ -156,6 +180,12 @@ enum Command {
         #[arg(long)]
         starsector_dir: Option<PathBuf>,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum RankScope {
+    All,
+    Discovered,
 }
 
 /// Load solver game data from the extraction DB. Env-var modes use
@@ -325,34 +355,55 @@ fn run_solve(
 /// deterministic and meant for *ordering* systems, not as final numbers —
 /// `--solve` on the chosen system gives the real frontier. See
 /// workspace/QUICK_RANKING_DESIGN.md.
+#[allow(clippy::too_many_arguments)]
 fn run_rank(
     systems: &HashMap<String, System>,
     balance: &Balance,
+    db_path: &PathBuf,
+    save: Option<&str>,
     filters: &[String],
+    scope: RankScope,
+    discovery_definition: DiscoveryDefinition,
+    include_core_worlds: bool,
     horizon: i32,
     time_limit: u32,
     csv: bool,
     scorer: RankScorer,
-    include_industry_upgrades: bool,
+    sort_mode: RankSortMode,
+    settings: SolverSettings,
 ) {
-    let names = filter_system_names(systems, filters).unwrap_or_else(|_| {
-        eprintln!("error: no system matches the --rank-system filter(s)");
+    let names = rank_names(
+        systems,
+        db_path,
+        save,
+        filters,
+        scope,
+        discovery_definition,
+        include_core_worlds,
+    )
+    .unwrap_or_else(|err| {
+        eprintln!("{err}");
         std::process::exit(1);
     });
 
+    if names.is_empty() {
+        eprintln!("error: no system matches the selected rank scope/filter(s)");
+        std::process::exit(1);
+    }
+
     eprintln!(
-        "Ranking {} systems ({scorer:?} scorer, horizon {horizon} months)...",
+        "Ranking {} systems ({scorer:?} scorer, {sort_mode:?} sort, horizon {horizon} months)...",
         names.len()
     );
 
-    let ranked = rank_systems(
+    let mut ranked = rank_systems(
         systems,
         balance,
         &names,
         horizon,
         time_limit,
         scorer,
-        include_industry_upgrades,
+        settings,
         &mut |row| {
             eprintln!(
                 "  [{}] score {:.1} ({:.1}/planet) in {:.1}s",
@@ -363,6 +414,7 @@ fn run_rank(
             );
         },
     );
+    sort_rows_best_first(&mut ranked, sort_mode);
 
     if csv {
         println!("system,score,peak_income,seconds");
@@ -848,6 +900,41 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
     eprintln!("========================================================\n");
 }
 
+fn rank_names<'a>(
+    systems: &'a HashMap<String, System>,
+    db_path: &PathBuf,
+    save: Option<&str>,
+    filters: &[String],
+    scope: RankScope,
+    discovery_definition: DiscoveryDefinition,
+    include_core_worlds: bool,
+) -> Result<Vec<&'a String>, String> {
+    let mut names = filter_system_names(systems, filters)
+        .map_err(|_| "error: no system matches the --rank-system filter(s)".to_string())?;
+
+    if scope == RankScope::All {
+        return Ok(names);
+    }
+
+    let db = Db::open(db_path).map_err(|err| format!("error: DB unreadable: {err}"))?;
+    let discovery = db
+        .system_discovery(save)
+        .map_err(|err| format!("error: discovery data unavailable: {err}"))?;
+    let allowed: std::collections::HashSet<String> = discovery
+        .into_iter()
+        .filter(|row| include_core_worlds || !row.is_core)
+        .filter(|row| match discovery_definition {
+            DiscoveryDefinition::AtLeastOneSurveyed => row.surveyed_any >= 1,
+            DiscoveryDefinition::FullySurveyed => {
+                row.planet_count > 0 && row.surveyed_full == row.planet_count
+            }
+        })
+        .map(|row| row.system_name)
+        .collect();
+    names.retain(|name| allowed.contains(name.as_str()));
+    Ok(names)
+}
+
 fn inspect_systems(
     db_path: &PathBuf,
     save: Option<&str>,
@@ -1291,12 +1378,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         run_rank(
             &systems,
             &initial_balance,
+            &cli.db,
+            cli.save.as_deref(),
             &cli.rank_systems,
+            cli.rank_scope,
+            cli.discovery_definition,
+            cli.include_core_worlds,
             cli.horizon,
             cli.time_limit,
             cli.rank_csv,
             cli.rank_scorer,
-            cli.include_industry_upgrades,
+            cli.rank_sort,
+            settings,
         );
         return Ok(());
     }
@@ -1490,6 +1583,30 @@ mod cli_tests {
             }) => assert_eq!(path, PathBuf::from(r"C:\Games\Starsector")),
             other => panic!("expected tui --starsector-dir, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn rank_accepts_discovery_scope_and_sort_options() {
+        let cli = Cli::parse_from([
+            "system_solver",
+            "--rank",
+            "--rank-scope",
+            "discovered",
+            "--discovery-definition",
+            "fully-surveyed",
+            "--include-core-worlds",
+            "--rank-sort",
+            "total-score",
+        ]);
+
+        assert!(cli.rank);
+        assert_eq!(cli.rank_scope, RankScope::Discovered);
+        assert_eq!(
+            cli.discovery_definition,
+            DiscoveryDefinition::FullySurveyed
+        );
+        assert!(cli.include_core_worlds);
+        assert_eq!(cli.rank_sort, RankSortMode::TotalScore);
     }
 
     #[test]
