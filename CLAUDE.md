@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Keep in sync with `AGENTS.md`.** `CLAUDE.md` (Claude Code) and `AGENTS.md`
+> (Codex) must carry the same project guidance. Any change to one MUST be
+> mirrored in the other in the same commit; they are intended to be identical
+> except for this banner and the heading.
+
 ## Commands
 
 ```bash
@@ -17,10 +22,6 @@ cargo run -- --system "Mia's Star" --income 200000 --stability 8 --time-limit 25
 # extract/load only detach. Loading a save's systems seeds the Setup balance
 # from the save (credits/SP/alpha cores/colony items; player_balance table).
 cargo run --release -- tui
-
-# A/B test decomp vs IDA* across all systems/goals
-SYSTEM_SOLVER_AB=1 cargo run
-SYSTEM_SOLVER_AB_MS=8000 cargo run   # custom time budget (ms)
 
 # Replay solutions on fresh state to verify correctness
 SYSTEM_SOLVER_VERIFY=1 cargo run
@@ -113,8 +114,6 @@ This solver finds the minimum-time (months) sequence of colony actions to reach 
 **Level 1 — Plan search** (`solver/decomp.rs`): Breadth-first over `SystemPlan`, which encodes per-planet decisions (colonize? free port? hazard pay? which facilities/improvements/cores/items?).
 
 **Level 2 — Schedule simulation** (`solver/decomp.rs:simulate_plan`): Given a fixed plan, uses a greedy "build ASAP, wait minimum interval" loop. A single `Wait(n)` advances all planets concurrently, correctly modeling shared resource contention (credits, story points, alpha cores).
-
-The archived solvers (`solver/archive/`) — IDA\* per-planet and Rayon-parallel split — are kept for A/B comparison only.
 
 ### Key types
 

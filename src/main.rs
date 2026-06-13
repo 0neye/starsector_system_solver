@@ -2,6 +2,7 @@ mod constants;
 mod cpu_affinity;
 mod extract;
 mod parser;
+mod paths;
 mod planet;
 mod rank;
 mod solve;
@@ -11,12 +12,14 @@ mod tui;
 mod utils;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use constants::ColonyItem;
 use extract::db::Db;
 use planet::Planet;
 use rank::{
     filter_system_names, peak_income, rank_systems, score_per_planet, sort_rows_best_first,
     RankScorer, RankSortMode,
 };
+use solver::Action;
 use solver::{
     diagnose_maximize_gap, search_system_decomp, search_system_maximize,
     solve_pareto_with_settings, Balance, Goal, Metric, SolverSettings, State,
@@ -24,12 +27,8 @@ use solver::{
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
-// Archived solvers, kept reachable for benchmarking/comparison:
-use constants::{ColonyItem, FacilityType};
-use solver::archive::{astar::search_all_planets, split::search_all_planets_decomp};
-use solver::Action;
-use tui::config::DiscoveryDefinition;
 use system::System;
+use tui::config::DiscoveryDefinition;
 
 #[derive(Parser)]
 #[command(about = "Starsector colony system solver")]
@@ -41,8 +40,9 @@ struct Cli {
     #[arg(long, default_value = "Mia's Star")]
     system: String,
 
-    /// Extraction DB to load game data from (produced by `extract run`)
-    #[arg(long, default_value = "save_data.db")]
+    /// Extraction DB to load game data from (produced by `extract run`).
+    /// Defaults to the per-user data dir, falling back to `./save_data.db`.
+    #[arg(long, default_value_os_t = paths::default_db_path())]
     db: PathBuf,
 
     /// Extracted save to load (substring of save dir or character name).
@@ -161,8 +161,8 @@ enum Command {
     Extract(extract::cli::ExtractCommand),
     /// Inspect extracted system planet, resource, and infrastructure data.
     Inspect {
-        /// Extraction DB to inspect.
-        #[arg(long, default_value = "save_data.db")]
+        /// Extraction DB to inspect. Defaults to the per-user data dir.
+        #[arg(long, default_value_os_t = paths::default_db_path())]
         db: PathBuf,
         /// Extracted save to inspect. Defaults to the most recently extracted save.
         #[arg(long)]
@@ -191,7 +191,9 @@ enum RankScope {
 /// Load solver game data from the extraction DB. Env-var modes use
 /// `SYSTEM_SOLVER_DB` / `SYSTEM_SOLVER_SAVE` since they bypass CLI parsing.
 fn load_systems_from_env() -> Result<HashMap<String, System>, Box<dyn Error>> {
-    let db = std::env::var("SYSTEM_SOLVER_DB").unwrap_or_else(|_| "save_data.db".to_string());
+    // `paths::default_db_path` already honors `SYSTEM_SOLVER_DB`, then the
+    // per-user data dir, then `./save_data.db`.
+    let db = paths::default_db_path();
     let save = std::env::var("SYSTEM_SOLVER_SAVE").ok();
     Ok(parser::load_game_data_from_db(&db, save.as_deref())?)
 }
@@ -452,100 +454,13 @@ fn run_rank(
     );
 }
 
-/// Build the standard A/B starting balance: generous credits plus a couple of
-/// colony items, matching the default `main` setup so the comparison is
-/// representative.
+/// Build a representative starting balance (generous credits plus a couple of
+/// colony items) matching the default `main` setup. Used by the verify harness.
 fn ab_balance() -> Balance {
     let mut balance = Balance::new(5_000_000.0, 5, 1);
     balance.add_colony_item(ColonyItem::CorruptedNanoforge);
     balance.add_colony_item(ColonyItem::SoilNanites);
     balance
-}
-
-/// Summarize a solver's per-planet results into (solved, best_months, all_costs).
-fn summarize(results: &[solver::AStarSearchResult]) -> (usize, Option<i32>, Vec<i32>) {
-    let costs: Vec<i32> = results.iter().map(|r| r.cost).collect();
-    let best = costs.iter().copied().min();
-    (results.len(), best, costs)
-}
-
-/// Run both solvers over every loaded system at an equal per-planet time budget
-/// and print a side-by-side comparison. Triggered by `SYSTEM_SOLVER_AB=1`.
-fn run_ab(systems: &HashMap<String, System>, budget_ms: u32, settings: SolverSettings) {
-    use std::time::Instant;
-
-    // A few goals spanning easy -> hard so we can see where each solver wins.
-    let goals = [
-        ("income>=10k, stab>=6", Goal::new(10_000.0, None, Some(6))),
-        ("income>=40k, stab>=8", Goal::new(40_000.0, None, Some(8))),
-        ("income>=80k, stab>=8", Goal::new(80_000.0, None, Some(8))),
-    ];
-
-    let mut names: Vec<&String> = systems.keys().collect();
-    names.sort();
-
-    println!("\n================ A/B: IDA* vs two-level decomposition ================");
-    println!("per-planet budget: {} ms\n", budget_ms);
-
-    for name in names {
-        let system = &systems[name];
-        let planet_count = system.planets().len();
-        println!("### {name} ({planet_count} planets)");
-
-        for (label, goal) in &goals {
-            // Fresh state per solver so neither sees the other's mutations.
-            let mut ida_state = State::new(ab_balance(), system.clone());
-            let mut dec_state = State::new(ab_balance(), system.clone());
-
-            let t0 = Instant::now();
-            let ida = search_all_planets(&mut ida_state, goal, budget_ms, true);
-            let ida_ms = t0.elapsed().as_millis();
-
-            let t1 = Instant::now();
-            let dec = search_all_planets_decomp(&mut dec_state, goal, budget_ms, true);
-            let dec_ms = t1.elapsed().as_millis();
-
-            let mut joint_state = State::new(ab_balance(), system.clone());
-            let t2 = Instant::now();
-            let joint = solver::search_system_decomp_with_settings(
-                &mut joint_state,
-                goal,
-                budget_ms,
-                settings,
-            );
-            let joint_ms = t2.elapsed().as_millis();
-
-            let (ida_solved, ida_best, ida_costs) = summarize(&ida);
-            let (dec_solved, dec_best, dec_costs) = summarize(&dec);
-            let joint_cost = joint.first().map(|r| r.cost);
-
-            let fmt_best = |b: Option<i32>| b.map_or("--".to_string(), |m| format!("{m}mo"));
-
-            // NOTE: IDA* and per-planet decomp force *each* planet to meet the
-            // threshold alone; joint solves the true system-wide goal (totals
-            // across planets), so its cost is not directly comparable.
-            println!("  goal: {label}");
-            println!(
-                "    IDA*         : solved {ida_solved}/{planet_count}  best {:>5}  {:>7}ms  costs {:?}",
-                fmt_best(ida_best),
-                ida_ms,
-                ida_costs
-            );
-            println!(
-                "    decomp/split : solved {dec_solved}/{planet_count}  best {:>5}  {:>7}ms  costs {:?}",
-                fmt_best(dec_best),
-                dec_ms,
-                dec_costs
-            );
-            println!(
-                "    decomp/joint : {}  {:>7}ms  (system-wide goal)",
-                joint_cost.map_or("unsolved".to_string(), |c| format!("solved cost {c}mo")),
-                joint_ms,
-            );
-        }
-        println!();
-    }
-    println!("=====================================================================\n");
 }
 
 /// Independently verify the joint decomp solver: solve the whole system, then
@@ -1095,17 +1010,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    if std::env::var_os("SYSTEM_SOLVER_AB").is_some() {
-        println!("Loading game data...");
-        let systems = load_systems_from_env()?;
-        let budget_ms = std::env::var("SYSTEM_SOLVER_AB_MS")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(8_000);
-        run_ab(&systems, budget_ms, env_solver_settings(true));
-        return Ok(());
-    }
-
     if std::env::var_os("SYSTEM_SOLVER_VERIFY").is_some() {
         println!("Loading game data...");
         let systems = load_systems_from_env()?;
@@ -1490,76 +1394,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     test_solver(state, &goal, cli.time_limit, settings);
-    return Ok(());
-
-    // Test growth update
-    // Apply actions to set up the initial state
-    let terran_1_hash = 1160120806187968324; //Planet::_get_planet_name_hash("Terran 1");
-    let action_sequence = vec![
-        Action::Colonize(terran_1_hash),
-        Action::Wait(1),
-        Action::UpgradeAdmin(terran_1_hash),
-        Action::AddFacility(terran_1_hash, FacilityType::Megaport),
-        Action::AddFacility(terran_1_hash, FacilityType::LightIndustry),
-        Action::AddFacility(terran_1_hash, FacilityType::GroundDefenses),
-        Action::AddFacility(terran_1_hash, FacilityType::OrbitalStation),
-        Action::SetHazardPay(terran_1_hash, true),
-        Action::SetFreePort(terran_1_hash, true),
-        Action::Wait(3),
-        Action::InstallItem(
-            terran_1_hash,
-            FacilityType::LightIndustry,
-            ColonyItem::BiofactoryEmbryo,
-        ),
-        Action::Wait(2),
-    ];
-
-    let test_action_sequence = vec![
-        // Action::AddFacility(terran_1_hash, FacilityType::LightIndustry),
-        // Action::Wait(10),
-        // Action::AddFacility(terran_1_hash, FacilityType::HeavyIndustry),
-        // Action::Wait(10),
-    ];
-
-    println!("\nInitial state:");
-    println!("{:#?}", state.balance());
-
-    // Apply action sequence
-    for action in &action_sequence {
-        state.apply_action_raw(action, true);
-    }
-
-    println!("\nState after applying action sequence:");
-    println!("{:#?}", state.balance());
-
-    let initial_credits = state.balance().credits();
-
-    // Apply test actions
-    for action in &test_action_sequence {
-        state.apply_action_raw(action, true);
-    }
-
-    // Undo test actions
-    for _ in 0..test_action_sequence.len() {
-        state.undo_last_action(true);
-    }
-
-    println!("\nState after undoing test actions:");
-    println!("{:#?}", state.balance());
-
-    // Check for credit inconsistency
-    let final_credits = state.balance().credits();
-    let credit_difference = final_credits - initial_credits;
-    println!("\nCredit difference: {}", credit_difference);
-
-    if credit_difference.abs() > 1e-6 {
-        println!("Warning: Credit inconsistency detected!");
-    } else {
-        println!("No credit inconsistency detected.");
-    }
-
-    crate::solver::_test_path_undo_consistency(&state);
-
     Ok(())
 }
 
@@ -1601,10 +1435,7 @@ mod cli_tests {
 
         assert!(cli.rank);
         assert_eq!(cli.rank_scope, RankScope::Discovered);
-        assert_eq!(
-            cli.discovery_definition,
-            DiscoveryDefinition::FullySurveyed
-        );
+        assert_eq!(cli.discovery_definition, DiscoveryDefinition::FullySurveyed);
         assert!(cli.include_core_worlds);
         assert_eq!(cli.rank_sort, RankSortMode::TotalScore);
     }
@@ -1637,36 +1468,3 @@ mod cli_tests {
         }
     }
 }
-
-/*
-TODOS:
-- Make everything hashable - Done
-- Add State struct for system info - Done
-- Add new actions for waiting a number of months and colonizing a planet - Done
-- Add corresponding functions for the system impl - Done
-- Add a bank/balance struct to keep track of credits, SPs, and alpha cores - Done
-- Give harvested organs the same treatment as drugs for production functions - Done
-- Add income functions to facilities and planets - Done
-- Add score function to system/state structs - Done
-- Hash action sequences instead of system state - Done
-- Add the ability to undo any action so we can efficiently search the game tree - Done
-- Get a DFS working - Doneish
-- Redo the upkeep/production formulas to be a function pointer - Done
-
-- Rework facility upgrading/downgrading to do less reallocation
-- Rework lazy static hashmaps in constants file to be match statements
-- Implement system-wide restrictions on commerce facility
-- Fix colony growth and reversability
-- Search in two or more phases, first without any facility improvements, then use those action logs to help the full search
-- ^ Could also search without any defenseive structures first, then try to fit them in later
-- Search one planet at a time, and then plug in the results of each planet into the overall search tree at the end
-- Use a different search algorithm, like IDA* with heuristics
-- Let the user give a specific goal (net income and/or credits, defense multiplier) to optimize for
-
-
-Since the search space for the full tree is quintillions of nodes the plan to do things in stages:
-1. Search each planet individually using state.to_vec_by_planet; in 'exclude_upgrades' mode to limit the search space; this should be parallelizable
-2. Run a quick algorithm to insert AddImprovement and AddAlphaCore actions into the sequence where they'd be most effective, for each optimal action sequence returned from the exclude_upgrades searches
-3. Use these near-optimal action sequences and other data from each individual planet to do one big combined search on the full tree relying on the heuristic data gathered to traverse it quickly and find the optimal solution
-
-*/

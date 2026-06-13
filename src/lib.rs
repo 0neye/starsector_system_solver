@@ -2,6 +2,7 @@ pub mod constants;
 pub mod cpu_affinity;
 pub mod extract;
 pub mod parser;
+pub mod paths;
 pub mod planet;
 pub mod rank;
 pub mod solve;

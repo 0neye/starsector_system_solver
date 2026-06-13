@@ -24,8 +24,7 @@
 //! system-wide goal with correctly shared resources.
 //!
 //! [`search_system_decomp`] is the entry point: one combined plan over the whole
-//! system on a shared timeline and budget. The older per-planet split lives in
-//! [`crate::solver::archive::split`] for comparison.
+//! system on a shared timeline and budget.
 //!
 //! The same two-level machinery also runs a *maximize* objective
 //! ([`search_system_maximize`]): instead of minimizing months to a threshold, it

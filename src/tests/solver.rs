@@ -576,9 +576,8 @@ fn distinct_colonized(log: &[Action]) -> usize {
 }
 
 /// The joint solver must satisfy a *system-wide* goal that no single planet can
-/// reach alone by developing several planets on one shared timeline — and the
-/// legacy per-planet split must fail at the same goal. This is the core proof of
-/// multi-planet interleaving.
+/// reach alone by developing several planets on one shared timeline. This is the
+/// core proof of multi-planet interleaving.
 ///
 /// Runs upgrade-free (`exclude_upgrades = true`) on purpose: the test needs a
 /// goal sandwiched strictly between one planet's ceiling and two planets'
@@ -621,16 +620,6 @@ fn decomp_joint_interleaves_planets_for_system_goal() {
         distinct_colonized(&log),
         2,
         "a goal beyond solo capacity should force developing both planets"
-    );
-
-    // The legacy per-planet split solves each planet in isolation, so it cannot
-    // reach a goal that only the planets *combined* can meet.
-    let mut split = base.clone();
-    let split_results =
-        crate::solver::archive::split::search_all_planets_decomp(&mut split, &goal, 4_000, true);
-    assert!(
-        split_results.len() < 2,
-        "per-planet decomposition should not solve a goal that needs planets combined"
     );
 }
 

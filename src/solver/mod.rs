@@ -1,4 +1,3 @@
-pub mod archive;
 pub mod bound;
 pub mod cancel;
 pub mod decomp;

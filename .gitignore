@@ -1,3 +1,7 @@
 /target
 /workspace/
 *.db
+
+# Archived experimental solvers (IDA* per-planet, Rayon split): kept locally for
+# benchmarking but not part of the build or the public repo.
+/src/solver/archive/

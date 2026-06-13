@@ -10,8 +10,8 @@ use crate::constants::ColonyItem;
 use crate::rank::RankScorer;
 use crate::solver::{Balance, SolverSettings};
 
-pub const CONFIG_PATH: &str = "workspace/solver_tui.toml";
-pub const DEFAULT_DB_PATH: &str = "save_data.db";
+// Config and DB locations are resolved per-user (with a dev fallback) by
+// `crate::paths`; see that module for the resolution order.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 pub enum DiscoveryDefinition {
@@ -68,7 +68,7 @@ impl Default for TuiConfig {
             allow_parallel_builds: false,
             rank_by_score_per_planet: true,
             rank_scorer: default_rank_scorer(),
-            db_path: PathBuf::from(DEFAULT_DB_PATH),
+            db_path: crate::paths::default_db_path(),
             starsector_dir: None,
         }
     }

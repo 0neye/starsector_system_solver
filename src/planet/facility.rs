@@ -651,8 +651,8 @@ impl Facility {
     }
 
     /// Per month. Independent-denominator income (player supply excluded from
-    /// the market-share denominator); superseded by `collect_export_supply` +
-    /// system-scope market share, kept for the archived A/B solvers.
+    /// the market-share denominator); the standalone single-colony view,
+    /// superseded at system scope by `collect_export_supply` + market share.
     pub fn calculate_gross_income(
         &self,
         size: u32,

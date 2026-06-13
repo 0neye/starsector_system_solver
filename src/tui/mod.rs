@@ -17,12 +17,12 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use self::app::{App, Modal, ScopeMode, Screen};
-use self::config::{TuiConfig, CONFIG_PATH};
+use self::config::TuiConfig;
 
 type PanicHook = Box<dyn Fn(&panic::PanicHookInfo<'_>) + Sync + Send + 'static>;
 
 pub fn run(starsector_dir: Option<PathBuf>) -> io::Result<()> {
-    let (config, status) = load_config_for_start(starsector_dir, CONFIG_PATH);
+    let (config, status) = load_config_for_start(starsector_dir, crate::paths::config_path());
     let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout()))?;
     terminal.clear()?;

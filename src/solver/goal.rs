@@ -1,10 +1,8 @@
 //! The solver goal and the shared search-result type.
 //!
 //! `Goal` is a threshold in output space (net income, and optional average
-//! ground defense / stability). It is shared by the live joint solver
-//! ([`crate::solver::decomp`]) and the archived IDA* solver — the IDA*-specific
-//! admissible-bound methods live alongside that solver in
-//! [`crate::solver::archive::astar`] as a separate `impl Goal` block.
+//! ground defense / stability), used by the joint solver
+//! ([`crate::solver::decomp`]).
 
 use crate::solver::state::{Action, State};
 

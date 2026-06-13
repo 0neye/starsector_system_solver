@@ -4,7 +4,7 @@ use ratatui::widgets::{Block, Borders, Cell, Row, Table, TableState};
 use ratatui::Frame;
 
 use crate::constants::ColonyItem;
-use crate::tui::config::{DiscoveryDefinition, CONFIG_PATH};
+use crate::tui::config::DiscoveryDefinition;
 
 use super::super::app::{App, Modal};
 use super::selected_style;
@@ -41,7 +41,7 @@ pub fn handle_key(app: &mut App, code: KeyCode) {
     }
     match code {
         KeyCode::Esc => {
-            if let Err(err) = app.config.save(CONFIG_PATH) {
+            if let Err(err) = app.config.save(app.config_path().to_path_buf()) {
                 app.status = err;
             } else {
                 app.status = "settings saved".to_string();

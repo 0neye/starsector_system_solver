@@ -211,7 +211,7 @@ impl App {
         let scorer = config.rank_scorer;
         Self {
             config,
-            config_path: PathBuf::from(super::config::CONFIG_PATH),
+            config_path: crate::paths::config_path(),
             active_screen: Screen::Saves,
             modal: None,
             saves: Vec::new(),
@@ -265,6 +265,11 @@ impl App {
     #[cfg(test)]
     pub(crate) fn set_config_path_for_test(&mut self, path: PathBuf) {
         self.config_path = path;
+    }
+
+    /// Where this app reads/writes its TUI config (resolved by `crate::paths`).
+    pub(crate) fn config_path(&self) -> &std::path::Path {
+        &self.config_path
     }
 
     pub fn start_job(&mut self, job: Job) {

@@ -15,7 +15,6 @@ use crate::extract::save::{discover_saves, load_campaign_xml};
 use crate::extract::scan::scan_save;
 use crate::extract::{ExtractError, Result};
 
-pub const DEFAULT_DB_PATH: &str = "save_data.db";
 pub const DEFAULT_EXPORT_DIR: &str = "out";
 
 #[derive(Subcommand, Debug)]
@@ -40,7 +39,8 @@ pub enum ExtractCommand {
         /// STARSECTOR_DIR environment variable or common install locations.
         #[arg(long)]
         starsector_dir: Option<PathBuf>,
-        #[arg(long, default_value = DEFAULT_DB_PATH)]
+        /// Output DB. Defaults to the per-user data dir (so the solver finds it).
+        #[arg(long, default_value_os_t = crate::paths::default_db_path())]
         db: PathBuf,
         #[arg(long)]
         system: Vec<String>,
@@ -48,7 +48,7 @@ pub enum ExtractCommand {
     /// Search extracted systems by name
     Search {
         query: String,
-        #[arg(long, default_value = DEFAULT_DB_PATH)]
+        #[arg(long, default_value_os_t = crate::paths::default_db_path())]
         db: PathBuf,
         #[arg(long)]
         save: Option<String>,
@@ -57,7 +57,7 @@ pub enum ExtractCommand {
     },
     /// Export extracted data as Planets/Systems/Infrastructure CSVs
     Export {
-        #[arg(long, default_value = DEFAULT_DB_PATH)]
+        #[arg(long, default_value_os_t = crate::paths::default_db_path())]
         db: PathBuf,
         #[arg(long)]
         save: Option<String>,
