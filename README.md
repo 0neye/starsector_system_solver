@@ -77,9 +77,11 @@ save. Pass `--db <path>` to override the database location.
 | `--time-limit <MS>` | Hard wall-clock budget for the solve |
 | `--no-industry-upgrades` | Disable story-point improvements and alpha-core installs |
 
-Subcommands: `extract` (parse/search/export saves), `inspect` (dump extracted
-system data), `tui` (interactive UI). Run `system_solver --help` or
-`system_solver <subcommand> --help` for the full reference.
+Subcommands: `extract` (parse/search/export saves), `locate` (find the game
+install), `init` (save settings and build the first DB), `inspect` (dump
+extracted system data), `tui` (interactive UI). Run `system_solver --help` or
+`system_solver <subcommand> --help`; see [`docs/CLI.md`](docs/CLI.md) for the
+full CLI reference and workflow examples.
 
 ## How it works
 

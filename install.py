@@ -18,6 +18,7 @@ APP_NAME = "StarsectorSystemRanker"
 EXE_NAME = "system_solver.exe" if os.name == "nt" else "system_solver"
 START_MENU_NAME = "Starsector System Ranker.lnk"
 DESKTOP_FILE = "starsector-system-ranker.desktop"
+SKILL_NAME = "system-solver"
 
 
 def main() -> int:
@@ -27,6 +28,13 @@ def main() -> int:
     parser.add_argument("--starsector-dir", type=Path, help="Starsector install directory")
     parser.add_argument("--no-shortcut", action="store_true", help="skip launcher creation")
     parser.add_argument("--skip-extract", action="store_true", help="skip initial DB extraction")
+    skills = parser.add_mutually_exclusive_group()
+    skills.add_argument(
+        "--with-skills",
+        action="store_true",
+        help="install the bundled agent skill into existing Claude Code/Codex skill dirs",
+    )
+    skills.add_argument("--no-skills", action="store_true", help="skip agent skill installation")
     parser.add_argument("--yes", action="store_true", help="non-interactive install")
     parser.add_argument("--uninstall", action="store_true", help="remove installed files")
     args = parser.parse_args()
@@ -89,6 +97,8 @@ def install(args: argparse.Namespace) -> None:
     else:
         create_desktop_entry(installed_binary)
 
+    install_agent_skills(archive_dir, args.with_skills, args.no_skills, args.yes)
+
     print("Done. Open a new terminal, then run: system_solver tui")
 
 
@@ -111,6 +121,8 @@ def uninstall() -> None:
         shortcut.unlink()
         print(f"Removed {shortcut}")
 
+    remove_agent_skills()
+
     if install_dir.exists() and not any(install_dir.iterdir()):
         install_dir.rmdir()
 
@@ -126,6 +138,60 @@ def binary_install_dir() -> Path:
             raise InstallerError("LOCALAPPDATA is not set")
         return Path(root) / "Programs" / APP_NAME
     return Path.home() / ".local" / "bin"
+
+
+def skill_source_dir(archive_dir: Path) -> Path:
+    return archive_dir / "skills" / SKILL_NAME
+
+
+def agent_skill_targets() -> list[tuple[str, Path, Path]]:
+    home = Path.home()
+    return [
+        ("Claude Code", home / ".claude", home / ".claude" / "skills" / SKILL_NAME),
+        ("Codex", home / ".codex", home / ".codex" / "skills" / SKILL_NAME),
+    ]
+
+
+def install_agent_skills(
+    archive_dir: Path, force: bool, skip: bool, assume_yes: bool
+) -> None:
+    if skip:
+        print("Skipped agent skill installation.")
+        return
+    if assume_yes and not force:
+        return
+
+    source = skill_source_dir(archive_dir)
+    if not source.is_dir():
+        if force or not assume_yes:
+            print(f"warning: bundled agent skill not found at {source}")
+        return
+
+    targets = [(name, target) for name, parent, target in agent_skill_targets() if parent.is_dir()]
+    if not targets:
+        if force:
+            print("No Claude Code or Codex agent directories found; skipped agent skill installation.")
+        return
+
+    for name, target in targets:
+        should_install = force
+        if not force:
+            answer = input(f"Install the {SKILL_NAME} agent skill for {name}? [y/N] ")
+            should_install = answer.strip().lower() in ("y", "yes")
+        if should_install:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, target, dirs_exist_ok=True)
+            print(f"Installed {name} skill: {target}")
+
+
+def remove_agent_skills() -> None:
+    for name, _, target in agent_skill_targets():
+        if target.is_dir():
+            shutil.rmtree(target)
+            print(f"Removed {name} skill: {target}")
+        elif target.exists():
+            target.unlink()
+            print(f"Removed {name} skill file: {target}")
 
 
 def choose_starsector_dir(

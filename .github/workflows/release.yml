@@ -66,6 +66,9 @@ jobs:
           Copy-Item "install.ps1" "$stage/install.ps1"
           Copy-Item "README.md" "$stage/README.md"
           Copy-Item "LICENSE" "$stage/LICENSE"
+          New-Item -ItemType Directory -Force -Path "$stage/docs" | Out-Null
+          Copy-Item "docs/CLI.md" "$stage/docs/CLI.md"
+          Copy-Item "skills" "$stage/skills" -Recurse
           Compress-Archive -Path $stage -DestinationPath "$stage.zip" -Force
 
       - name: Stage Linux archive
@@ -80,6 +83,9 @@ jobs:
           cp install.sh "$stage/install.sh"
           cp README.md "$stage/README.md"
           cp LICENSE "$stage/LICENSE"
+          mkdir -p "$stage/docs"
+          cp docs/CLI.md "$stage/docs/CLI.md"
+          cp -R skills "$stage/skills"
           chmod +x "$stage/system_solver" "$stage/install.sh"
           tar -czf "$stage.tar.gz" "$stage"
 
