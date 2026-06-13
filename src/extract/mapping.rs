@@ -1,4 +1,4 @@
-﻿//! campaign.xml extraction rows mapped into solver/DB-friendly records.
+//! campaign.xml extraction rows mapped into solver/DB-friendly records.
 
 use std::collections::HashMap;
 
@@ -86,11 +86,7 @@ pub fn map_save(raw: RawSave, game_data: &GameData) -> MappedOutput {
     }
 }
 
-fn map_system(
-    system: RawSystem,
-    game_data: &GameData,
-    com: Option<(f64, f64)>,
-) -> MappedSystem {
+fn map_system(system: RawSystem, game_data: &GameData, com: Option<(f64, f64)>) -> MappedSystem {
     let dist_from_com_ly = system
         .hyper_loc
         .zip(com)

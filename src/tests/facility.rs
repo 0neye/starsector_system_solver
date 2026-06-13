@@ -42,17 +42,26 @@ fn upgrade_downgrade_build_days_are_sane() {
 fn facility_improvements_cost_two_then_double_per_planet() {
     let planet = PlanetBuilder::new("Test 1").build();
     let hash = planet.name_hash();
-    let mut state = State::new(Balance::new(10_000_000.0, 20, 0), single_planet_system(planet));
+    let mut state = State::new(
+        Balance::new(10_000_000.0, 20, 0),
+        single_planet_system(planet),
+    );
     state.apply_action_raw(&Action::Colonize(hash), false);
 
-    state.apply_action_raw(&Action::AddImprovement(hash, FacilityType::Population), false);
+    state.apply_action_raw(
+        &Action::AddImprovement(hash, FacilityType::Population),
+        false,
+    );
     assert_eq!(
         state.balance().story_points(),
         18,
         "first facility improvement on a planet costs 2 SP"
     );
 
-    state.apply_action_raw(&Action::AddImprovement(hash, FacilityType::Spaceport), false);
+    state.apply_action_raw(
+        &Action::AddImprovement(hash, FacilityType::Spaceport),
+        false,
+    );
     assert_eq!(
         state.balance().story_points(),
         14,
@@ -78,7 +87,10 @@ fn facility_improvements_cost_two_then_double_per_planet() {
 fn first_facility_improvement_is_not_affordable_with_one_story_point() {
     let planet = PlanetBuilder::new("Test 1").build();
     let hash = planet.name_hash();
-    let mut state = State::new(Balance::new(10_000_000.0, 1, 0), single_planet_system(planet));
+    let mut state = State::new(
+        Balance::new(10_000_000.0, 1, 0),
+        single_planet_system(planet),
+    );
     state.apply_action_raw(&Action::Colonize(hash), false);
 
     assert!(

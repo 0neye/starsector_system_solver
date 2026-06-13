@@ -28,9 +28,7 @@ fn refining_exports(economy_planet: &Planet) -> Vec<(Resource, f64, f64)> {
         .exports
         .iter()
         .copied()
-        .filter(|(resource, _, _)| {
-            matches!(resource, Resource::Metals | Resource::Transplutonics)
-        })
+        .filter(|(resource, _, _)| matches!(resource, Resource::Metals | Resource::Transplutonics))
         .collect()
 }
 
@@ -49,16 +47,18 @@ fn hand_gross_from_planets(planets: &[&Planet]) -> f64 {
                     .exports
                     .iter()
                     .filter(|(export, _, _)| export == resource)
-                    .fold((raw, modded), |(raw, modded), (_, export_raw, export_modded)| {
-                        (raw + export_raw, modded + export_modded)
-                    })
+                    .fold(
+                        (raw, modded),
+                        |(raw, modded), (_, export_raw, export_modded)| {
+                            (raw + export_raw, modded + export_modded)
+                        },
+                    )
             });
 
             if raw == 0.0 {
                 0.0
             } else {
-                resource.market_value() as f64 * modded
-                    / (resource.sector_supply() as f64 + raw)
+                resource.market_value() as f64 * modded / (resource.sector_supply() as f64 + raw)
             }
         })
         .sum();
@@ -162,13 +162,19 @@ fn assert_state_restored(actual: &State, expected: &State) {
         actual.balance().gross_income(),
         expected.balance().gross_income(),
     );
-    assert_close(actual.balance().net_income(), expected.balance().net_income());
+    assert_close(
+        actual.balance().net_income(),
+        expected.balance().net_income(),
+    );
     assert_eq!(actual.system().planets(), expected.system().planets());
     assert_eq!(
         actual.system().infrastructure(),
         expected.system().infrastructure()
     );
-    assert_eq!(actual.system().stable_points(), expected.system().stable_points());
+    assert_eq!(
+        actual.system().stable_points(),
+        expected.system().stable_points()
+    );
     assert_eq!(actual.action_log(), expected.action_log());
     assert_eq!(actual.get_deep_hash(), expected.get_deep_hash());
 }
@@ -193,11 +199,8 @@ fn duplicate_producers_have_diminishing_returns() {
     let one_planet = colonized_refining_planet("Asharu");
     let one = system_from_planets(vec![one_planet.clone()]).get_gross_income();
 
-    let two = system_from_planets(vec![
-        one_planet,
-        colonized_refining_planet("Chaxiraxi"),
-    ])
-    .get_gross_income();
+    let two = system_from_planets(vec![one_planet, colonized_refining_planet("Chaxiraxi")])
+        .get_gross_income();
 
     assert!(two > one, "adding a producer should increase gross income");
     assert!(
@@ -351,7 +354,10 @@ fn wait_accrues_system_level_income_and_undoes_exactly() {
     let before = state.clone();
 
     let second_id = Planet::_get_planet_name_hash("Chaxiraxi");
-    state.apply_action_raw(&Action::AddFacility(second_id, FacilityType::Refining), false);
+    state.apply_action_raw(
+        &Action::AddFacility(second_id, FacilityType::Refining),
+        false,
+    );
 
     let mut split = state.clone();
     let build_months = build_months(FacilityType::Refining);
@@ -375,11 +381,17 @@ fn lookahead_factored_parity_with_share_coupling() {
     let system = system_from_planets(vec![
         PlanetBuilder::new("Asharu")
             .prop("size", 6.0)
-            .prop("accessibility percent", base_accessibility_property_for(100.0))
+            .prop(
+                "accessibility percent",
+                base_accessibility_property_for(100.0),
+            )
             .build(),
         PlanetBuilder::new("Chaxiraxi")
             .prop("size", 6.0)
-            .prop("accessibility percent", base_accessibility_property_for(100.0))
+            .prop(
+                "accessibility percent",
+                base_accessibility_property_for(100.0),
+            )
             .build(),
     ]);
     let mut state = State::new(rich_balance(), system);
@@ -401,5 +413,8 @@ fn lookahead_factored_parity_with_share_coupling() {
         false,
         50,
     );
-    assert!(compared >= 50, "expected at least 50 comparisons, got {compared}");
+    assert!(
+        compared >= 50,
+        "expected at least 50 comparisons, got {compared}"
+    );
 }

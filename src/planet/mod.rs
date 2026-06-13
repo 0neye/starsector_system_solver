@@ -981,8 +981,8 @@ impl Planet {
         let economy = self.economy();
         let mut gross_income = economy.direct_income;
         for &(resource, raw, modded) in &economy.exports {
-            gross_income += resource.market_value() as f64 * modded
-                / (resource.sector_supply() as f64 + raw);
+            gross_income +=
+                resource.market_value() as f64 * modded / (resource.sector_supply() as f64 + raw);
         }
         gross_income
     }

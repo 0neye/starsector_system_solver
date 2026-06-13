@@ -173,10 +173,7 @@ fn print_run_summary(
     println!("save: {} ({})", save.dir_name, save.character_name);
     println!(
         "systems={} planets={} infrastructure={} unknown_conditions={}",
-        summary.systems,
-        summary.planets,
-        summary.infrastructure,
-        summary.unknown_conditions
+        summary.systems, summary.planets, summary.infrastructure, summary.unknown_conditions
     );
     if !filter_systems.is_empty() {
         println!("system filter: {}", filter_systems.join(", "));
