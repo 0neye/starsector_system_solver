@@ -5,7 +5,10 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 use crate::solver::pareto::ParetoSolve;
-use crate::solver::{solve_pareto_bound, solve_pareto_quick, solve_pareto_template, Balance};
+use crate::solver::{
+    solve_pareto_bound_with_settings, solve_pareto_quick_with_settings,
+    solve_pareto_template_with_settings, Balance, SolverSettings,
+};
 use crate::system::System;
 
 /// `--rank` scoring strategy. `Quick` is the Tier-1 budgeted search; `Template`
@@ -27,7 +30,7 @@ pub struct RankRow {
     pub seconds: f64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum RankSortMode {
     ScorePerPlanet,
     TotalScore,
@@ -98,6 +101,7 @@ fn rank_value(row: &RankRow, mode: RankSortMode) -> f64 {
 
 /// Score selected systems in display order while exposing each finished row to
 /// interactive presenters before the final best-first sort.
+#[allow(clippy::too_many_arguments)]
 pub fn rank_systems(
     systems: &HashMap<String, System>,
     balance: &Balance,
@@ -105,13 +109,13 @@ pub fn rank_systems(
     horizon: i32,
     time_limit: u32,
     scorer: RankScorer,
-    include_industry_upgrades: bool,
+    settings: SolverSettings,
     on_scored: &mut dyn FnMut(&RankRow),
 ) -> Vec<RankRow> {
-    let scorer_fn: fn(&System, &Balance, i32, u32, bool) -> ParetoSolve = match scorer {
-        RankScorer::Quick => solve_pareto_quick,
-        RankScorer::Template => solve_pareto_template,
-        RankScorer::Bound => solve_pareto_bound,
+    let scorer_fn: fn(&System, &Balance, i32, u32, SolverSettings) -> ParetoSolve = match scorer {
+        RankScorer::Quick => solve_pareto_quick_with_settings,
+        RankScorer::Template => solve_pareto_template_with_settings,
+        RankScorer::Bound => solve_pareto_bound_with_settings,
     };
 
     let mut rows = Vec::with_capacity(names.len());
@@ -122,13 +126,7 @@ pub fn rank_systems(
             break;
         }
         let t0 = Instant::now();
-        let solve = scorer_fn(
-            &systems[*name],
-            balance,
-            horizon,
-            time_limit,
-            include_industry_upgrades,
-        );
+        let solve = scorer_fn(&systems[*name], balance, horizon, time_limit, settings);
         let row = RankRow {
             system: (*name).clone(),
             planet_count: systems[*name].planets().len(),

@@ -3,16 +3,17 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 use crate::constants::ColonyItem;
 use crate::rank::RankScorer;
-use crate::solver::Balance;
+use crate::solver::{Balance, SolverSettings};
 
 pub const CONFIG_PATH: &str = "workspace/solver_tui.toml";
 pub const DEFAULT_DB_PATH: &str = "save_data.db";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 pub enum DiscoveryDefinition {
     AtLeastOneSurveyed,
     FullySurveyed,
@@ -30,6 +31,8 @@ pub struct TuiConfig {
     pub include_core_worlds: bool,
     #[serde(default = "default_include_industry_upgrades")]
     pub include_industry_upgrades: bool,
+    #[serde(default)]
+    pub allow_parallel_builds: bool,
     #[serde(default = "default_rank_by_score_per_planet")]
     pub rank_by_score_per_planet: bool,
     #[serde(default = "default_rank_scorer")]
@@ -62,6 +65,7 @@ impl Default for TuiConfig {
             discovery_definition: DiscoveryDefinition::AtLeastOneSurveyed,
             include_core_worlds: false,
             include_industry_upgrades: true,
+            allow_parallel_builds: false,
             rank_by_score_per_planet: true,
             rank_scorer: default_rank_scorer(),
             db_path: PathBuf::from(DEFAULT_DB_PATH),
@@ -111,6 +115,13 @@ impl TuiConfig {
         balance
     }
 
+    pub fn solver_settings(&self) -> SolverSettings {
+        SolverSettings {
+            include_industry_upgrades: self.include_industry_upgrades,
+            allow_parallel_builds: self.allow_parallel_builds,
+        }
+    }
+
     pub fn balance_signature(&self) -> BalanceSignature {
         BalanceSignature {
             credits_bits: self.credits.to_bits(),
@@ -120,6 +131,7 @@ impl TuiConfig {
             horizon_months: self.horizon_months,
             solver_time_budget_ms: self.solver_time_budget_ms,
             include_industry_upgrades: self.include_industry_upgrades,
+            allow_parallel_builds: self.allow_parallel_builds,
         }
     }
 }
@@ -133,4 +145,5 @@ pub struct BalanceSignature {
     horizon_months: i32,
     solver_time_budget_ms: u32,
     include_industry_upgrades: bool,
+    allow_parallel_builds: bool,
 }

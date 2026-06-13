@@ -14,7 +14,7 @@ use crate::extract::scan::scan_save;
 use crate::parser;
 use crate::rank::{rank_systems, RankRow, RankScorer};
 use crate::solve;
-use crate::solver::{solve_pareto, Balance, Goal, Metric};
+use crate::solver::{solve_pareto_with_settings, Balance, Goal, Metric, SolverSettings};
 use crate::system::System;
 
 use super::app::{PlanetDetail, SolveMode, SolveParams, SolveResult, SystemDetail};
@@ -40,7 +40,7 @@ pub enum Job {
         horizon: i32,
         time_limit: u32,
         scorer: RankScorer,
-        include_industry_upgrades: bool,
+        settings: SolverSettings,
     },
     Solve {
         key: String,
@@ -48,7 +48,7 @@ pub enum Job {
         system: System,
         balance: Balance,
         params: SolveParams,
-        include_industry_upgrades: bool,
+        settings: SolverSettings,
     },
 }
 
@@ -213,16 +213,9 @@ fn run_job(job: Job, tx: Sender<JobEvent>) {
             horizon,
             time_limit,
             scorer,
-            include_industry_upgrades,
+            settings,
         } => rank(
-            systems,
-            names,
-            balance,
-            horizon,
-            time_limit,
-            scorer,
-            include_industry_upgrades,
-            &tx,
+            systems, names, balance, horizon, time_limit, scorer, settings, &tx,
         ),
         Job::Solve {
             key,
@@ -230,16 +223,8 @@ fn run_job(job: Job, tx: Sender<JobEvent>) {
             system,
             balance,
             params,
-            include_industry_upgrades,
-        } => solve_job(
-            key,
-            system_name,
-            system,
-            balance,
-            params,
-            include_industry_upgrades,
-            &tx,
-        ),
+            settings,
+        } => solve_job(key, system_name, system, balance, params, settings, &tx),
     };
 
     match result {
@@ -378,6 +363,7 @@ fn load_details(
     Ok(details)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rank(
     systems: HashMap<String, System>,
     names: Vec<String>,
@@ -385,7 +371,7 @@ fn rank(
     horizon: i32,
     time_limit: u32,
     scorer: RankScorer,
-    include_industry_upgrades: bool,
+    settings: SolverSettings,
     tx: &Sender<JobEvent>,
 ) -> Result<JobOutput, String> {
     let name_refs: Vec<&String> = names.iter().collect();
@@ -398,7 +384,7 @@ fn rank(
         horizon,
         time_limit,
         scorer,
-        include_industry_upgrades,
+        settings,
         &mut |row| {
             sent += 1;
             let _ = tx.send(JobEvent::RankRow(row.clone()));
@@ -414,19 +400,19 @@ fn solve_job(
     system: System,
     balance: Balance,
     params: SolveParams,
-    include_industry_upgrades: bool,
+    settings: SolverSettings,
     tx: &Sender<JobEvent>,
 ) -> Result<JobOutput, String> {
     let _ = tx.send(JobEvent::Progress(format!(
         "solving {system_name}; time budget is enforced, x cancels"
     )));
     let result = match params.mode {
-        SolveMode::Pareto => SolveResult::Pareto(solve_pareto(
+        SolveMode::Pareto => SolveResult::Pareto(solve_pareto_with_settings(
             &system,
             &balance,
             params.horizon,
             params.time_limit,
-            include_industry_upgrades,
+            settings,
         )),
         SolveMode::Goal => {
             let goal = Goal::new(
@@ -434,12 +420,12 @@ fn solve_job(
                 Some(params.goal_defense),
                 Some(params.goal_stability),
             );
-            SolveResult::Goal(solve::solve_goal(
+            SolveResult::Goal(solve::solve_goal_with_settings(
                 &system,
                 &balance,
                 &goal,
                 params.time_limit,
-                include_industry_upgrades,
+                settings,
             ))
         }
         SolveMode::Maximize => {
@@ -456,14 +442,14 @@ fn solve_job(
                     Goal::new(params.floor_income, Some(params.floor_defense), None)
                 }
             };
-            SolveResult::Maximize(solve::solve_maximize(
+            SolveResult::Maximize(solve::solve_maximize_with_settings(
                 &system,
                 &balance,
                 params.maximize_metric,
                 &floors,
                 params.horizon,
                 params.time_limit,
-                include_industry_upgrades,
+                settings,
             ))
         }
     };

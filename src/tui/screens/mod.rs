@@ -49,6 +49,11 @@ fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         "off"
     };
+    let builds = if app.config.allow_parallel_builds {
+        "parallel"
+    } else {
+        "queued"
+    };
     let text = format!(
         "System Solver · save: {} · credits {:.1}M · SP {} · alpha {}",
         app.active_save_label(),
@@ -57,7 +62,7 @@ fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
         app.config.alpha_cores
     );
     frame.render_widget(
-        Paragraph::new(format!("{text} | upgrades {upgrades}"))
+        Paragraph::new(format!("{text} | upgrades {upgrades} | builds {builds}"))
             .style(Style::default().fg(Color::Cyan)),
         area,
     );

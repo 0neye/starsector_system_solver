@@ -9,7 +9,7 @@ use crate::tui::config::{DiscoveryDefinition, CONFIG_PATH};
 use super::super::app::{App, Modal};
 use super::selected_style;
 
-const BASE_FIELDS: usize = 11;
+const BASE_FIELDS: usize = 12;
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App, area: Rect) {
     let rows = setting_rows(app);
@@ -104,10 +104,14 @@ fn setting_rows(app: &App) -> Vec<Row<'_>> {
             Cell::from(app.config.include_industry_upgrades.to_string()),
         ]),
         Row::new(vec![
+            Cell::from("parallel builds"),
+            Cell::from(app.config.allow_parallel_builds.to_string()),
+        ]),
+        Row::new(vec![
             Cell::from("db path"),
             Cell::from(setting_value(
                 app,
-                9,
+                10,
                 app.config.db_path.display().to_string(),
             )),
         ]),
@@ -115,7 +119,7 @@ fn setting_rows(app: &App) -> Vec<Row<'_>> {
             Cell::from("starsector_dir override"),
             Cell::from(setting_value(
                 app,
-                10,
+                11,
                 app.config
                     .starsector_dir
                     .as_ref()
@@ -196,8 +200,20 @@ fn begin_edit_or_toggle(app: &mut App) {
                 }
             );
         }
-        9 => edit(app, app.config.db_path.display().to_string()),
-        10 => edit(
+        9 => {
+            app.config.allow_parallel_builds = !app.config.allow_parallel_builds;
+            app.mark_rank_stale();
+            app.status = format!(
+                "parallel builds: {}",
+                if app.config.allow_parallel_builds {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+        }
+        10 => edit(app, app.config.db_path.display().to_string()),
+        11 => edit(
             app,
             app.config
                 .starsector_dir
@@ -258,8 +274,8 @@ fn commit_edit(app: &mut App) {
         2 => numeric!(app.config.alpha_cores),
         3 => numeric!(app.config.horizon_months),
         4 => numeric!(app.config.solver_time_budget_ms),
-        9 => app.config.db_path = input.as_str().into(),
-        10 => {
+        10 => app.config.db_path = input.as_str().into(),
+        11 => {
             app.config.starsector_dir = if input.is_empty() {
                 None
             } else {

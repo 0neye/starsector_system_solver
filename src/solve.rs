@@ -1,5 +1,8 @@
 use crate::solver::state::Action;
-use crate::solver::{search_system_decomp, search_system_maximize, Balance, Goal, Metric, State};
+use crate::solver::{
+    search_system_decomp_with_settings, search_system_maximize_with_settings, Balance, Goal,
+    Metric, SolverSettings, State,
+};
 use crate::system::System;
 
 #[derive(Debug, Clone)]
@@ -18,9 +21,25 @@ pub fn solve_goal(
     time_limit: u32,
     include_industry_upgrades: bool,
 ) -> Option<SolveOutcome> {
+    solve_goal_with_settings(
+        system,
+        balance,
+        goal,
+        time_limit,
+        SolverSettings::legacy(include_industry_upgrades),
+    )
+}
+
+pub fn solve_goal_with_settings(
+    system: &System,
+    balance: &Balance,
+    goal: &Goal,
+    time_limit: u32,
+    settings: SolverSettings,
+) -> Option<SolveOutcome> {
     let mut state = State::new(balance.clone(), system.clone());
     let replay_base = state.clone();
-    let result = search_system_decomp(&mut state, goal, time_limit, !include_industry_upgrades)
+    let result = search_system_decomp_with_settings(&mut state, goal, time_limit, settings)
         .into_iter()
         .find(|result| result.solution.is_some())?;
     replay_outcome(replay_base, result.cost, result.solution.unwrap())
@@ -35,15 +54,30 @@ pub fn solve_maximize(
     time_limit: u32,
     include_industry_upgrades: bool,
 ) -> Option<SolveOutcome> {
-    let mut state = State::new(balance.clone(), system.clone());
-    let replay_base = state.clone();
-    let result = search_system_maximize(
-        &mut state,
+    solve_maximize_with_settings(
+        system,
+        balance,
         metric,
         floors,
         horizon,
         time_limit,
-        !include_industry_upgrades,
+        SolverSettings::legacy(include_industry_upgrades),
+    )
+}
+
+pub fn solve_maximize_with_settings(
+    system: &System,
+    balance: &Balance,
+    metric: Metric,
+    floors: &Goal,
+    horizon: i32,
+    time_limit: u32,
+    settings: SolverSettings,
+) -> Option<SolveOutcome> {
+    let mut state = State::new(balance.clone(), system.clone());
+    let replay_base = state.clone();
+    let result = search_system_maximize_with_settings(
+        &mut state, metric, floors, horizon, time_limit, settings,
     )
     .into_iter()
     .find(|result| result.solution.is_some())?;

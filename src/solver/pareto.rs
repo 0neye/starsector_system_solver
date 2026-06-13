@@ -4,6 +4,7 @@ use crate::constants::{ColonyItem, Resource};
 use crate::solver::decomp::{search_system_maximize_seeded, SearchProfile, SystemPlan};
 use crate::solver::goal::{Goal, Metric};
 use crate::solver::state::{Action, Balance, State};
+use crate::solver::SolverSettings;
 use crate::system::System;
 use rayon::prelude::*;
 
@@ -68,6 +69,22 @@ pub fn solve_pareto(
     time_limit: u32,
     include_industry_upgrades: bool,
 ) -> ParetoSolve {
+    solve_pareto_with_settings(
+        system,
+        balance,
+        horizon,
+        time_limit,
+        SolverSettings::legacy(include_industry_upgrades),
+    )
+}
+
+pub fn solve_pareto_with_settings(
+    system: &System,
+    balance: &Balance,
+    horizon: i32,
+    time_limit: u32,
+    settings: SolverSettings,
+) -> ParetoSolve {
     let mut samples = Vec::new();
 
     let mut stability_warm = None;
@@ -81,7 +98,7 @@ pub fn solve_pareto(
         &floors,
         horizon,
         time_limit,
-        include_industry_upgrades,
+        settings,
         &mut stability_warm,
     ) {
         samples.push(point);
@@ -111,7 +128,7 @@ pub fn solve_pareto(
                     &floors,
                     horizon,
                     time_limit,
-                    include_industry_upgrades,
+                    settings,
                     &mut stability_warm,
                 ) {
                     points.push(point);
@@ -138,7 +155,7 @@ pub fn solve_pareto(
                     &floors,
                     horizon,
                     time_limit,
-                    include_industry_upgrades,
+                    settings,
                     &mut defense_warm,
                 ) {
                     points.push(point);
@@ -178,6 +195,22 @@ pub fn solve_pareto_quick(
     time_limit: u32,
     include_industry_upgrades: bool,
 ) -> ParetoSolve {
+    solve_pareto_quick_with_settings(
+        system,
+        balance,
+        horizon,
+        time_limit,
+        SolverSettings::legacy(include_industry_upgrades),
+    )
+}
+
+pub fn solve_pareto_quick_with_settings(
+    system: &System,
+    balance: &Balance,
+    horizon: i32,
+    time_limit: u32,
+    settings: SolverSettings,
+) -> ParetoSolve {
     let mut samples = Vec::new();
 
     // Anchor: the stability-5 point, searched with full seeding but only the
@@ -193,7 +226,7 @@ pub fn solve_pareto_quick(
         &floors,
         horizon,
         time_limit,
-        include_industry_upgrades,
+        settings,
         &mut stability_warm,
         &[],
         SearchProfile::QUICK,
@@ -227,7 +260,7 @@ pub fn solve_pareto_quick(
             floors,
             horizon,
             time_limit,
-            include_industry_upgrades,
+            settings,
             warm,
             &[],
             SearchProfile::QUICK_REPAIR,
@@ -241,7 +274,7 @@ pub fn solve_pareto_quick(
                 floors,
                 horizon,
                 time_limit,
-                include_industry_upgrades,
+                settings,
                 warm,
                 &[],
                 SearchProfile::QUICK,
@@ -357,6 +390,22 @@ pub fn solve_pareto_template(
     time_limit: u32,
     include_industry_upgrades: bool,
 ) -> ParetoSolve {
+    solve_pareto_template_with_settings(
+        system,
+        balance,
+        horizon,
+        time_limit,
+        SolverSettings::legacy(include_industry_upgrades),
+    )
+}
+
+pub fn solve_pareto_template_with_settings(
+    system: &System,
+    balance: &Balance,
+    horizon: i32,
+    time_limit: u32,
+    settings: SolverSettings,
+) -> ParetoSolve {
     let mut samples = Vec::new();
 
     // Anchor: the stability-5 template winner, warm-starting everything else.
@@ -371,7 +420,7 @@ pub fn solve_pareto_template(
         &floors,
         horizon,
         time_limit,
-        include_industry_upgrades,
+        settings,
         &mut stability_warm,
         &[],
         SearchProfile::TEMPLATE,
@@ -397,7 +446,7 @@ pub fn solve_pareto_template(
             floors,
             horizon,
             time_limit,
-            include_industry_upgrades,
+            settings,
             warm,
             &[],
             SearchProfile::TEMPLATE,
@@ -461,15 +510,25 @@ pub fn solve_pareto_bound(
     time_limit: u32,
     include_industry_upgrades: bool,
 ) -> ParetoSolve {
-    let stats = std::env::var_os("SYSTEM_SOLVER_STATS").is_some();
-    let t0 = std::time::Instant::now();
-    let mut bound = per_planet_income_allocation(
+    solve_pareto_bound_with_settings(
         system,
         balance,
         horizon,
         time_limit,
-        include_industry_upgrades,
-    );
+        SolverSettings::legacy(include_industry_upgrades),
+    )
+}
+
+pub fn solve_pareto_bound_with_settings(
+    system: &System,
+    balance: &Balance,
+    horizon: i32,
+    time_limit: u32,
+    settings: SolverSettings,
+) -> ParetoSolve {
+    let stats = std::env::var_os("SYSTEM_SOLVER_STATS").is_some();
+    let t0 = std::time::Instant::now();
+    let mut bound = per_planet_income_allocation(system, balance, horizon, time_limit, settings);
     let t_alloc = t0.elapsed();
     let t1 = std::time::Instant::now();
     let (stability_choices, defense_choices) = bound.floor_menus();
@@ -604,7 +663,7 @@ struct PerPlanetBound {
     item_types: Vec<ColonyItem>,
     horizon: i32,
     time_limit: u32,
-    include_industry_upgrades: bool,
+    settings: SolverSettings,
     incomes: Vec<f64>,
     memo: HashMap<PlanetSolveKey, PlanetMemoValue>,
 }
@@ -729,7 +788,7 @@ impl PerPlanetBound {
             &self.item_types,
             self.horizon,
             self.time_limit,
-            self.include_industry_upgrades,
+            self.settings,
             &key,
             seed,
         );
@@ -766,7 +825,7 @@ impl PerPlanetBound {
         let item_types = self.item_types.clone();
         let horizon = self.horizon;
         let time_limit = self.time_limit;
-        let include_industry_upgrades = self.include_industry_upgrades;
+        let settings = self.settings;
         let last_bucket = DEFENSE_FLOORS.len() - 1;
 
         let mut tasks = Vec::with_capacity(self.planets.len() * 2);
@@ -795,7 +854,7 @@ impl PerPlanetBound {
                         &item_types,
                         horizon,
                         time_limit,
-                        include_industry_upgrades,
+                        settings,
                         &memo,
                         local_memo,
                         key,
@@ -870,7 +929,7 @@ fn per_planet_income_allocation(
     balance: &Balance,
     horizon: i32,
     time_limit: u32,
-    include_industry_upgrades: bool,
+    settings: SolverSettings,
 ) -> PerPlanetBound {
     let mut hashes: Vec<u64> = system.planets().keys().copied().collect();
     hashes.sort_unstable();
@@ -902,7 +961,7 @@ fn per_planet_income_allocation(
         item_types,
         horizon,
         time_limit,
-        include_industry_upgrades,
+        settings,
         incomes: Vec::new(),
         memo: HashMap::new(),
     };
@@ -926,7 +985,7 @@ fn per_planet_income_allocation(
                 &item_types,
                 horizon,
                 time_limit,
-                include_industry_upgrades,
+                settings,
                 &key,
                 None,
             );
@@ -1048,7 +1107,7 @@ fn per_planet_income_allocation(
                     &item_types,
                     horizon,
                     time_limit,
-                    include_industry_upgrades,
+                    settings,
                     &key,
                     seed,
                 );
@@ -1167,7 +1226,7 @@ fn solve_key_for_planet(
     item_types: &[ColonyItem],
     horizon: i32,
     time_limit: u32,
-    include_industry_upgrades: bool,
+    settings: SolverSettings,
     key: &PlanetSolveKey,
     seed: Option<SystemPlan>,
 ) -> PlanetMemoValue {
@@ -1185,7 +1244,7 @@ fn solve_key_for_planet(
         key.floor,
         horizon,
         time_limit,
-        include_industry_upgrades,
+        settings,
         seed,
     )
 }
@@ -1196,7 +1255,7 @@ fn solve_key_with_memos(
     item_types: &[ColonyItem],
     horizon: i32,
     time_limit: u32,
-    include_industry_upgrades: bool,
+    settings: SolverSettings,
     shared_memo: &HashMap<PlanetSolveKey, PlanetMemoValue>,
     local_memo: &mut HashMap<PlanetSolveKey, PlanetMemoValue>,
     key: PlanetSolveKey,
@@ -1209,13 +1268,7 @@ fn solve_key_with_memos(
         return value.clone();
     }
     let value = solve_key_for_planet(
-        planet,
-        item_types,
-        horizon,
-        time_limit,
-        include_industry_upgrades,
-        &key,
-        seed,
+        planet, item_types, horizon, time_limit, settings, &key, seed,
     );
     local_memo.insert(key, value.clone());
     value
@@ -1230,7 +1283,7 @@ fn solve_planet_income_optional(
     floor: PlanetFloor,
     horizon: i32,
     time_limit: u32,
-    include_industry_upgrades: bool,
+    settings: SolverSettings,
     seed: Option<SystemPlan>,
 ) -> PlanetMemoValue {
     let mut balance = Balance::new(1e15, sps, cores);
@@ -1260,7 +1313,7 @@ fn solve_planet_income_optional(
         &floors,
         horizon,
         time_limit,
-        include_industry_upgrades,
+        settings,
         &mut warm,
         &[],
         SearchProfile::BOUND,
@@ -1440,7 +1493,7 @@ pub(crate) fn measure_point_chained(
     floors: &Goal,
     horizon: i32,
     time_limit: u32,
-    include_industry_upgrades: bool,
+    settings: SolverSettings,
     warm: &mut Option<SystemPlan>,
 ) -> Option<ParetoPoint> {
     measure_point_seeded(
@@ -1451,7 +1504,7 @@ pub(crate) fn measure_point_chained(
         floors,
         horizon,
         time_limit,
-        include_industry_upgrades,
+        settings,
         warm,
         &[],
         SearchProfile::FULL,
@@ -1472,7 +1525,7 @@ pub(crate) fn measure_point_seeded(
     floors: &Goal,
     horizon: i32,
     time_limit: u32,
-    include_industry_upgrades: bool,
+    settings: SolverSettings,
     warm: &mut Option<SystemPlan>,
     extra_seeds: &[SystemPlan],
     profile: SearchProfile,
@@ -1487,7 +1540,7 @@ pub(crate) fn measure_point_seeded(
         floors,
         horizon,
         time_limit,
-        !include_industry_upgrades,
+        settings,
         &seeds,
         profile,
     );

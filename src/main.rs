@@ -14,8 +14,8 @@ use clap::{Parser, Subcommand};
 use planet::Planet;
 use rank::{filter_system_names, peak_income, rank_systems, score_per_planet, RankScorer};
 use solver::{
-    diagnose_maximize_gap, search_system_decomp, search_system_maximize, solve_pareto, Balance,
-    Goal, Metric, State,
+    diagnose_maximize_gap, search_system_decomp, search_system_maximize,
+    solve_pareto_with_settings, Balance, Goal, Metric, SolverSettings, State,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -78,6 +78,12 @@ struct Cli {
     /// They are included by default.
     #[arg(long = "no-industry-upgrades", action = clap::ArgAction::SetFalse, default_value_t = true)]
     include_industry_upgrades: bool,
+
+    /// Modded behavior: allow multiple industries/structures to build at once
+    /// on the same colony. By default, vanilla one-at-a-time colony build
+    /// queueing is enforced.
+    #[arg(long)]
+    parallel_builds: bool,
 
     /// Colony item to start with (repeatable, e.g. --item "corrupted nanoforge")
     #[arg(long = "item")]
@@ -144,6 +150,14 @@ fn load_systems_from_env() -> Result<HashMap<String, System>, Box<dyn Error>> {
     Ok(parser::load_game_data_from_db(&db, save.as_deref())?)
 }
 
+fn env_solver_settings(include_industry_upgrades: bool) -> SolverSettings {
+    SolverSettings {
+        include_industry_upgrades,
+        allow_parallel_builds: std::env::var_os("SYSTEM_SOLVER_PARALLEL_BUILDS")
+            .is_some_and(|value| !value.is_empty() && value != "0"),
+    }
+}
+
 /// Run the maximize-mode solver and report the best plan plus the metric values
 /// it actually achieves (by replaying the solution onto a fresh copy of `state`).
 fn test_maximize(
@@ -152,7 +166,7 @@ fn test_maximize(
     floors: &Goal,
     horizon: i32,
     time_limit: u32,
-    include_industry_upgrades: bool,
+    settings: SolverSettings,
 ) {
     println!(
         "\nStarting maximize solver ({}, horizon {} months)...",
@@ -161,13 +175,8 @@ fn test_maximize(
     );
 
     let replay_base = state.clone();
-    let results = search_system_maximize(
-        &mut state,
-        metric,
-        floors,
-        horizon,
-        time_limit,
-        !include_industry_upgrades,
+    let results = solver::search_system_maximize_with_settings(
+        &mut state, metric, floors, horizon, time_limit, settings,
     );
 
     if results.is_empty() {
@@ -196,12 +205,13 @@ fn test_maximize(
     }
 }
 
-fn test_solver(mut state: State, goal: &Goal, time_limit: u32, include_industry_upgrades: bool) {
+fn test_solver(mut state: State, goal: &Goal, time_limit: u32, settings: SolverSettings) {
     println!("\nStarting solver test...");
     println!("Initial state score: {}", state.score() as i32);
 
     // Default solver: the joint two-level decomposition (shared timeline).
-    let results = search_system_decomp(&mut state, goal, time_limit, !include_industry_upgrades);
+    let results =
+        solver::search_system_decomp_with_settings(&mut state, goal, time_limit, settings);
 
     if results.is_empty() {
         println!("No solution found within time limit.");
@@ -237,7 +247,7 @@ fn run_solve(
     balance: &Balance,
     horizon: i32,
     time_limit: u32,
-    include_industry_upgrades: bool,
+    settings: SolverSettings,
 ) {
     println!("Pareto solve for {system_name} (horizon {horizon} months)");
     println!(
@@ -247,13 +257,7 @@ fn run_solve(
         balance.alpha_cores(),
     );
 
-    let solution = solve_pareto(
-        system,
-        balance,
-        horizon,
-        time_limit,
-        include_industry_upgrades,
-    );
+    let solution = solve_pareto_with_settings(system, balance, horizon, time_limit, settings);
 
     println!("\nSystem score: {:.1}", solution.score);
     println!(
@@ -399,7 +403,7 @@ fn summarize(results: &[solver::AStarSearchResult]) -> (usize, Option<i32>, Vec<
 
 /// Run both solvers over every loaded system at an equal per-planet time budget
 /// and print a side-by-side comparison. Triggered by `SYSTEM_SOLVER_AB=1`.
-fn run_ab(systems: &HashMap<String, System>, budget_ms: u32) {
+fn run_ab(systems: &HashMap<String, System>, budget_ms: u32, settings: SolverSettings) {
     use std::time::Instant;
 
     // A few goals spanning easy -> hard so we can see where each solver wins.
@@ -435,7 +439,12 @@ fn run_ab(systems: &HashMap<String, System>, budget_ms: u32) {
 
             let mut joint_state = State::new(ab_balance(), system.clone());
             let t2 = Instant::now();
-            let joint = search_system_decomp(&mut joint_state, goal, budget_ms, true);
+            let joint = solver::search_system_decomp_with_settings(
+                &mut joint_state,
+                goal,
+                budget_ms,
+                settings,
+            );
             let joint_ms = t2.elapsed().as_millis();
 
             let (ida_solved, ida_best, ida_costs) = summarize(&ida);
@@ -477,7 +486,7 @@ fn run_ab(systems: &HashMap<String, System>, budget_ms: u32) {
 /// whether any one-off resource (alpha cores / story points) went negative,
 /// which would mean a shared resource was double-spent. Trusts nothing about the
 /// simulator's incremental bookkeeping.
-fn verify_decomp(systems: &HashMap<String, System>) {
+fn verify_decomp(systems: &HashMap<String, System>, settings: SolverSettings) {
     let goal = Goal::new(40_000.0, None, Some(6));
     let mut names: Vec<&String> = systems.keys().collect();
     names.sort();
@@ -487,7 +496,9 @@ fn verify_decomp(systems: &HashMap<String, System>) {
         let mut state = State::new(ab_balance(), systems[name].clone());
         let planet_count = state.system().planets().len();
 
-        let Some(result) = solver::decomp::decomp_search(&mut state, &goal, 50000, true) else {
+        let Some(result) =
+            solver::decomp::decomp_search_with_settings(&mut state, &goal, 50000, settings)
+        else {
             println!("### {name}: no solution");
             continue;
         };
@@ -578,7 +589,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
         floors: &Goal,
         horizon: i32,
         time_limit: u32,
-        include_upgrades: bool,
+        settings: SolverSettings,
         warm_greedy: &mut Option<SystemPlan>,
         warm_bound: &mut Option<SystemPlan>,
     ) -> (Option<ParetoPoint>, Option<ParetoPoint>) {
@@ -590,7 +601,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
             floors,
             horizon,
             time_limit,
-            include_upgrades,
+            settings,
             warm_greedy,
             &[],
             SearchProfile::FULL,
@@ -604,7 +615,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
             floors,
             horizon,
             time_limit,
-            include_upgrades,
+            settings,
             warm_bound,
             &cross,
             SearchProfile::FULL,
@@ -612,7 +623,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
         (greedy, bound)
     }
 
-    let include_upgrades = std::env::var_os("SYSTEM_SOLVER_NO_UPGRADES").is_none();
+    let settings = env_solver_settings(std::env::var_os("SYSTEM_SOLVER_NO_UPGRADES").is_none());
 
     let mut names: Vec<&String> = systems.keys().collect();
     names.sort();
@@ -653,7 +664,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
             &first_floors,
             horizon,
             time_limit,
-            include_upgrades,
+            settings,
             &mut stab_warm_greedy,
             &mut stab_warm_bound,
         );
@@ -684,7 +695,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
                             &floors,
                             horizon,
                             time_limit,
-                            include_upgrades,
+                            settings,
                             &mut stab_warm_greedy,
                             &mut stab_warm_bound,
                         ),
@@ -709,7 +720,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
                             &floors,
                             horizon,
                             time_limit,
-                            include_upgrades,
+                            settings,
                             &mut def_warm_greedy,
                             &mut def_warm_bound,
                         ),
@@ -811,6 +822,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
             );
         }
     }
+
     if greedy_infeasible > 0 {
         eprintln!(
             "\nnote: {greedy_infeasible} point(s) where the budget-relaxed search found a \
@@ -846,14 +858,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(8_000);
-        run_ab(&systems, budget_ms);
+        run_ab(&systems, budget_ms, env_solver_settings(true));
         return Ok(());
     }
 
     if std::env::var_os("SYSTEM_SOLVER_VERIFY").is_some() {
         println!("Loading game data...");
         let systems = load_systems_from_env()?;
-        verify_decomp(&systems);
+        verify_decomp(&systems, env_solver_settings(true));
         return Ok(());
     }
 
@@ -941,7 +953,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let show_stats = std::env::var_os("SYSTEM_SOLVER_STATS").is_some();
         // SYSTEM_SOLVER_NO_UPGRADES=1 disables improvements/alpha-core installs
         // (matches the CLI's `--no-industry-upgrades`).
-        let include_upgrades = std::env::var_os("SYSTEM_SOLVER_NO_UPGRADES").is_none();
+        let settings = env_solver_settings(std::env::var_os("SYSTEM_SOLVER_NO_UPGRADES").is_none());
 
         // Reuse the maximize-then-replay measurement and floor grids from the
         // Pareto library so the CSV sweep and `--solve` can't drift apart. The
@@ -986,7 +998,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &floors,
                 horizon,
                 time_limit,
-                include_upgrades,
+                settings,
                 &mut stability_warm,
             );
             let first_elapsed = t0.elapsed().as_secs_f64();
@@ -1013,7 +1025,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             &floors,
                             horizon,
                             time_limit,
-                            include_upgrades,
+                            settings,
                             &mut warm,
                         );
                         points.push((stab as f64, point, t0.elapsed().as_secs_f64()));
@@ -1037,7 +1049,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             &floors,
                             horizon,
                             time_limit,
-                            include_upgrades,
+                            settings,
                             &mut warm,
                         );
                         points.push((def_floor, point, t0.elapsed().as_secs_f64()));
@@ -1078,6 +1090,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let cli = Cli::parse();
+    let settings = SolverSettings {
+        include_industry_upgrades: cli.include_industry_upgrades,
+        allow_parallel_builds: cli.parallel_builds,
+    };
 
     if let Some(command) = cli.command {
         match command {
@@ -1145,7 +1161,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             state.balance(),
             cli.horizon,
             cli.time_limit,
-            cli.include_industry_upgrades,
+            settings,
         );
         return Ok(());
     }
@@ -1198,7 +1214,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             &floors,
             cli.horizon,
             cli.time_limit,
-            cli.include_industry_upgrades,
+            settings,
         );
         return Ok(());
     }
@@ -1215,7 +1231,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map_or(String::new(), |d| format!(", defense >= {d}")),
     );
 
-    test_solver(state, &goal, cli.time_limit, cli.include_industry_upgrades);
+    test_solver(state, &goal, cli.time_limit, settings);
     return Ok(());
 
     // Test growth update
@@ -1310,6 +1326,7 @@ mod cli_tests {
             other => panic!("expected tui --starsector-dir, got {other:?}"),
         }
     }
+
 }
 
 /*

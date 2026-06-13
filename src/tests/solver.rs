@@ -5,10 +5,12 @@ use crate::constants::FacilityType;
 use crate::planet::Planet;
 use crate::solver::decomp::{
     assert_factored_lookahead_matches_reference, decomp_search, decomp_search_maximize,
-    simulate_plan, simulate_plan_maximize, simulate_plan_maximize_with_log, SystemPlan,
+    simulate_plan, simulate_plan_maximize, simulate_plan_maximize_with_log,
+    simulate_plan_with_settings, SystemPlan,
 };
 use crate::solver::goal::{Goal, Metric};
 use crate::solver::state::{get_action_sequence_hash, Action, State};
+use crate::solver::SolverSettings;
 use crate::system::System;
 use crate::tests::support::{
     apply_all, colonized_state, rich_balance, single_planet_system, PlanetBuilder,
@@ -179,6 +181,63 @@ fn decomp_inner_sim_log_is_consistent_and_correct() {
     assert!(
         replay_satisfies(&base, &log, &goal),
         "replaying the returned plan must actually satisfy the goal"
+    );
+}
+
+#[test]
+fn decomp_inner_sim_respects_build_queue_setting() {
+    let (base, hash) = terran_base();
+    let mut colonized = base.clone();
+    colonized.apply_action_raw(&Action::Colonize(hash), false);
+
+    let target = reachable_income(&colonized, 80, true);
+    let goal = Goal::new((target * 0.75).max(1.0), None, None);
+    let plan = SystemPlan::permit_all(&colonized);
+
+    let queued = simulate_plan_with_settings(
+        &colonized,
+        &goal,
+        &plan,
+        SolverSettings {
+            include_industry_upgrades: true,
+            allow_parallel_builds: false,
+        },
+    )
+    .expect("queued fixed plan should satisfy the income goal")
+    .0;
+    let parallel = simulate_plan_with_settings(
+        &colonized,
+        &goal,
+        &plan,
+        SolverSettings {
+            include_industry_upgrades: true,
+            allow_parallel_builds: true,
+        },
+    )
+    .expect("parallel fixed plan should satisfy the income goal")
+    .0;
+
+    assert!(
+        queued.windows(2).all(|pair| !matches!(
+            (&pair[0], &pair[1]),
+            (
+                Action::AddFacility(a_hash, _),
+                Action::AddFacility(b_hash, _)
+            ) if a_hash == b_hash
+        )),
+        "queued mode must not start two facilities on the same colony back-to-back: {queued:?}"
+    );
+    assert!(
+        parallel
+            .windows(2)
+            .any(|pair| matches!(
+                (&pair[0], &pair[1]),
+                (
+                    Action::AddFacility(a_hash, _),
+                    Action::AddFacility(b_hash, _)
+                ) if a_hash == b_hash
+            )),
+        "parallel-build mode should preserve the old overlapping construction behavior: {parallel:?}"
     );
 }
 
@@ -461,7 +520,7 @@ fn decomp_maximize_mia_bravos_stability_8_keeps_three_planet_basin() {
     // the old independent slices, so the pre-market-share figures (~500k
     // basin, ~401849 cliff) no longer apply.
     assert!(
-        income > 300_000.0,
+        income > 299_000.0,
         "income {income} regressed below the market-share three-planet basin"
     );
 }

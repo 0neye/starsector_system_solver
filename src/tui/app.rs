@@ -452,7 +452,7 @@ impl App {
             horizon: self.config.horizon_months,
             time_limit: self.config.solver_time_budget_ms,
             scorer: self.scorer,
-            include_industry_upgrades: self.config.include_industry_upgrades,
+            settings: self.config.solver_settings(),
         });
     }
 
@@ -731,7 +731,7 @@ impl App {
             system,
             balance: self.config.balance(),
             params: self.solve_params.clone(),
-            include_industry_upgrades: self.config.include_industry_upgrades,
+            settings: self.config.solver_settings(),
         });
     }
 

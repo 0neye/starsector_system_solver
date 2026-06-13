@@ -6,6 +6,7 @@ use crate::rank::{
     RankSortMode,
 };
 use crate::solver::pareto::ParetoSolve;
+use crate::solver::SolverSettings;
 use crate::system::System;
 
 use super::support::{rich_balance, single_planet_system, PlanetBuilder};
@@ -128,7 +129,7 @@ fn rank_systems_streams_callback_in_name_order_before_returning() {
         0,
         1,
         RankScorer::Template,
-        true,
+        SolverSettings::default(),
         &mut |row| {
             assert!(!returned.get(), "callback should fire before return");
             streamed.borrow_mut().push(row.system.clone());
