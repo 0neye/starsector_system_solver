@@ -1,6 +1,6 @@
 //! Shared data structs for the extraction layer. These are the fixed interfaces
 //! between save.rs/scan.rs (producers) and mapping.rs/db.rs (consumers).
-//! See SAVE_EXTRACTION_DESIGN.md.
+//! See workspace/SAVE_EXTRACTION_DESIGN.md.
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -125,8 +125,6 @@ pub struct PlanetRow {
     pub name: String,
     pub internal_id: Option<String>,
     pub planet_type: String,
-    /// Equal to planet_type for vanilla types; closest vanilla type for modded ones.
-    pub mapped_vanilla_type: Option<String>,
     pub is_moon: bool,
     pub survey_level: Option<String>,
     pub owner_faction: Option<String>,
@@ -182,17 +180,4 @@ pub struct MappedOutput {
     /// Passed through from [`RawSave::player`].
     pub player: Option<PlayerBalance>,
     pub unknown_conditions: Vec<UnknownCondition>,
-    pub type_mappings: Vec<TypeMapping>,
-    /// Planet type ids found in the save but in no planets.json (vanilla or mod).
-    pub unknown_types: Vec<String>,
-}
-
-/// Similarity of a modded planet type to a vanilla one.
-#[derive(Debug, Clone)]
-pub struct TypeMapping {
-    pub modded_type: String,
-    pub vanilla_type: String,
-    pub similarity: f64,
-    pub modded_samples: u32,
-    pub vanilla_samples: u32,
 }

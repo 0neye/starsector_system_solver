@@ -1,4 +1,4 @@
-//! campaign.xml -> RawSave extraction. See SAVE_EXTRACTION_DESIGN.md.
+//! campaign.xml -> RawSave extraction. See workspace/SAVE_EXTRACTION_DESIGN.md.
 //! PUBLIC SIGNATURE IS PINNED - bin/extract.rs is written against it.
 
 use std::collections::HashMap;

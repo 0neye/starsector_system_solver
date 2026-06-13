@@ -207,7 +207,7 @@ fn insert_bool(properties: &mut FxHashMap<String, f64>, key: &str, value: bool) 
 }
 
 /// Load solver game data from the save-extraction SQLite DB (see
-/// SAVE_EXTRACTION_DESIGN.md). `save` selects the extracted save by
+/// workspace/SAVE_EXTRACTION_DESIGN.md). `save` selects the extracted save by
 /// case-insensitive substring match on its directory or character name; `None`
 /// picks the most recent one. Produces exactly what the CSV round trip
 /// (`extract export` + `load_game_data`) would: same property keys and values,

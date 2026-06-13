@@ -1,5 +1,5 @@
 //! Save-extraction CLI subcommands for `system_solver extract ...`.
-//! See SAVE_EXTRACTION_DESIGN.md.
+//! See workspace/SAVE_EXTRACTION_DESIGN.md.
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -172,12 +172,11 @@ fn print_run_summary(
 ) {
     println!("save: {} ({})", save.dir_name, save.character_name);
     println!(
-        "systems={} planets={} infrastructure={} unknown_conditions={} type_mappings={}",
+        "systems={} planets={} infrastructure={} unknown_conditions={}",
         summary.systems,
         summary.planets,
         summary.infrastructure,
-        summary.unknown_conditions,
-        summary.type_mappings
+        summary.unknown_conditions
     );
     if !filter_systems.is_empty() {
         println!("system filter: {}", filter_systems.join(", "));
@@ -188,19 +187,6 @@ fn print_run_summary(
             println!(
                 "  {} ({}x, example {})",
                 unknown.condition_id, unknown.occurrences, unknown.example_planet
-            );
-        }
-    }
-    if !mapped.type_mappings.is_empty() {
-        println!("type mappings:");
-        for mapping in &mapped.type_mappings {
-            println!(
-                "  {} -> {} ({:.3}, {}/{})",
-                mapping.modded_type,
-                mapping.vanilla_type,
-                mapping.similarity,
-                mapping.modded_samples,
-                mapping.vanilla_samples
             );
         }
     }

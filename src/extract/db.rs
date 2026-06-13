@@ -66,7 +66,6 @@ pub struct WriteSummary {
     pub planets: usize,
     pub infrastructure: usize,
     pub unknown_conditions: usize,
-    pub type_mappings: usize,
 }
 
 impl Db {
@@ -107,7 +106,6 @@ impl Db {
                 name TEXT,
                 internal_id TEXT,
                 planet_type TEXT,
-                mapped_vanilla_type TEXT,
                 is_moon INTEGER,
                 survey_level TEXT,
                 owner_faction TEXT,
@@ -157,14 +155,6 @@ impl Db {
             CREATE TABLE IF NOT EXISTS planet_types(
                 type_id TEXT PRIMARY KEY,
                 source TEXT
-            );
-            CREATE TABLE IF NOT EXISTS planet_type_mappings(
-                modded_type TEXT,
-                vanilla_type TEXT,
-                similarity REAL,
-                modded_samples INTEGER,
-                vanilla_samples INTEGER,
-                PRIMARY KEY(modded_type, vanilla_type)
             );
             CREATE TABLE IF NOT EXISTS player_balance(
                 save_id INTEGER PRIMARY KEY REFERENCES saves(id) ON DELETE CASCADE,
@@ -251,7 +241,6 @@ impl Db {
         tx.execute("DELETE FROM unknown_conditions", [])?;
         tx.execute("DELETE FROM conditions", [])?;
         tx.execute("DELETE FROM planet_types", [])?;
-        tx.execute("DELETE FROM planet_type_mappings", [])?;
 
         for condition in game_data.conditions.values() {
             tx.execute(
@@ -269,24 +258,6 @@ impl Db {
             tx.execute(
                 "INSERT INTO planet_types(type_id, source) VALUES(?1, ?2)",
                 params![type_id, &spec.source],
-            )?;
-        }
-        for type_id in &mapped.unknown_types {
-            tx.execute(
-                "INSERT INTO planet_types(type_id, source) VALUES(?1, 'unknown')",
-                params![type_id],
-            )?;
-        }
-        for mapping in &mapped.type_mappings {
-            tx.execute(
-                "INSERT INTO planet_type_mappings(modded_type, vanilla_type, similarity, modded_samples, vanilla_samples) VALUES(?1, ?2, ?3, ?4, ?5)",
-                params![
-                    &mapping.modded_type,
-                    &mapping.vanilla_type,
-                    mapping.similarity,
-                    mapping.modded_samples as i64,
-                    mapping.vanilla_samples as i64,
-                ],
             )?;
         }
         for unknown in &mapped.unknown_conditions {
@@ -342,7 +313,6 @@ impl Db {
             planets: planet_count,
             infrastructure: infra_count,
             unknown_conditions: mapped.unknown_conditions.len(),
-            type_mappings: mapped.type_mappings.len(),
         })
     }
 
@@ -594,7 +564,7 @@ impl Db {
     ) -> Result<Vec<PlanetRowDb>> {
         let mut stmt = self.conn.prepare(
             r#"
-            SELECT id, name, internal_id, planet_type, mapped_vanilla_type, is_moon,
+            SELECT id, name, internal_id, planet_type, is_moon,
                    survey_level, owner_faction, radius, ruins, farmland, rare_ores,
                    ores, volatiles, organics, accessibility_percent, hazard_percent,
                    hazard_incomplete, no_atmosphere, very_hot, gas_giant, habitable,
@@ -612,26 +582,25 @@ impl Db {
                     name: row.get(1)?,
                     internal_id: row.get(2)?,
                     planet_type: row.get(3)?,
-                    mapped_vanilla_type: row.get(4)?,
-                    is_moon: row.get::<_, i64>(5)? != 0,
-                    survey_level: row.get(6)?,
-                    owner_faction: row.get(7)?,
-                    radius: row.get(8)?,
-                    ruins: row.get(9)?,
-                    farmland: row.get(10)?,
-                    rare_ores: row.get(11)?,
-                    ores: row.get(12)?,
-                    volatiles: row.get(13)?,
-                    organics: row.get(14)?,
-                    accessibility_percent: row.get(15)?,
-                    hazard_percent: row.get(16)?,
-                    hazard_incomplete: row.get::<_, i64>(17)? != 0,
-                    no_atmosphere: row.get::<_, i64>(18)? != 0,
-                    very_hot: row.get::<_, i64>(19)? != 0,
-                    gas_giant: row.get::<_, i64>(20)? != 0,
-                    habitable: row.get::<_, i64>(21)? != 0,
-                    extreme_activity: row.get::<_, i64>(22)? != 0,
-                    water: row.get::<_, i64>(23)? != 0,
+                    is_moon: row.get::<_, i64>(4)? != 0,
+                    survey_level: row.get(5)?,
+                    owner_faction: row.get(6)?,
+                    radius: row.get(7)?,
+                    ruins: row.get(8)?,
+                    farmland: row.get(9)?,
+                    rare_ores: row.get(10)?,
+                    ores: row.get(11)?,
+                    volatiles: row.get(12)?,
+                    organics: row.get(13)?,
+                    accessibility_percent: row.get(14)?,
+                    hazard_percent: row.get(15)?,
+                    hazard_incomplete: row.get::<_, i64>(16)? != 0,
+                    no_atmosphere: row.get::<_, i64>(17)? != 0,
+                    very_hot: row.get::<_, i64>(18)? != 0,
+                    gas_giant: row.get::<_, i64>(19)? != 0,
+                    habitable: row.get::<_, i64>(20)? != 0,
+                    extreme_activity: row.get::<_, i64>(21)? != 0,
+                    water: row.get::<_, i64>(22)? != 0,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -795,7 +764,6 @@ pub struct PlanetRowDb {
     pub(crate) name: String,
     pub(crate) internal_id: Option<String>,
     pub(crate) planet_type: String,
-    pub(crate) mapped_vanilla_type: Option<String>,
     pub(crate) is_moon: bool,
     pub(crate) survey_level: Option<String>,
     pub(crate) owner_faction: Option<String>,
@@ -863,19 +831,18 @@ fn insert_planet(
     tx.execute(
         r#"
         INSERT INTO planets(
-            system_id, name, internal_id, planet_type, mapped_vanilla_type, is_moon,
+            system_id, name, internal_id, planet_type, is_moon,
             survey_level, owner_faction, radius, ruins, farmland, rare_ores, ores,
             volatiles, organics, accessibility_percent, hazard_percent,
             hazard_incomplete, no_atmosphere, very_hot, gas_giant, habitable,
             extreme_activity, water
-        ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
+        ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
         "#,
         params![
             system_id,
             &planet.name,
             planet.internal_id.as_deref(),
             &planet.planet_type,
-            planet.mapped_vanilla_type.as_deref(),
             bool_to_i64(planet.is_moon),
             planet.survey_level.as_deref(),
             planet.owner_faction.as_deref(),
@@ -1189,7 +1156,6 @@ mod tests {
                     name: "A".to_string(),
                     internal_id: Some("A".to_string()),
                     planet_type: "water".to_string(),
-                    mapped_vanilla_type: Some("water".to_string()),
                     is_moon: false,
                     survey_level: Some("FULL".to_string()),
                     owner_faction: Some("hegemony".to_string()),
@@ -1218,8 +1184,6 @@ mod tests {
                 }],
             }],
             unknown_conditions: vec![],
-            type_mappings: vec![],
-            unknown_types: vec![],
         }
     }
 
@@ -1232,7 +1196,6 @@ mod tests {
             name: name.to_string(),
             internal_id: Some(name.to_string()),
             planet_type: "water".to_string(),
-            mapped_vanilla_type: Some("water".to_string()),
             is_moon: false,
             survey_level: survey_level.map(|s| s.to_string()),
             owner_faction: owner_faction.map(|s| s.to_string()),
@@ -1307,8 +1270,6 @@ mod tests {
                 },
             ],
             unknown_conditions: vec![],
-            type_mappings: vec![],
-            unknown_types: vec![],
         }
     }
 

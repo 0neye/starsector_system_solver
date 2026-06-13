@@ -94,7 +94,6 @@ fn db_loader_matches_csv_semantics() {
                 name: "A".to_string(),
                 internal_id: Some("A".to_string()),
                 planet_type: "terran".to_string(),
-                mapped_vanilla_type: Some("terran".to_string()),
                 is_moon: false,
                 survey_level: Some("FULL".to_string()),
                 owner_faction: None,
@@ -136,8 +135,6 @@ fn db_loader_matches_csv_semantics() {
             ],
         }],
         unknown_conditions: vec![],
-        type_mappings: vec![],
-        unknown_types: vec![],
     };
 
     let mut db = Db::open(&db_path).unwrap();
