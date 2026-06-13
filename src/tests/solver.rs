@@ -348,6 +348,10 @@ fn decomp_maximize_schedules_production_before_commerce_multiplier() {
 /// included (the default), which can only raise the optimum, so the >270k
 /// threshold still holds.
 ///
+/// Under the market-share economy (2026-06) the climb with upgrades lands
+/// well above 270k on this system (~380k+ observed), so the threshold is
+/// unchanged; the test's main teeth are the floor and the determinism check.
+///
 /// Uses the real game data (loaded from the crate-root CSVs during tests).
 #[test]
 fn decomp_maximize_mia_bravos_escapes_local_optimum() {
@@ -367,9 +371,12 @@ fn decomp_maximize_mia_bravos_escapes_local_optimum() {
         let mut state = State::new(Balance::new(5_000_000.0, 5, 1), system.clone());
         // Generous budget: the time limit is now a hard deadline, and a debug
         // build that hits it returns a machine-dependent best-effort plan,
-        // which would break the determinism assertion below.
+        // which would break the determinism assertion below. Under the
+        // market-share economy the climb converges in ~60s alone in debug,
+        // but a fully parallel `cargo test` starves it past 120s, so the cap
+        // is sized for contention (it is a cap, not a sleep).
         let result =
-            decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 120_000, false)
+            decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 360_000, false)
                 .expect("Mia Bravos can hold stability 6 while earning income");
         let log = result
             .solution
@@ -418,10 +425,10 @@ fn decomp_maximize_mia_bravos_stability_8_keeps_three_planet_basin() {
 
     let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(8));
     let mut state = State::new(Balance::new(5_000_000.0, 5, 1), system.clone());
-    // Generous budget: the climb needs ~15s alone in debug, and the time
-    // limit is now a hard deadline — a cutoff under `cargo test` rayon-pool
-    // contention would return a weaker basin and fail the assertion below.
-    let result = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 120_000, false)
+    // Generous budget: the time limit is now a hard deadline — a cutoff under
+    // `cargo test` rayon-pool contention would return a weaker basin and fail
+    // the assertion below. Sized for contention (it is a cap, not a sleep).
+    let result = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 360_000, false)
         .expect("Mia Bravos can hold stability 8 while earning income");
     let log = result
         .solution
@@ -432,13 +439,30 @@ fn decomp_maximize_mia_bravos_stability_8_keeps_three_planet_basin() {
 
     let income = replay.balance().net_income();
     let stability = replay.system().avg_stability();
+    let colonized = replay
+        .system()
+        .planets()
+        .values()
+        .filter(|p| p.has_colony())
+        .count();
     assert!(
         stability >= 8.0,
         "maximize must hold the stability-8 floor, got {stability}"
     );
+    // The cliff this test guards against is the climb settling on a two-planet
+    // seed and never revisiting colonization; assert the basin directly.
+    assert_eq!(
+        colonized, 3,
+        "maximize must keep the three-planet basin alive, got {colonized} colonies \
+         (income {income})"
+    );
+    // Income floor re-derived under the market-share economy (2026-06): the
+    // pooled `value*P/(S+P)` model pays duplicate industries much less than
+    // the old independent slices, so the pre-market-share figures (~500k
+    // basin, ~401849 cliff) no longer apply.
     assert!(
-        income > 500_000.0,
-        "income {income} regressed toward the old two-planet Pareto cliff (~401849)"
+        income > 300_000.0,
+        "income {income} regressed below the market-share three-planet basin"
     );
 }
 

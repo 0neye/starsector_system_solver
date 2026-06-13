@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::constants::ColonyItem;
+use crate::constants::{ColonyItem, Resource};
 use crate::solver::decomp::{search_system_maximize_seeded, SearchProfile, SystemPlan};
 use crate::solver::goal::{Goal, Metric};
 use crate::solver::state::{Action, Balance, State};
@@ -170,7 +170,7 @@ pub fn solve_pareto(
 /// (quality-reference ratios 0.84-0.98 upgrades-on, 0.78-0.99 upgrades-off),
 /// but not provably: the trapezoid AUC over the sparse grid can overestimate
 /// the area the full grid would measure between shared floors. See
-/// `QUICK_RANKING_DESIGN.md`.
+/// `workspace/QUICK_RANKING_DESIGN.md`.
 pub fn solve_pareto_quick(
     system: &System,
     balance: &Balance,
@@ -349,7 +349,7 @@ pub fn solve_pareto_quick(
 /// each point's income is in practice a lower bound on the corresponding
 /// `solve_pareto_quick` point — refinement only moves scores up. (Not provable:
 /// after the first floor the two modes' warm chains diverge, so later floors do
-/// not climb from identical seed sets.) See `QUICK_RANKING_DESIGN.md`.
+/// not climb from identical seed sets.) See `workspace/QUICK_RANKING_DESIGN.md`.
 pub fn solve_pareto_template(
     system: &System,
     balance: &Balance,
@@ -514,8 +514,31 @@ pub fn solve_pareto_bound(
         }
     }
 
-    let stability_auc = flat_left_normalized_auc(&stability_frontier, FrontierKind::Stability);
-    let defense_auc = flat_left_normalized_auc(&defense_frontier, FrontierKind::Defense);
+    // Pooled market-share correction: the additive per-planet incomes
+    // double-count shared commodity markets on duplicate-industry systems
+    // (each planet was valued against a standalone denominator). The additive
+    // score is a ceiling (a pooled-aware planner would re-optimize); the
+    // greedy-pooled value of this fixed portfolio is a floor (the planner
+    // keeps at least these plans). Interpolate between them with weight 2/3
+    // on the pooled side — re-optimization recovers only part of the gap —
+    // by raising the pooled/additive ratio to the 2/3 power. On the
+    // 5-system benchmark any exponent in (0.55, 0.78) reproduces the full
+    // sweep's ordering exactly, so 2/3 is mid-range, not knife-edge.
+    let pooled_ratio = bound.pooled_deflation();
+    let deflation = pooled_ratio.powf(2.0 / 3.0);
+    if stats {
+        eprintln!(
+            "bound pooled deflation [{}]: ratio={:.3} applied={:.3}",
+            system.name(),
+            pooled_ratio,
+            deflation,
+        );
+    }
+
+    let stability_auc =
+        flat_left_normalized_auc(&stability_frontier, FrontierKind::Stability) * deflation;
+    let defense_auc =
+        flat_left_normalized_auc(&defense_frontier, FrontierKind::Defense) * deflation;
     let score = ((stability_auc + defense_auc) / 2.0) / SCORE_INCOME_UNIT;
 
     ParetoSolve {
@@ -557,11 +580,21 @@ struct PlanetAllocation {
 /// already covers: for any floor `g <= achieved`, the same plan is feasible
 /// with the same income, and the optimum can't exceed the looser floor's, so
 /// `optimum(g)` equals this income exactly.
+///
+/// Also carries the plan end-state economy breakdown (direct income, upkeep,
+/// per-commodity weighted supply) so the bound can re-score portfolios with
+/// cross-planet market-share pooling: per-planet solves value exports against
+/// standalone `sector + own supply` denominators, which double-counts shared
+/// commodity markets when several planets export the same commodity.
 #[derive(Debug, Clone, Copy)]
 struct PlanetSolveOutcome {
     income: f64,
     stability: f64,
     defense: f64,
+    direct_income: f64,
+    upkeep: f64,
+    raw_supply: [f64; Resource::COUNT],
+    modded_supply: [f64; Resource::COUNT],
 }
 
 type PlanetMemoValue = (Option<PlanetSolveOutcome>, Option<SystemPlan>);
@@ -611,6 +644,79 @@ impl PerPlanetBound {
             items,
             floor,
         }
+    }
+
+    /// Ratio of pooled (cross-planet market share) to additive income for the
+    /// final floor-0 portfolio, in `(0, 1]`. Per-planet solves value exports
+    /// against standalone `sector + own supply` denominators; summing them
+    /// double-counts shared commodity markets on duplicate-industry systems.
+    ///
+    /// Pooling the additive-optimal portfolio as-is is unfairly pessimistic
+    /// (a pooled-aware planner would not keep every duplicate producer paying
+    /// upkeep for a diluted share), so the pooled side greedily keeps only
+    /// planets with a positive marginal pooled contribution — the subset a
+    /// pooled-aware planner would retain from these plans. Pooling is
+    /// subadditive, so the ratio is `<= 1`; it deflates the ranking score
+    /// (the per-floor frontier incomes stay additive ceilings).
+    fn pooled_deflation(&self) -> f64 {
+        let mut outcomes: Vec<PlanetSolveOutcome> = Vec::with_capacity(self.planets.len());
+        for idx in 0..self.planets.len() {
+            let key = self.current_key(idx, PlanetFloor::Stability(0));
+            if let Some((Some(outcome), _)) = self.memo.get(&key) {
+                outcomes.push(*outcome);
+            }
+        }
+
+        let additive: f64 = outcomes.iter().map(|o| o.income).sum();
+        if outcomes.is_empty() || additive <= 0.0 {
+            return 1.0;
+        }
+
+        let pooled_value = |chosen: &[bool]| -> f64 {
+            let mut net = 0.0;
+            let mut raw = [0.0f64; Resource::COUNT];
+            let mut modded = [0.0f64; Resource::COUNT];
+            for (outcome, keep) in outcomes.iter().zip(chosen) {
+                if !keep {
+                    continue;
+                }
+                net += outcome.direct_income - outcome.upkeep;
+                for i in 0..Resource::COUNT {
+                    raw[i] += outcome.raw_supply[i];
+                    modded[i] += outcome.modded_supply[i];
+                }
+            }
+            for resource in Resource::ALL {
+                let i = resource as usize;
+                if raw[i] > 0.0 {
+                    net += resource.market_value() as f64 * modded[i]
+                        / (resource.sector_supply() as f64 + raw[i]);
+                }
+            }
+            net
+        };
+
+        let mut chosen = vec![false; outcomes.len()];
+        let mut current = 0.0;
+        loop {
+            let mut best: Option<(usize, f64)> = None;
+            for idx in 0..outcomes.len() {
+                if chosen[idx] {
+                    continue;
+                }
+                chosen[idx] = true;
+                let candidate = pooled_value(&chosen);
+                chosen[idx] = false;
+                if candidate > current && best.is_none_or(|(_, value)| candidate > value) {
+                    best = Some((idx, candidate));
+                }
+            }
+            let Some((idx, value)) = best else { break };
+            chosen[idx] = true;
+            current = value;
+        }
+
+        (current / additive).clamp(0.0, 1.0)
     }
 
     fn solve_key(&mut self, key: PlanetSolveKey, seed: Option<SystemPlan>) -> PlanetMemoValue {
@@ -1159,10 +1265,35 @@ fn solve_planet_income_optional(
         &[],
         SearchProfile::BOUND,
     );
-    let outcome = point.map(|point| PlanetSolveOutcome {
-        income: point.income,
-        stability: point.stability,
-        defense: point.defense,
+    let outcome = point.map(|point| {
+        // Replay the chosen plan to extract the end-state economy breakdown
+        // for pooled (cross-planet market share) re-scoring at system scope.
+        let mut replay = State::new(balance.clone(), sub_system.clone());
+        for action in &point.actions {
+            replay.apply_action_raw(action, false);
+        }
+        let mut direct_income = 0.0;
+        let mut upkeep = 0.0;
+        let mut raw_supply = [0.0f64; Resource::COUNT];
+        let mut modded_supply = [0.0f64; Resource::COUNT];
+        for planet in replay.system().planets().values() {
+            let economy = planet.economy();
+            direct_income += economy.direct_income;
+            upkeep += economy.upkeep;
+            for &(resource, raw, modded) in &economy.exports {
+                raw_supply[resource as usize] += raw;
+                modded_supply[resource as usize] += modded;
+            }
+        }
+        PlanetSolveOutcome {
+            income: point.income,
+            stability: point.stability,
+            defense: point.defense,
+            direct_income,
+            upkeep,
+            raw_supply,
+            modded_supply,
+        }
     });
     (outcome, warm)
 }

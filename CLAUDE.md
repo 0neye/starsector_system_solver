@@ -10,9 +10,9 @@ cargo test
 cargo clippy
 cargo run -- --system "Mia's Star" --income 200000 --stability 8 --time-limit 25000
 
-# Interactive TUI (see TUI_DESIGN.md): Saves -> Rank -> System -> Solve -> Plan,
+# Interactive TUI (see workspace/TUI_DESIGN.md): Saves -> Rank -> System -> Solve -> Plan,
 # with a discovered-only scope filter (>=1 surveyed planet, core worlds excluded
-# by default) and settings persisted to solver_tui.toml. Rank/extract/solve run
+# by default) and settings persisted to workspace/solver_tui.toml. Rank/extract/solve run
 # as background jobs; x cooperatively cancels rank/solve (solver::cancel flag),
 # extract/load only detach. Loading a save's systems seeds the Setup balance
 # from the save (credits/SP/alpha cores/colony items; player_balance table).
@@ -26,8 +26,8 @@ SYSTEM_SOLVER_AB_MS=8000 cargo run   # custom time budget (ms)
 SYSTEM_SOLVER_VERIFY=1 cargo run
 
 # Sample Pareto-frontier data (income vs stability/defense) as CSV, then plot it
-SYSTEM_SOLVER_PARETO=1 cargo run
-python plot_pareto_frontiers.py   # writes pareto_frontiers.png
+SYSTEM_SOLVER_PARETO=1 cargo run > workspace/pareto.csv
+python plot_pareto_frontiers.py workspace/pareto.csv --output workspace/pareto_frontiers.png
 # Pareto sweep extras:
 #   SYSTEM_SOLVER_PARETO_SYSTEM=<substring>  limit the sweep to one system
 #   SYSTEM_SOLVER_STATS=1                    per-point timings + per-system search counters (stderr)
@@ -36,14 +36,14 @@ python plot_pareto_frontiers.py   # writes pareto_frontiers.png
 #   SYSTEM_SOLVER_NO_UPGRADES=1              disable SP improvements / alpha-core installs
 #                                            (matches --no-industry-upgrades; also honored
 #                                            by the bound sweep)
-# Benchmark workflow (see SOLVER_OPTIMIZATION_REPORT.md): run a sweep against
-# system_benchmark.db, then `python compare_pareto.py <ref.csv> <cand.csv> [tol_pct]`
+# Benchmark workflow (see workspace/SOLVER_OPTIMIZATION_REPORT.md): run a sweep against
+# workspace/system_benchmark.db, then `python workspace/compare_pareto.py <ref.csv> <cand.csv> [tol_pct]`
 # (exit 1 on income regression).
 
 # Measure greedy income vs a credit-relaxed upper bound (how much headroom the
 # greedy leaves on the credit-timing axis). CSV to stdout, summary to stderr.
 SYSTEM_SOLVER_BOUND=1 cargo run
-SYSTEM_SOLVER_BOUND_MS=5000 cargo run   # budget per point. See OPTIMAL_SOLVER_BOUND.md
+SYSTEM_SOLVER_BOUND_MS=5000 cargo run   # budget per point. See workspace/OPTIMAL_SOLVER_BOUND.md
 #   SYSTEM_SOLVER_BOUND_SYSTEM=<substring>  limit the bound sweep to one system
 # The bound sweep warm-chains floors and cross-seeds each relaxed solve with the
 # greedy plan, so bound >= greedy by construction (negative gaps = solver bug).
@@ -61,18 +61,24 @@ finishes inside the budget; a cutoff is machine-dependent and reported via
 ```bash
 # Quick ranking: score every system with a reduced deterministic sweep (sparse
 # floors + mini-anchor repair climbs with a feasibility bridge; see
-# QUICK_RANKING_DESIGN.md), print best-first.
+# workspace/QUICK_RANKING_DESIGN.md), print best-first.
 # SYSTEM_SOLVER_RANK_POINTS=1: per-point income/months/profile trace (stderr).
-cargo run --release -- --db system_benchmark.db --rank
+cargo run --release -- --db workspace/system_benchmark.db --rank
 cargo run --release -- --rank --rank-system askonia --rank-system corvus  # filter
-cargo run --release -- --rank --rank-csv > rank.csv  # machine-readable
-python rank_validation.py final_sweep.csv rank.csv   # rank-agreement gate vs full sweep
+cargo run --release -- --rank --rank-csv > workspace/rank.csv  # machine-readable
+python workspace/rank_validation.py workspace/final_sweep.csv workspace/rank.csv   # rank-agreement gate vs full sweep
 # --rank-scorer picks the scorer (default `quick` = Tier-1 budgeted search):
 #   bound    = floor-aware per-planet credit-relaxed upper bound
 #              (solve_pareto_bound): floor-0 one-shot rationing, per-floor
-#              menus, integer average-floor DP, and flat-left AUC. Near-certain
-#              ceiling, not certified: rationing is exact only under concavity
-#              and is fixed at floor 0. Validate: bound/full should be >= 1.
+#              menus, integer average-floor DP, and flat-left AUC, then a
+#              pooled market-share correction: the ranking score is deflated
+#              by (greedy-subset pooled / additive)^(2/3) of the floor-0
+#              portfolio, interpolating between the additive ceiling and the
+#              fixed-portfolio pooled floor. Near-certain ceiling, not
+#              certified: rationing is exact only under concavity, fixed at
+#              floor 0, and the pooled correction is a validated heuristic
+#              (benchmark ratios 1.04-1.20, tau 1.0). Validate: bound/full
+#              should be >= 1; frontier incomes stay additive ceilings.
 #   template = instant template portfolio, no search, in practice a lower bound
 #              (solve_pareto_template, ~ms/system, rougher ordering).
 cargo run --release -- --rank --rank-scorer bound
@@ -91,13 +97,13 @@ output; the DB loader is verified to match its semantics exactly
 (`db_loader_matches_csv_semantics` in `src/tests/parser.rs`).
 
 ```bash
-# Save-game extraction (see SAVE_EXTRACTION_DESIGN.md): parses a Starsector save
+# Save-game extraction (see workspace/SAVE_EXTRACTION_DESIGN.md): parses a Starsector save
 # into save_data.db with tables mirroring the three CSVs. Available as a
 # subcommand of the main CLI:
 cargo run --release -- extract list-saves
 cargo run --release -- extract run --save DEMIURGE --latest
 cargo run --release -- extract search "askonia"
-cargo run --release -- extract export --system Corvus --out-dir out/extract_test
+cargo run --release -- extract export --system Corvus --out-dir workspace/out/extract_test
 ```
 
 ## Architecture
@@ -121,6 +127,23 @@ The archived solvers (`solver/archive/`) — IDA\* per-planet and Rayon-parallel
 | `solver/goal.rs` | `Goal` | Threshold triple; `goal.is_satisfied(&state)` |
 | `constants.rs` | `FACILITY_DATA`, etc. | `lazy_static!` game data maps |
 | `parser/mod.rs` | — | `load_game_data_from_db()` (primary) + `load_game_data()` CSV fallback |
+
+### Market-share economy invariant
+
+Commodity export income is computed at **system scope**: all player producers
+of a commodity share one `market_value * player / (sector_supply + player)`
+pool (diminishing returns for duplicate industries). Income is therefore not
+additive across planets — but weighted supply is. Each planet caches a
+`PlanetEconomy` (modded direct income, upkeep, per-commodity raw/modded
+weighted supply); `System::gross_income_and_upkeep()` sums the vectors and
+divides once. Anything recombining per-planet economy data (e.g.
+`SystemScoreInputs` in `solver/decomp.rs`) must combine in supply space and
+divide at system scope. `Planet::get_gross_income()` is the standalone
+single-colony view (denominator `sector + own supply`); the per-planet bound
+in `solver/pareto.rs` stays a valid upper bound because `p/(S+p)` is
+subadditive. Exported units per resource are capped at
+`floor(accessibility/10)` at colony scope (cross-faction export capacity)
+before accessibility weighting. Tests: `src/tests/economy.rs`.
 
 ### Reversible-action invariant
 

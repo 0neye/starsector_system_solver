@@ -25,6 +25,7 @@
 
 mod support;
 
+mod economy;
 mod facility;
 mod parser;
 mod planet;

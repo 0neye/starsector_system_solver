@@ -42,7 +42,7 @@ use std::time::{Duration, Instant};
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
-use crate::constants::{FacilityType, FACILITY_DATA, FACILITY_REQUIREMENTS};
+use crate::constants::{FacilityType, Resource, FACILITY_DATA, FACILITY_REQUIREMENTS};
 use crate::planet::{upgrade_predecessors, Planet};
 use crate::solver::goal::{AStarSearchResult, Goal, Metric};
 use crate::solver::state::{Action, State};
@@ -107,7 +107,7 @@ const MAX_SIM_ITERS: u32 = 5_000;
 /// wall-clock deadline — is what stops a climb, so the result is identical on
 /// every machine regardless of speed or load (the cause of the old maximize
 /// nondeterminism was the wall clock interrupting a climb mid-pass; see
-/// `OPTIMAL_SOLVER_BOUND.md`). Sized far above the ~20k a real climb needs to
+/// `workspace/OPTIMAL_SOLVER_BOUND.md`). Sized far above the ~20k a real climb needs to
 /// converge, so it only bites for pathological inputs, and then deterministically.
 const MAX_NODES_PER_SEED: u32 = 200_000;
 const TOP_SEED_CLIMBS: usize = 8;
@@ -120,7 +120,7 @@ const TOP_SEED_CLIMBS: usize = 8;
 /// caps), so for one solve with the same seeds, a reduced profile's result is a
 /// lower bound on `FULL`'s. (Across a chained sweep the warm seeds diverge, so
 /// sweep-level scores are only empirically ordered.) See
-/// `QUICK_RANKING_DESIGN.md`.
+/// `workspace/QUICK_RANKING_DESIGN.md`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SearchProfile {
     pub top_seed_climbs: usize,
@@ -175,7 +175,7 @@ impl SearchProfile {
     /// is what rank preservation wants. Because it never climbs, its result for
     /// one solve lower-bounds `QUICK`'s from the same seeds (sweep-level scores
     /// are only empirically ordered — the warm chains diverge). See
-    /// `QUICK_RANKING_DESIGN.md`.
+    /// `workspace/QUICK_RANKING_DESIGN.md`.
     pub const TEMPLATE: Self = Self {
         top_seed_climbs: 1,
         max_nodes_per_seed: 1,
@@ -1013,23 +1013,43 @@ fn action_lookahead_score_reference(
     action_lookahead_score(state, objective, action)
 }
 
+/// Per-planet score inputs in supply space: commodity export income is not
+/// additive across planets under the market-share model, but weighted supply
+/// is, so planets contribute supply vectors and `SystemScoreInputs` applies
+/// the `value * modded / (sector + raw)` division once over the summed
+/// totals. This keeps the one-planet input swap exact.
 #[derive(Clone, Copy, Debug)]
 struct PlanetScoreInputs {
-    gross_income: f64,
+    direct_income: f64,
     total_upkeep: f64,
     stability: i32,
     ground_defense: f64,
     colonized: bool,
+    export_mask: u32,
+    raw_supply: [f64; Resource::COUNT],
+    modded_supply: [f64; Resource::COUNT],
 }
 
 impl PlanetScoreInputs {
     fn from_planet(planet: &Planet) -> Self {
+        let economy = planet.economy();
+        let mut raw_supply = [0.0f64; Resource::COUNT];
+        let mut modded_supply = [0.0f64; Resource::COUNT];
+        let mut export_mask = 0u32;
+        for &(resource, raw, modded) in &economy.exports {
+            raw_supply[resource as usize] = raw;
+            modded_supply[resource as usize] = modded;
+            export_mask |= 1u32 << resource as usize;
+        }
         Self {
-            gross_income: planet.get_gross_income(),
-            total_upkeep: planet.total_upkeep(),
+            direct_income: economy.direct_income,
+            total_upkeep: economy.upkeep,
             stability: planet.stability(),
             ground_defense: planet.ground_defense_strength(),
             colonized: planet.has_colony(),
+            export_mask,
+            raw_supply,
+            modded_supply,
         }
     }
 }
@@ -1093,10 +1113,10 @@ impl FactoredLookaheadBase {
         &self,
         wait_index: usize,
         replace_index: usize,
-        replacement: PlanetScoreInputs,
+        replacement: &PlanetScoreInputs,
     ) -> SystemScoreInputs {
         let mut totals = SystemScoreInputs::default();
-        for (idx, inputs) in self.by_wait[wait_index].iter().copied().enumerate() {
+        for (idx, inputs) in self.by_wait[wait_index].iter().enumerate() {
             totals.add(if idx == replace_index {
                 replacement
             } else {
@@ -1109,29 +1129,49 @@ impl FactoredLookaheadBase {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct SystemScoreInputs {
-    gross_income: f64,
+    direct_income: f64,
     total_upkeep: f64,
     stability_sum: i32,
     colonized_count: i32,
     ground_defense_sum: f64,
+    export_mask: u32,
+    raw_supply: [f64; Resource::COUNT],
+    modded_supply: [f64; Resource::COUNT],
 }
 
 impl SystemScoreInputs {
-    fn add(&mut self, planet: PlanetScoreInputs) {
-        self.gross_income += planet.gross_income;
+    fn add(&mut self, planet: &PlanetScoreInputs) {
+        self.direct_income += planet.direct_income;
         self.total_upkeep += planet.total_upkeep;
         if planet.colonized {
             self.stability_sum += planet.stability;
             self.colonized_count += 1;
             self.ground_defense_sum += planet.ground_defense;
         }
+        self.export_mask |= planet.export_mask;
+        let mut mask = planet.export_mask;
+        while mask != 0 {
+            let index = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            self.raw_supply[index] += planet.raw_supply[index];
+            self.modded_supply[index] += planet.modded_supply[index];
+        }
     }
 
-    fn net_income(self) -> f64 {
-        self.gross_income - self.total_upkeep
+    fn net_income(&self) -> f64 {
+        let mut gross_income = self.direct_income;
+        let mut mask = self.export_mask;
+        while mask != 0 {
+            let index = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            let resource = Resource::ALL[index];
+            gross_income += resource.market_value() as f64 * self.modded_supply[index]
+                / (resource.sector_supply() as f64 + self.raw_supply[index]);
+        }
+        gross_income - self.total_upkeep
     }
 
-    fn avg_stability(self) -> f64 {
+    fn avg_stability(&self) -> f64 {
         if self.colonized_count == 0 {
             0.0
         } else {
@@ -1139,7 +1179,7 @@ impl SystemScoreInputs {
         }
     }
 
-    fn avg_ground_defense(self) -> f64 {
+    fn avg_ground_defense(&self) -> f64 {
         if self.colonized_count == 0 {
             0.0
         } else {
@@ -1147,7 +1187,7 @@ impl SystemScoreInputs {
         }
     }
 
-    fn metric_value(self, metric: Metric) -> f64 {
+    fn metric_value(&self, metric: Metric) -> f64 {
         match metric {
             Metric::Income => self.net_income(),
             Metric::Defense => self.avg_ground_defense(),
@@ -1155,7 +1195,7 @@ impl SystemScoreInputs {
         }
     }
 
-    fn goal_violation(self, goal: &Goal) -> f64 {
+    fn goal_violation(&self, goal: &Goal) -> f64 {
         let mut v = 0.0;
 
         let income = self.net_income();
@@ -1192,7 +1232,10 @@ fn factored_single_planet_lookahead_score(
 ) -> ActionLookaheadScore {
     stats::CAND_SCORES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let original_planet = exact_scoring_restore_planet(state, action);
-    state.apply_action_raw(action, false);
+    // Skip the balance-income refresh on this apply/undo pair: the factored
+    // score reads `PlanetScoreInputs`/`SystemScoreInputs`, never balance
+    // income, and the undo restores the system before anyone reads income.
+    state.apply_action_raw_for_scoring(action, false);
 
     let replacement = {
         let planet = state
@@ -1210,14 +1253,14 @@ fn factored_single_planet_lookahead_score(
         }
     };
 
-    state.undo_last_action(false);
+    state.undo_last_action_for_scoring(false);
     if let Some((planet_hash, planet)) = original_planet {
         restore_planet_after_scoring(state, planet_hash, planet);
     }
 
     let wait_index = base.wait_index(wait_months);
     let planet_index = base.planet_index(planet_hash);
-    let inputs = base.combined_score_inputs(wait_index, planet_index, replacement);
+    let inputs = base.combined_score_inputs(wait_index, planet_index, &replacement);
     let floors = objective.floors();
     let violation = inputs.goal_violation(floors);
     let metric_value = objective
@@ -1261,9 +1304,10 @@ fn restore_planet_after_scoring(state: &mut State, planet_hash: u64, planet: Pla
         .system_mut()
         .get_planet_mut_by_hash(planet_hash)
         .expect("scored action planet must still exist") = planet;
-    let gross_income = state.system().get_gross_income();
-    let net_income = gross_income - state.system().total_upkeep();
-    state.balance_mut().update_income(gross_income, net_income);
+    let (gross_income, total_upkeep) = state.system().gross_income_and_upkeep();
+    state
+        .balance_mut()
+        .update_income(gross_income, gross_income - total_upkeep);
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ use rustc_hash::{FxBuildHasher, FxHashMap, FxHasher};
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 
+use crate::constants::Resource;
 use crate::planet::Planet;
 use crate::solver::{Action, Balance};
 
@@ -203,18 +204,45 @@ impl System {
         &self.infrastructure
     }
 
+    /// Player-faction gross income under the market-share model: all player
+    /// producers of a commodity split `market_value * player / (sector +
+    /// player)` weighted supply, so duplicate same-commodity colonies have
+    /// diminishing returns instead of each earning an independent slice.
     pub fn get_gross_income(&self) -> f64 {
-        self.planets
-            .values()
-            .map(|planet| planet.get_gross_income())
-            .sum()
+        self.gross_income_and_upkeep().0
+    }
+
+    /// Gross income and total upkeep in one pass over the planets.
+    pub fn gross_income_and_upkeep(&self) -> (f64, f64) {
+        let mut raw = [0.0f64; Resource::COUNT];
+        let mut modded = [0.0f64; Resource::COUNT];
+        let mut gross_income = 0.0;
+        let mut upkeep = 0.0;
+
+        for planet in self.planets.values() {
+            let economy = planet.economy();
+            gross_income += economy.direct_income;
+            upkeep += economy.upkeep;
+            for &(resource, planet_raw, planet_modded) in &economy.exports {
+                raw[resource as usize] += planet_raw;
+                modded[resource as usize] += planet_modded;
+            }
+        }
+
+        for resource in Resource::ALL {
+            let total_raw = raw[resource as usize];
+            if total_raw > 0.0 {
+                gross_income += resource.market_value() as f64 * modded[resource as usize]
+                    / (resource.sector_supply() as f64 + total_raw);
+            }
+        }
+
+        (gross_income, upkeep)
     }
 
     pub fn get_net_income(&self) -> f64 {
-        self.planets
-            .values()
-            .map(|planet| planet.get_net_income())
-            .sum()
+        let (gross_income, upkeep) = self.gross_income_and_upkeep();
+        gross_income - upkeep
     }
 
     pub fn total_upkeep(&self) -> f64 {

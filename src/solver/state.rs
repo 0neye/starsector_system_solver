@@ -23,6 +23,10 @@ pub enum Action {
     Wait(u32),                         // number of months
 }
 
+pub(crate) fn improvement_story_point_cost(existing_planet_improvements: u32) -> u32 {
+    2_u32.pow(existing_planet_improvements + 1)
+}
+
 pub fn format_action(action: &Action, planet_names: &HashMap<u64, String>) -> String {
     match action {
         Action::AddFacility(planet_hash, facility_type) => format!(
@@ -429,6 +433,22 @@ impl State {
     }
 
     pub fn apply_action_raw(&mut self, action: &Action, debug: bool) {
+        self.apply_action_inner(action, debug);
+        let (gross_income, total_upkeep) = self.system.gross_income_and_upkeep();
+        self.balance
+            .update_income(gross_income, gross_income - total_upkeep);
+    }
+
+    /// `apply_action_raw` without the balance-income refresh, for scoring
+    /// paths that read system-derived inputs directly and always undo (via
+    /// `undo_last_action_for_scoring`) before any income read. The apply/undo
+    /// pair restores the system, so the stale balance income becomes correct
+    /// again once the pair closes.
+    pub(crate) fn apply_action_raw_for_scoring(&mut self, action: &Action, debug: bool) {
+        self.apply_action_inner(action, debug);
+    }
+
+    fn apply_action_inner(&mut self, action: &Action, debug: bool) {
         self.action_log.push(action.clone());
         match action {
             Action::AddFacility(planet_hash, facility_type) => {
@@ -444,7 +464,7 @@ impl State {
                 }
             }
             Action::AddImprovement(planet_hash, facility_type) => {
-                let improvement_cost = 2_u32.pow(
+                let improvement_cost = improvement_story_point_cost(
                     self.system()
                         .get_planet_by_hash(*planet_hash)
                         .unwrap()
@@ -514,27 +534,54 @@ impl State {
                     planet_snapshots: Vec::new(),
                 };
 
-                for planet in self.system.planets_mut().values_mut() {
+                for planet in self.system.planets().values() {
                     if !planet.has_colony() {
                         continue;
                     }
                     wait_undo
                         .planet_snapshots
                         .push((planet.name_hash(), planet.snapshot_wait_state()));
-                    let (_, net_from_wait) = planet.wait(*months, debug);
-                    self.balance.add_credits(net_from_wait);
+                }
+
+                // Advance all colonies month-major so commodity market shares
+                // (pooled across colonies) are correct at every monthly
+                // boundary, and accrue system-level net income. Months where
+                // no colony's income inputs changed reuse the last figure.
+                let mut last_net = 0.0;
+                for month in 0..*months {
+                    let mut changed = month == 0;
+                    for planet in self.system.planets_mut().values_mut() {
+                        changed |= planet.advance_month();
+                    }
+                    if changed {
+                        let (gross, upkeep) = self.system.gross_income_and_upkeep();
+                        last_net = gross - upkeep;
+                    }
+                    self.balance.add_credits(last_net);
+                    if debug {
+                        println!("WAIT month {}: system net {:.2}", month + 1, last_net);
+                    }
                 }
 
                 wait_undo.credits_delta = self.balance.credits() - credits_before;
                 self.wait_undo_stack.push(wait_undo);
             }
         }
-        let gross_income = self.system.get_gross_income();
-        let net_income = gross_income - self.system.total_upkeep();
-        self.balance.update_income(gross_income, net_income);
     }
 
     pub fn undo_last_action(&mut self, debug: bool) {
+        self.undo_action_inner(debug);
+        let (gross_income, total_upkeep) = self.system.gross_income_and_upkeep();
+        self.balance
+            .update_income(gross_income, gross_income - total_upkeep);
+    }
+
+    /// See `apply_action_raw_for_scoring`.
+    pub(crate) fn undo_last_action_for_scoring(&mut self, debug: bool) {
+        self.undo_action_inner(debug);
+    }
+
+    fn undo_action_inner(&mut self, debug: bool) {
         let action = self.action_log.pop();
         if action.is_none() {
             return;
@@ -552,7 +599,7 @@ impl State {
                 }
             }
             Action::AddImprovement(planet_hash, facility_type) => {
-                let improvement_cost = 2u32.pow(
+                let improvement_cost = improvement_story_point_cost(
                     self.system()
                         .get_planet_by_hash(planet_hash)
                         .unwrap()
@@ -635,9 +682,6 @@ impl State {
                 }
             }
         }
-        let gross_income = self.system.get_gross_income();
-        let net_income = gross_income - self.system.total_upkeep();
-        self.balance.update_income(gross_income, net_income);
     }
 
     pub fn score(&self) -> f64 {

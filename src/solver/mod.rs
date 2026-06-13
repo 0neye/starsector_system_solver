@@ -11,6 +11,7 @@ pub use decomp::stats as decomp_stats;
 pub use decomp::{diagnose_maximize_gap, search_system_decomp, search_system_maximize};
 pub use goal::{AStarSearchResult, Goal, Metric};
 pub use pareto::{solve_pareto, solve_pareto_bound, solve_pareto_quick, solve_pareto_template};
+pub(crate) use state::improvement_story_point_cost;
 pub use state::{Action, Balance, State};
 
 /// Whether two states' planets disagree on which facilities exist. Used by the

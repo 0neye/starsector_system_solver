@@ -112,6 +112,30 @@ impl FacilityType {
 }
 
 impl Resource {
+    pub const COUNT: usize = 18;
+
+    /// Every variant, in discriminant order, so `Resource::ALL[r as usize] == r`.
+    pub const ALL: [Resource; Resource::COUNT] = [
+        Resource::Supplies,
+        Resource::Fuel,
+        Resource::Food,
+        Resource::Ore,
+        Resource::Metals,
+        Resource::TransplutonicOre,
+        Resource::Transplutonics,
+        Resource::Organics,
+        Resource::Volatiles,
+        Resource::DomesticGoods,
+        Resource::LuxuryGoods,
+        Resource::HeavyMachinery,
+        Resource::HeavyArmaments,
+        Resource::Drugs,
+        Resource::HarvestedOrgans,
+        Resource::ShipHullsAndWeapons,
+        Resource::Crew,
+        Resource::Marines,
+    ];
+
     #[inline(always)]
     pub fn base_price(&self) -> f64 {
         match self {

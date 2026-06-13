@@ -1,6 +1,6 @@
 mod facility;
 
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
@@ -132,11 +132,30 @@ pub struct Planet {
     stability: i32,
     admin: AdminType,
     system_stability_bonus: i32,
-    /// Cached `(gross_income, total_upkeep)` for the current planet state.
+    /// Cached economy inputs for the current planet state.
     /// Purely derived data: every mutator that can affect income invalidates it
     /// (and `get_facility_mut` invalidates pessimistically, since the caller may
     /// mutate the facility). Excluded from `Hash`/`PartialEq`.
-    income_cache: RefCell<Option<(f64, f64)>>,
+    income_cache: RefCell<Option<PlanetEconomy>>,
+}
+
+/// Per-planet economy inputs for the system-scope market-share income model.
+///
+/// Commodity export income is not additive across planets (every producer of a
+/// commodity shares one `sector + player` denominator), but weighted supply
+/// is. Each planet therefore exposes its supply contributions and the system
+/// applies `market_value * modded / (sector_supply + raw)` over the summed
+/// vectors. `modded` carries this planet's income modifiers (low-stability
+/// penalty, highest income multiplier such as Commerce) so allocation happens
+/// before colony-level modifiers, matching allocate-then-modify semantics.
+#[derive(Debug, Clone, Default)]
+pub struct PlanetEconomy {
+    /// Non-export income (Population direct revenue), modifiers applied.
+    pub direct_income: f64,
+    pub upkeep: f64,
+    /// `(resource, raw weighted supply, modifier-scaled weighted supply)`,
+    /// only entries with positive raw supply.
+    pub exports: Vec<(Resource, f64, f64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -242,23 +261,76 @@ impl Planet {
         }
     }
 
-    /// Drop the cached income/upkeep pair. Must be called by every mutation
-    /// that can affect either value; cheap enough to call pessimistically.
+    /// Drop the cached economy inputs. Must be called by every mutation
+    /// that can affect income or upkeep; cheap enough to call pessimistically.
     #[inline]
     fn invalidate_income_cache(&self) {
         *self.income_cache.borrow_mut() = None;
     }
 
-    /// The cached `(gross_income, total_upkeep)` pair, computing and storing it
-    /// on miss. Both are derived from the same planet state, so they share one
-    /// validity flag.
-    fn income_and_upkeep(&self) -> (f64, f64) {
-        if let Some(cached) = *self.income_cache.borrow() {
-            return cached;
+    /// The cached economy inputs, computing and storing them on miss.
+    pub fn economy(&self) -> Ref<'_, PlanetEconomy> {
+        {
+            let cache = self.income_cache.borrow();
+            if cache.is_some() {
+                return Ref::map(cache, |c| c.as_ref().unwrap());
+            }
         }
-        let pair = (self.compute_gross_income(), self.compute_total_upkeep());
-        *self.income_cache.borrow_mut() = Some(pair);
-        pair
+        let economy = self.compute_economy();
+        *self.income_cache.borrow_mut() = Some(economy);
+        Ref::map(self.income_cache.borrow(), |c| c.as_ref().unwrap())
+    }
+
+    fn compute_economy(&self) -> PlanetEconomy {
+        let upkeep = self.compute_total_upkeep();
+        if !self.has_colony() {
+            return PlanetEconomy {
+                direct_income: 0.0,
+                upkeep,
+                exports: Vec::new(),
+            };
+        }
+
+        let mut production_units = [0.0f64; Resource::COUNT];
+        let mut direct_income = 0.0;
+        let mut highest_income_mult: f64 = 1.0;
+        let accessibility = self.calculate_accessibility();
+        for facility in &self.facilities {
+            direct_income += facility.collect_export_production(
+                self.size,
+                self,
+                accessibility,
+                &mut production_units,
+            );
+            highest_income_mult = highest_income_mult.max(facility.calculate_income_multiplier());
+        }
+
+        let mut modifier = highest_income_mult;
+        let stability = self.stability();
+        if stability < 5 {
+            modifier *= 1.0 - (0.2 * (5 - stability) as f64);
+        }
+
+        // Export capacity (wiki.gg Colony): the colony can export one unit of
+        // each resource per 10% accessibility, rounded down (cross-faction).
+        // Production beyond the cap earns no export income.
+        let export_cap = (accessibility / 10.0).floor().max(0.0);
+        let exports = Resource::ALL
+            .iter()
+            .filter(|r| production_units[**r as usize] > 0.0)
+            .map(|r| {
+                let exported = production_units[*r as usize].min(export_cap);
+                let raw = exported * accessibility / 100.0;
+                (*r, raw, raw * modifier)
+            })
+            .filter(|(_, raw, _)| *raw > 0.0)
+            .collect();
+
+        PlanetEconomy {
+            direct_income: direct_income * modifier,
+            upkeep,
+            exports,
+        }
     }
 
     /// Get the name of this planet
@@ -393,7 +465,7 @@ impl Planet {
 
     /// Get the total upkeep of this planet
     pub fn total_upkeep(&self) -> f64 {
-        self.income_and_upkeep().1
+        self.economy().upkeep
     }
 
     fn compute_total_upkeep(&self) -> f64 {
@@ -900,33 +972,19 @@ impl Planet {
         Self::free_port_bucket(self.free_port_days)
     }
 
-    /// Get the gross income of this planet (per month)
+    /// Get the gross income of this planet (per month), as if it were the
+    /// only player colony: each commodity's market-share denominator is
+    /// `sector_supply + this planet's weighted supply`. In a multi-planet
+    /// system the authoritative figure is `System::get_gross_income`, which
+    /// pools supply across colonies.
     pub fn get_gross_income(&self) -> f64 {
-        self.income_and_upkeep().0
-    }
-
-    fn compute_gross_income(&self) -> f64 {
-        if !self.has_colony() {
-            return 0.0;
+        let economy = self.economy();
+        let mut gross_income = economy.direct_income;
+        for &(resource, raw, modded) in &economy.exports {
+            gross_income += resource.market_value() as f64 * modded
+                / (resource.sector_supply() as f64 + raw);
         }
-
-        let mut gross_income: f64 = 0.0;
-        let mut highest_income_mult: f64 = 1.0;
-        let accessibility = self.calculate_accessibility();
-        for facility in &self.facilities {
-            let facility_income = facility.calculate_gross_income(self.size, self, accessibility);
-            gross_income += facility_income;
-            let income_mult = facility.calculate_income_multiplier();
-            highest_income_mult = highest_income_mult.max(income_mult);
-        }
-
-        // Subtract <5 stability penalty
-        let stability = self.stability();
-        if stability < 5 {
-            gross_income *= 1.0 - (0.2 * (5 - stability) as f64);
-        }
-
-        gross_income * highest_income_mult
+        gross_income
     }
 
     /// Get the net income of this planet (per month)
@@ -941,7 +999,49 @@ impl Planet {
         net_income
     }
 
-    /// Will progress buildings and growth, and return incomes
+    /// Advance this colony's local time-dependent state by one month
+    /// (free-port maturity, growth, construction). Returns whether anything
+    /// that can affect income or upkeep changed this month (free-port bucket,
+    /// size, or a facility finishing construction), so callers can skip
+    /// income recomputation on quiet months. Invalidates the economy cache.
+    pub(crate) fn advance_month(&mut self) -> bool {
+        if !self.has_colony() {
+            return false;
+        }
+
+        let mut changed = false;
+
+        if self.is_free_port {
+            let last_bucket = self.current_free_port_bucket();
+            self.free_port_days = self.free_port_days.saturating_add(30);
+            changed |= self.current_free_port_bucket() != last_bucket;
+        }
+
+        let last_size = self.size;
+        self.update_growth(30, None);
+        changed |= self.size != last_size;
+
+        for facility in &mut self.facilities {
+            let was_building = facility.remaining_build_days() > 0;
+            facility.progress_build_days(30);
+            changed |= was_building && facility.remaining_build_days() <= 0;
+        }
+
+        // Quiet months mutate only income-neutral state (growth progress,
+        // mid-construction build days, intra-bucket free-port days), so the
+        // economy cache stays valid unless `changed` fired. Keeping it warm is
+        // what lets the system-level Wait accrual recompute only the planets
+        // that actually changed.
+        if changed {
+            self.invalidate_income_cache();
+        }
+        changed
+    }
+
+    /// Will progress buildings and growth, and return incomes. The returned
+    /// incomes use this planet's standalone market share (see
+    /// `get_gross_income`); credit accrual in multi-planet systems is owned by
+    /// `State`, which pools supply across colonies per month.
     pub fn wait(&mut self, months: u32, debug: bool) -> (f64, f64) {
         if !self.has_colony() {
             return (0.0, 0.0);
@@ -949,61 +1049,14 @@ impl Planet {
 
         let mut gross_income: f64 = 0.0;
         let mut net_income: f64 = 0.0;
-
-        if debug {
-            println!(
-                "\nWAIT - Growth: {}, Size: {}",
-                self.growth_progress.round(),
-                self.size
-            );
-            println!(
-                "Accumulated income: Gross: {}, Net: {}",
-                gross_income.round(),
-                net_income.round()
-            );
-        }
-
-        // Iterate through each month
-        let mut last_free_port_days = self.free_port_days;
-        let mut last_fac_build_days = Vec::with_capacity(self.facilities.len());
-        let mut last_size = self.size;
         let mut last_gross = 0.0;
         let mut last_net = 0.0;
-        for facility in &self.facilities {
-            last_fac_build_days.push(facility.remaining_build_days());
-        }
+
         for i in 0..months {
-            // Update free port days if applicable
-            if self.is_free_port {
-                last_free_port_days = self.free_port_days;
-                self.free_port_days = self.free_port_days.saturating_add(30);
-            }
-
-            // Update planet growth
-            last_size = self.size;
-            self.update_growth(30, None);
-
-            // Progress build days for all facilities
-            for (index, facility) in &mut self.facilities.iter_mut().enumerate() {
-                last_fac_build_days[index] = facility.remaining_build_days();
-                facility.progress_build_days(30);
-            }
-
-            // This month's mutations (free-port days, growth, build days) all
-            // potentially change income; drop the cache before reading it.
-            self.invalidate_income_cache();
+            let changed = self.advance_month();
 
             // Calculate monthly income
-            if i == 0
-                || (Self::free_port_bucket(last_free_port_days)
-                    != Self::free_port_bucket(self.free_port_days))
-                || self
-                    .facilities
-                    .iter()
-                    .zip(last_fac_build_days.iter())
-                    .any(|(fac, last)| fac.remaining_build_days() <= 0 && *last > 0)
-                || self.size != last_size
-            {
+            if i == 0 || changed {
                 last_gross = self.get_gross_income();
                 last_net = last_gross - self.total_upkeep();
             }
