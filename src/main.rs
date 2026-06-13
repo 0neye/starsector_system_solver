@@ -11,6 +11,7 @@ mod tui;
 mod utils;
 
 use clap::{Parser, Subcommand};
+use extract::db::Db;
 use planet::Planet;
 use rank::{filter_system_names, peak_income, rank_systems, score_per_planet, RankScorer};
 use solver::{
@@ -134,6 +135,21 @@ enum Command {
     /// Save-game extraction tools (parse saves into the DB, search, export)
     #[command(subcommand)]
     Extract(extract::cli::ExtractCommand),
+    /// Inspect extracted system planet, resource, and infrastructure data.
+    Inspect {
+        /// Extraction DB to inspect.
+        #[arg(long, default_value = "save_data.db")]
+        db: PathBuf,
+        /// Extracted save to inspect. Defaults to the most recently extracted save.
+        #[arg(long)]
+        save: Option<String>,
+        /// Show every system in the save.
+        #[arg(long)]
+        all: bool,
+        /// System name substring(s) to inspect.
+        #[arg(value_name = "SYSTEM")]
+        systems: Vec<String>,
+    },
     /// Open the interactive terminal UI.
     Tui {
         /// Starsector install directory. Overrides workspace/solver_tui.toml for this run.
@@ -832,6 +848,147 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
     eprintln!("========================================================\n");
 }
 
+fn inspect_systems(
+    db_path: &PathBuf,
+    save: Option<&str>,
+    all: bool,
+    filters: &[String],
+) -> Result<(), Box<dyn Error>> {
+    if !all && filters.is_empty() {
+        return Err("inspect needs at least one SYSTEM substring or --all".into());
+    }
+
+    let db = Db::open(db_path)?;
+    let save_filter = save.map(|value| value.to_lowercase());
+    let systems = db.fetch_systems(save_filter.as_deref(), None)?;
+    let needles: Vec<String> = filters.iter().map(|value| value.to_lowercase()).collect();
+    let matched: Vec<_> = systems
+        .into_iter()
+        .filter(|system| {
+            all || needles.iter().any(|needle| {
+                system.name.to_lowercase().contains(needle)
+                    || system.display_name.to_lowercase().contains(needle)
+            })
+        })
+        .collect();
+
+    if matched.is_empty() {
+        return Err("no system matched the inspect filter(s)".into());
+    }
+
+    for (index, system) in matched.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+        println!("System: {}", system.name);
+        if system.display_name != system.name {
+            println!("  display: {}", system.display_name);
+        }
+        println!("  save: {}", system.save_dir_name);
+        println!("  internal id: {}", system.internal_id);
+        println!(
+            "  location: x={}, y={}, distance={}",
+            fmt_optional_f64(system.x_ly, " ly"),
+            fmt_optional_f64(system.y_ly, " ly"),
+            fmt_optional_f64(system.dist_from_com_ly, " ly"),
+        );
+        println!(
+            "  stable points: {} | gate: {} | remnants: {}{}",
+            system.stable_points,
+            yes_no(system.has_gate),
+            yes_no(system.has_remnants),
+            if system.remnant_damaged {
+                " (damaged)"
+            } else {
+                ""
+            }
+        );
+        println!(
+            "  stars: {}",
+            if system.star_types.is_empty() {
+                "-".to_string()
+            } else {
+                system.star_types.join(", ")
+            }
+        );
+
+        let infrastructure = db.fetch_infrastructure(system.id, &system.name)?;
+        if infrastructure.is_empty() {
+            println!("  infrastructure: -");
+        } else {
+            println!("  infrastructure:");
+            for row in infrastructure {
+                println!(
+                    "    - {}{}{}",
+                    row.infrastructure_type,
+                    if row.is_domain { " [domain]" } else { "" },
+                    if row.is_damaged { " [damaged]" } else { "" },
+                );
+            }
+        }
+
+        let planets = db.fetch_planets(system.id, &system.name)?;
+        println!("  planets: {}", planets.len());
+        for planet in planets {
+            let conditions = db.fetch_planet_conditions(planet.id).unwrap_or_default();
+            println!(
+                "    - {}: {}{} | hazard {:.0}% | survey {} | owner {}",
+                planet.name,
+                planet.planet_type,
+                if planet.is_moon { " moon" } else { "" },
+                planet.hazard_percent,
+                planet.survey_level.as_deref().unwrap_or("-"),
+                planet.owner_faction.as_deref().unwrap_or("-"),
+            );
+            println!(
+                "      resources: farmland {}, ores {}, rare ores {}, volatiles {}, organics {}, ruins {}",
+                fmt_optional_f64(planet.farmland, ""),
+                fmt_optional_f64(planet.ores, ""),
+                fmt_optional_f64(planet.rare_ores, ""),
+                fmt_optional_f64(planet.volatiles, ""),
+                fmt_optional_f64(planet.organics, ""),
+                fmt_optional_f64(planet.ruins, ""),
+            );
+            println!(
+                "      flags: accessibility {}, radius {:.0}, no_atmosphere {}, very_hot {}, gas_giant {}, habitable {}, extreme_activity {}, water {}, hazard_incomplete {}",
+                fmt_optional_f64(planet.accessibility_percent, "%"),
+                planet.radius,
+                yes_no(planet.no_atmosphere),
+                yes_no(planet.very_hot),
+                yes_no(planet.gas_giant),
+                yes_no(planet.habitable),
+                yes_no(planet.extreme_activity),
+                yes_no(planet.water),
+                yes_no(planet.hazard_incomplete),
+            );
+            println!(
+                "      conditions: {}",
+                if conditions.is_empty() {
+                    "-".to_string()
+                } else {
+                    conditions.join(", ")
+                }
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn fmt_optional_f64(value: Option<f64>, suffix: &str) -> String {
+    value
+        .map(|value| format!("{value:.1}{suffix}"))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     cpu_affinity::prefer_performance_cores();
 
@@ -1103,6 +1260,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                     std::process::exit(1);
                 }
             }
+            Command::Inspect {
+                db,
+                save,
+                all,
+                systems,
+            } => {
+                inspect_systems(&db, save.as_deref(), all, &systems)?;
+            }
             Command::Tui { starsector_dir } => {
                 if let Err(err) = tui::run(starsector_dir) {
                     eprintln!("{err}");
@@ -1327,6 +1492,33 @@ mod cli_tests {
         }
     }
 
+    #[test]
+    fn inspect_subcommand_accepts_system_filters() {
+        let cli = Cli::parse_from([
+            "system_solver",
+            "inspect",
+            "--db",
+            "save_data.db",
+            "--save",
+            "latest",
+            "Moloch",
+            "Haojing",
+        ]);
+
+        match cli.command {
+            Some(Command::Inspect {
+                db,
+                save: Some(save),
+                all: false,
+                systems,
+            }) => {
+                assert_eq!(db, PathBuf::from("save_data.db"));
+                assert_eq!(save, "latest");
+                assert_eq!(systems, vec!["Moloch", "Haojing"]);
+            }
+            other => panic!("expected inspect command, got {other:?}"),
+        }
+    }
 }
 
 /*
