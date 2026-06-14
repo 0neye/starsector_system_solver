@@ -422,7 +422,7 @@ fn decomp_maximize_mia_bravos_escapes_local_optimum() {
         "src/tests/fixtures/Systems.csv",
         "src/tests/fixtures/Infrastructure.csv",
     )
-        .expect("game data CSVs load from the crate root during tests");
+    .expect("game data CSVs load from the crate root during tests");
     let system = systems
         .get("Mia Bravos")
         .expect("Mia Bravos is present in Planets.csv")
@@ -441,6 +441,7 @@ fn decomp_maximize_mia_bravos_escapes_local_optimum() {
         let result =
             decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 360_000, false)
                 .expect("Mia Bravos can hold stability 6 while earning income");
+        let cutoff = result.cutoff_occurred;
         let log = result
             .solution
             .expect("a successful result carries a solution");
@@ -449,10 +450,11 @@ fn decomp_maximize_mia_bravos_escapes_local_optimum() {
         (
             replay.balance().net_income(),
             replay.system().avg_stability(),
+            cutoff,
         )
     };
 
-    let (income, stability) = run();
+    let (income, stability, cutoff1) = run();
     assert!(
         stability >= 6.0,
         "maximize must hold the stability-6 floor, got {stability}"
@@ -463,12 +465,25 @@ fn decomp_maximize_mia_bravos_escapes_local_optimum() {
          optimum (~271797, seed 268797); see MAXIMIZE_LOCAL_MINIMA.md"
     );
 
-    // The sorted neighbourhood must make repeated identical runs identical.
-    let (income2, _) = run();
-    assert_eq!(
-        income, income2,
-        "maximize result must be deterministic run to run"
-    );
+    // The sorted neighbourhood makes repeated runs identical, but only when both
+    // solves converge inside the budget. A wall-clock cutoff returns a
+    // machine-dependent best-so-far plan (`cutoff_occurred`), so under heavy
+    // `cargo test` contention the strict equality is not a valid invariant —
+    // gate it on both runs having actually converged.
+    let (income2, _, cutoff2) = run();
+    if cutoff1 || cutoff2 {
+        eprintln!(
+            "decomp_maximize_mia_bravos_escapes_local_optimum: budget cutoff \
+             (run1={cutoff1}, run2={cutoff2}); skipping the run-to-run \
+             determinism assertion (incomes {income} vs {income2})"
+        );
+    } else {
+        assert_eq!(
+            income, income2,
+            "maximize result must be deterministic run to run when neither solve \
+             is cut off by the wall-clock budget"
+        );
+    }
 }
 
 /// Regression for the Pareto cliff where the income maximizer selected a
@@ -484,7 +499,7 @@ fn decomp_maximize_mia_bravos_stability_8_keeps_three_planet_basin() {
         "src/tests/fixtures/Systems.csv",
         "src/tests/fixtures/Infrastructure.csv",
     )
-        .expect("game data CSVs load from the crate root during tests");
+    .expect("game data CSVs load from the crate root during tests");
     let system = systems
         .get("Mia Bravos")
         .expect("Mia Bravos is present in Planets.csv")
@@ -543,7 +558,7 @@ fn decomp_factored_lookahead_matches_reference_on_mia_bravos() {
         "src/tests/fixtures/Systems.csv",
         "src/tests/fixtures/Infrastructure.csv",
     )
-        .expect("game data CSVs load from the crate root during tests");
+    .expect("game data CSVs load from the crate root during tests");
     let system = systems
         .get("Mia Bravos")
         .expect("Mia Bravos is present in Planets.csv")
@@ -708,7 +723,7 @@ fn decomp_time_limit_is_a_hard_deadline() {
         "src/tests/fixtures/Systems.csv",
         "src/tests/fixtures/Infrastructure.csv",
     )
-        .expect("game data CSVs load from the crate root during tests");
+    .expect("game data CSVs load from the crate root during tests");
     let system = systems
         .get("Mia Bravos")
         .expect("Mia Bravos is present in Planets.csv")
@@ -751,7 +766,7 @@ fn decomp_cancel_stops_search() {
         "src/tests/fixtures/Systems.csv",
         "src/tests/fixtures/Infrastructure.csv",
     )
-        .expect("game data CSVs load from the crate root during tests");
+    .expect("game data CSVs load from the crate root during tests");
     let system = systems
         .get("Mia Bravos")
         .expect("Mia Bravos is present in Planets.csv")
