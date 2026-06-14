@@ -1,20 +1,20 @@
 """Plot Pareto frontiers from solver CSV output.
 
 Generate the CSV with:
-    SYSTEM_SOLVER_PARETO=1 cargo run > data.csv
+    SYSTEM_SOLVER_PARETO=1 cargo run > workspace/data.csv
 
 Then plot:
-    python plot_pareto_frontiers.py data.csv --output pareto_frontiers.png
+    python plot_pareto_frontiers.py workspace/data.csv --output workspace/pareto_frontiers.png
 
 Or pipe directly (Windows — write to a temp file first, since cargo mixes
 stderr into stdout on a direct pipe):
-    SYSTEM_SOLVER_PARETO=1 cargo run > data.csv && python plot_pareto_frontiers.py data.csv
+    SYSTEM_SOLVER_PARETO=1 cargo run > workspace/data.csv && python plot_pareto_frontiers.py workspace/data.csv
 
 Customise the starting resources:
     SYSTEM_SOLVER_PARETO=1 SYSTEM_SOLVER_PARETO_SP=1000 ^
         SYSTEM_SOLVER_PARETO_ALPHA=100 SYSTEM_SOLVER_PARETO_ALL_ITEMS=5 ^
-        cargo run > maxed.csv
-    python plot_pareto_frontiers.py maxed.csv --output pareto_frontiers_maxed.png ^
+        cargo run > workspace/maxed.csv
+    python plot_pareto_frontiers.py workspace/maxed.csv --output workspace/pareto_frontiers_maxed.png ^
         --title "Pareto frontiers (unlimited resources)"
 
 CSV format produced by the solver:

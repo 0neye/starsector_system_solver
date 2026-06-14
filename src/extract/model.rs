@@ -1,6 +1,6 @@
 //! Shared data structs for the extraction layer. These are the fixed interfaces
 //! between save.rs/scan.rs (producers) and mapping.rs/db.rs (consumers).
-//! See SAVE_EXTRACTION_DESIGN.md.
+//! See workspace/SAVE_EXTRACTION_DESIGN.md.
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -45,7 +45,7 @@ pub struct RawPlanet {
     pub tags: Vec<String>,
     /// Market condition ids in save order.
     pub conditions: Vec<String>,
-    /// `<surveyLevel>` if present (NONE/PRELIMINARY/FULL).
+    /// `<surveyLevel>` if present (NONE/SEEN/PRELIMINARY/FULL).
     pub survey_level: Option<String>,
     /// Owner faction id if the market is colonized (e.g. `hegemony`, `player`).
     pub owner_faction: Option<String>,
@@ -75,10 +75,27 @@ pub struct RawSystem {
     pub entities: Vec<RawEntity>,
 }
 
+/// Player wallet/inventory snapshot for seeding the solver `Balance`
+/// (v1.5 balance-from-save). Items are raw special-item spec ids with
+/// counts, summed over the player fleet's cargo and every `storage`
+/// submarket (storage contents are player property regardless of which
+/// market hosts them). Alpha cores are the `alpha_core` commodity stacks
+/// in those same cargos.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlayerBalance {
+    pub credits: f64,
+    pub story_points: u32,
+    pub alpha_cores: u32,
+    /// special-item spec id (e.g. `corrupted_nanoforge`) -> count.
+    pub items: Vec<(String, u32)>,
+}
+
 /// Everything extracted from one campaign.xml.
 #[derive(Debug, Clone)]
 pub struct RawSave {
     pub systems: Vec<RawSystem>,
+    /// None when the save had no recognizable player fleet/character data.
+    pub player: Option<PlayerBalance>,
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +116,7 @@ pub struct SystemRow {
     pub has_remnants: bool,
     pub remnant_damaged: bool,
     pub star_types: Vec<String>,
+    pub tags: Vec<String>,
 }
 
 /// Mirrors a Planets.csv row plus extras. `None` resource = empty CSV cell.
@@ -107,8 +125,6 @@ pub struct PlanetRow {
     pub name: String,
     pub internal_id: Option<String>,
     pub planet_type: String,
-    /// Equal to planet_type for vanilla types; closest vanilla type for modded ones.
-    pub mapped_vanilla_type: Option<String>,
     pub is_moon: bool,
     pub survey_level: Option<String>,
     pub owner_faction: Option<String>,
@@ -161,18 +177,7 @@ pub struct UnknownCondition {
 #[derive(Debug, Clone)]
 pub struct MappedOutput {
     pub systems: Vec<MappedSystem>,
+    /// Passed through from [`RawSave::player`].
+    pub player: Option<PlayerBalance>,
     pub unknown_conditions: Vec<UnknownCondition>,
-    pub type_mappings: Vec<TypeMapping>,
-    /// Planet type ids found in the save but in no planets.json (vanilla or mod).
-    pub unknown_types: Vec<String>,
-}
-
-/// Similarity of a modded planet type to a vanilla one.
-#[derive(Debug, Clone)]
-pub struct TypeMapping {
-    pub modded_type: String,
-    pub vanilla_type: String,
-    pub similarity: f64,
-    pub modded_samples: u32,
-    pub vanilla_samples: u32,
 }

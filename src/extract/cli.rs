@@ -1,6 +1,5 @@
-//! Save-extraction CLI subcommands, shared by the main binary
-//! (`system_solver extract ...`) and the standalone `extract` binary.
-//! See SAVE_EXTRACTION_DESIGN.md.
+//! Save-extraction CLI subcommands for `system_solver extract ...`.
+//! See workspace/SAVE_EXTRACTION_DESIGN.md.
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -16,7 +15,6 @@ use crate::extract::save::{discover_saves, load_campaign_xml};
 use crate::extract::scan::scan_save;
 use crate::extract::{ExtractError, Result};
 
-pub const DEFAULT_DB_PATH: &str = "save_data.db";
 pub const DEFAULT_EXPORT_DIR: &str = "out";
 
 #[derive(Subcommand, Debug)]
@@ -41,7 +39,8 @@ pub enum ExtractCommand {
         /// STARSECTOR_DIR environment variable or common install locations.
         #[arg(long)]
         starsector_dir: Option<PathBuf>,
-        #[arg(long, default_value = DEFAULT_DB_PATH)]
+        /// Output DB. Defaults to the per-user data dir (so the solver finds it).
+        #[arg(long, default_value_os_t = crate::paths::default_db_path())]
         db: PathBuf,
         #[arg(long)]
         system: Vec<String>,
@@ -49,7 +48,7 @@ pub enum ExtractCommand {
     /// Search extracted systems by name
     Search {
         query: String,
-        #[arg(long, default_value = DEFAULT_DB_PATH)]
+        #[arg(long, default_value_os_t = crate::paths::default_db_path())]
         db: PathBuf,
         #[arg(long)]
         save: Option<String>,
@@ -58,7 +57,7 @@ pub enum ExtractCommand {
     },
     /// Export extracted data as Planets/Systems/Infrastructure CSVs
     Export {
-        #[arg(long, default_value = DEFAULT_DB_PATH)]
+        #[arg(long, default_value_os_t = crate::paths::default_db_path())]
         db: PathBuf,
         #[arg(long)]
         save: Option<String>,
@@ -173,12 +172,8 @@ fn print_run_summary(
 ) {
     println!("save: {} ({})", save.dir_name, save.character_name);
     println!(
-        "systems={} planets={} infrastructure={} unknown_conditions={} type_mappings={}",
-        summary.systems,
-        summary.planets,
-        summary.infrastructure,
-        summary.unknown_conditions,
-        summary.type_mappings
+        "systems={} planets={} infrastructure={} unknown_conditions={}",
+        summary.systems, summary.planets, summary.infrastructure, summary.unknown_conditions
     );
     if !filter_systems.is_empty() {
         println!("system filter: {}", filter_systems.join(", "));
@@ -189,19 +184,6 @@ fn print_run_summary(
             println!(
                 "  {} ({}x, example {})",
                 unknown.condition_id, unknown.occurrences, unknown.example_planet
-            );
-        }
-    }
-    if !mapped.type_mappings.is_empty() {
-        println!("type mappings:");
-        for mapping in &mapped.type_mappings {
-            println!(
-                "  {} -> {} ({:.3}, {}/{})",
-                mapping.modded_type,
-                mapping.vanilla_type,
-                mapping.similarity,
-                mapping.modded_samples,
-                mapping.vanilla_samples
             );
         }
     }

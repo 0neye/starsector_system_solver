@@ -112,6 +112,30 @@ impl FacilityType {
 }
 
 impl Resource {
+    pub const COUNT: usize = 18;
+
+    /// Every variant, in discriminant order, so `Resource::ALL[r as usize] == r`.
+    pub const ALL: [Resource; Resource::COUNT] = [
+        Resource::Supplies,
+        Resource::Fuel,
+        Resource::Food,
+        Resource::Ore,
+        Resource::Metals,
+        Resource::TransplutonicOre,
+        Resource::Transplutonics,
+        Resource::Organics,
+        Resource::Volatiles,
+        Resource::DomesticGoods,
+        Resource::LuxuryGoods,
+        Resource::HeavyMachinery,
+        Resource::HeavyArmaments,
+        Resource::Drugs,
+        Resource::HarvestedOrgans,
+        Resource::ShipHullsAndWeapons,
+        Resource::Crew,
+        Resource::Marines,
+    ];
+
     #[inline(always)]
     pub fn base_price(&self) -> f64 {
         match self {
@@ -306,6 +330,27 @@ impl ColonyItem {
             "fullerene spool" => Some(Self::FullereneSpool),
             "plasma dynamo" => Some(Self::PlasmaDynamo),
             "synchrotron core" => Some(Self::SynchrotronCore),
+            _ => None,
+        }
+    }
+
+    /// Map a save-file special-item spec id (campaign.xml `SpID` `i` attr) to
+    /// the solver's colony item. Vanilla ids; note "synchrotron" (not
+    /// "synchrotron_core") is the in-game id. Modded items return None.
+    pub fn from_save_id(id: &str) -> Option<Self> {
+        match id {
+            "soil_nanites" => Some(Self::SoilNanites),
+            "mantle_bore" => Some(Self::MantleBore),
+            "biofactory_embryo" => Some(Self::BiofactoryEmbryo),
+            "catalytic_core" => Some(Self::CatalyticCore),
+            "drone_replicator" => Some(Self::DroneReplicator),
+            "corrupted_nanoforge" => Some(Self::CorruptedNanoforge),
+            "pristine_nanoforge" => Some(Self::PristineNanoforge),
+            "cryoarithmetic_engine" => Some(Self::CryoarithmeticEngine),
+            "dealmaker_holosuite" => Some(Self::DealmakerHolosuite),
+            "fullerene_spool" => Some(Self::FullereneSpool),
+            "plasma_dynamo" => Some(Self::PlasmaDynamo),
+            "synchrotron" => Some(Self::SynchrotronCore),
             _ => None,
         }
     }

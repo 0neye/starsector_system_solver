@@ -1,5 +1,5 @@
-pub mod archive;
 pub mod bound;
+pub mod cancel;
 pub mod decomp;
 pub mod goal;
 pub mod pareto;
@@ -7,10 +7,55 @@ pub mod state;
 
 pub use bound::{credits_relaxed, BoundRow};
 pub use decomp::stats as decomp_stats;
-pub use decomp::{diagnose_maximize_gap, search_system_decomp, search_system_maximize};
+pub use decomp::{
+    diagnose_maximize_gap, search_system_decomp, search_system_decomp_with_settings,
+    search_system_maximize, search_system_maximize_with_settings,
+};
 pub use goal::{AStarSearchResult, Goal, Metric};
-pub use pareto::{solve_pareto, solve_pareto_bound, solve_pareto_quick, solve_pareto_template};
+pub use pareto::{
+    solve_pareto, solve_pareto_bound, solve_pareto_bound_with_settings, solve_pareto_quick,
+    solve_pareto_quick_with_settings, solve_pareto_template, solve_pareto_template_with_settings,
+    solve_pareto_with_settings,
+};
+pub(crate) use state::improvement_story_point_cost;
 pub use state::{Action, Balance, State};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SolverSettings {
+    /// Include story-point improvements and alpha-core installs on industries
+    /// and structures.
+    pub include_industry_upgrades: bool,
+    /// Modded behavior: allow multiple industries/structures to build on the
+    /// same colony at the same time. Vanilla Starsector queues them one at a
+    /// time per colony.
+    pub allow_parallel_builds: bool,
+}
+
+impl Default for SolverSettings {
+    fn default() -> Self {
+        Self {
+            include_industry_upgrades: true,
+            allow_parallel_builds: false,
+        }
+    }
+}
+
+impl SolverSettings {
+    /// Settings that preserve the pre-`SolverSettings` library behavior:
+    /// builds were never queue-constrained (`allow_parallel_builds: true`).
+    /// Used by the backward-compatible `bool include_industry_upgrades`
+    /// wrappers so each call site doesn't repeat the literal.
+    pub fn legacy(include_industry_upgrades: bool) -> Self {
+        Self {
+            include_industry_upgrades,
+            allow_parallel_builds: true,
+        }
+    }
+
+    pub fn exclude_upgrades(self) -> bool {
+        !self.include_industry_upgrades
+    }
+}
 
 /// Whether two states' planets disagree on which facilities exist. Used by the
 /// apply/undo consistency checker below.

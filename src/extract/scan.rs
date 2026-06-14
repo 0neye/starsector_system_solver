@@ -1,11 +1,11 @@
-//! campaign.xml -> RawSave extraction. See SAVE_EXTRACTION_DESIGN.md.
+//! campaign.xml -> RawSave extraction. See workspace/SAVE_EXTRACTION_DESIGN.md.
 //! PUBLIC SIGNATURE IS PINNED - bin/extract.rs is written against it.
 
 use std::collections::HashMap;
 
 use serde_json::Value;
 
-use crate::extract::model::{RawEntity, RawPlanet, RawSave, RawSystem};
+use crate::extract::model::{PlayerBalance, RawEntity, RawPlanet, RawSave, RawSystem};
 use crate::extract::xml::{self, XmlDoc, XmlNode};
 use crate::extract::Result;
 
@@ -54,7 +54,139 @@ pub fn scan_save(xml_text: &str) -> Result<RawSave> {
             .into_iter()
             .map(|system| system.into_raw())
             .collect(),
+        player: scan_player_balance(&doc),
     })
+}
+
+/// Player credits/story points/colony items for balance-from-save.
+///
+/// * credits: the fleet referenced by `<playerFleet ref>` has one direct(ish)
+///   `<cargo>` descendant; its non-stack `<c><value>` child is the wallet.
+/// * story points: `<characterData>` -> `<person ref>` -> `<stats sp="N">`.
+/// * items/alpha cores: `CIStack`s in the player fleet cargo plus every
+///   `<Submarket s="storage">` cargo — storage contents are player property
+///   regardless of the hosting market. `t="SPECIAL"`/`SpID` stacks carry
+///   special-item ids; `alpha_core` commodity stacks count as alpha cores.
+fn scan_player_balance(doc: &XmlDoc) -> Option<PlayerBalance> {
+    let fleet = doc.nodes.iter().find_map(|node| {
+        if node.tag() == "playerFleet" {
+            node.attr("ref")
+                .and_then(parse_i64)
+                .and_then(|z| doc.node_by_z(z))
+        } else {
+            None
+        }
+    })?;
+
+    let mut balance = PlayerBalance::default();
+    let mut items: HashMap<String, u32> = HashMap::new();
+
+    if let Some(cargo) = find_descendant(doc, fleet, &mut |node| node.tag() == "cargo") {
+        balance.credits = cargo_credits(doc, cargo).unwrap_or(0.0);
+        collect_cargo_items(doc, cargo, &mut balance.alpha_cores, &mut items);
+    }
+
+    // Storage submarkets (skip XStream back-references to already-seen nodes).
+    for node in &doc.nodes {
+        if node.tag() == "Submarket"
+            && node.attr("s") == Some("storage")
+            && node.attr("ref").is_none()
+        {
+            if let Some(cargo) =
+                find_descendant(doc, node, &mut |n| n.attr("cl") == Some("CargoData"))
+            {
+                collect_cargo_items(
+                    doc,
+                    cargo.resolve(doc),
+                    &mut balance.alpha_cores,
+                    &mut items,
+                );
+            }
+        }
+    }
+
+    balance.story_points = doc
+        .nodes
+        .iter()
+        .find(|node| node.tag() == "characterData")
+        .and_then(|cd| cd.child_by_tag(doc, "person"))
+        .map(|person| person.resolve(doc))
+        .and_then(|person| person.child_by_tag(doc, "stats"))
+        .and_then(|stats| stats.attr("sp"))
+        .and_then(|sp| sp.parse::<u32>().ok())
+        .unwrap_or(0);
+
+    let mut item_list: Vec<(String, u32)> = items.into_iter().collect();
+    item_list.sort();
+    balance.items = item_list;
+    Some(balance)
+}
+
+/// Depth-first search of `node`'s subtree (excluding `node` itself) for the
+/// first node matching `pred`, in document child order.
+fn find_descendant<'a>(
+    doc: &'a XmlDoc,
+    node: &'a XmlNode,
+    pred: &mut dyn FnMut(&XmlNode) -> bool,
+) -> Option<&'a XmlNode> {
+    for child in node.children(doc) {
+        if pred(child) {
+            return Some(child);
+        }
+        if let Some(found) = find_descendant(doc, child, pred) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// The cargo's wallet: a direct `<c>` child (not a stack back-reference) with
+/// a `<value>` child.
+fn cargo_credits(doc: &XmlDoc, cargo: &XmlNode) -> Option<f64> {
+    cargo
+        .children(doc)
+        .filter(|child| child.tag() == "c" && child.attr("ref").is_none())
+        .find_map(|child| child.child_by_tag(doc, "value"))
+        .and_then(|value| value.text().trim().parse::<f64>().ok())
+}
+
+/// Accumulate special-item and alpha-core counts from a cargo's `<s>` stacks.
+fn collect_cargo_items(
+    doc: &XmlDoc,
+    cargo: &XmlNode,
+    alpha_cores: &mut u32,
+    items: &mut HashMap<String, u32>,
+) {
+    let Some(stacks) = cargo.child_by_tag(doc, "s") else {
+        return;
+    };
+    for stack in stacks.children(doc) {
+        if stack.tag() != "CIStack" {
+            continue;
+        }
+        let count = stack
+            .attr("s")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0)
+            .round() as u32;
+        if count == 0 {
+            continue;
+        }
+        let Some(data) = stack.child_by_tag(doc, "d") else {
+            continue;
+        };
+        match data.attr("cl") {
+            Some("st") if data.text().trim() == "alpha_core" => *alpha_cores += count,
+            Some("SpID") => {
+                if let Some(id) = data.attr("i") {
+                    if crate::constants::ColonyItem::from_save_id(id).is_some() {
+                        *items.entry(id.to_string()).or_insert(0) += count;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 struct SystemBuilder {
@@ -411,8 +543,72 @@ mod tests {
   <LocationToken z="101">
     <loc>12.5|34.5</loc>
   </LocationToken>
+  <e cl="Flt" z="500" n="Player Fleet">
+    <cargo z="501">
+      <s z="502">
+        <CIStack z="503" s="2.0" t="RESOURCES">
+          <d cl="st">alpha_core</d>
+          <c ref="501"></c>
+        </CIStack>
+        <CIStack z="504" s="1.0" t="SPECIAL">
+          <d cl="SpID" z="505" i="corrupted_nanoforge"></d>
+          <c ref="501"></c>
+        </CIStack>
+        <CIStack z="506" s="1.0" t="SPECIAL">
+          <d cl="SpID" z="507" i="modspec" d="ecm"></d>
+          <c ref="501"></c>
+        </CIStack>
+      </s>
+      <c z="508">
+        <value>123456.0</value>
+      </c>
+    </cargo>
+  </e>
+  <playerFleet ref="500"></playerFleet>
+  <characterData z="510">
+    <person ref="511"></person>
+  </characterData>
+  <commander cl="Person" z="511" fid="player">
+    <stats z="512" sp="7"></stats>
+  </commander>
+  <Submarket z="520" s="storage">
+    <p z="521">
+      <c cl="CargoData" z="522">
+        <s z="523">
+          <CIStack z="524" s="1.0" t="SPECIAL">
+            <d cl="SpID" z="525" i="synchrotron"></d>
+            <c ref="522"></c>
+          </CIStack>
+          <CIStack z="526" s="1.0" t="RESOURCES">
+            <d cl="st">alpha_core</d>
+            <c ref="522"></c>
+          </CIStack>
+        </s>
+      </c>
+    </p>
+  </Submarket>
 </SaveGameData>
 "#;
+
+    /// Player credits come from the player fleet's cargo wallet; story points
+    /// from characterData->person stats; colony items and alpha cores are
+    /// summed over the fleet cargo and storage submarkets, with non-colony
+    /// SPECIAL stacks (modspecs) ignored.
+    #[test]
+    fn extracts_player_balance() {
+        let save = scan_save(MINI_SAVE).unwrap();
+        let player = save.player.expect("player balance extracted");
+        assert_eq!(player.credits, 123456.0);
+        assert_eq!(player.story_points, 7);
+        assert_eq!(player.alpha_cores, 3);
+        assert_eq!(
+            player.items,
+            vec![
+                ("corrupted_nanoforge".to_string(), 1),
+                ("synchrotron".to_string(), 1),
+            ]
+        );
+    }
 
     #[test]
     fn extracts_systems_planets_and_entities() {

@@ -5,10 +5,12 @@ use crate::constants::FacilityType;
 use crate::planet::Planet;
 use crate::solver::decomp::{
     assert_factored_lookahead_matches_reference, decomp_search, decomp_search_maximize,
-    simulate_plan, simulate_plan_maximize, simulate_plan_maximize_with_log, SystemPlan,
+    simulate_plan, simulate_plan_maximize, simulate_plan_maximize_with_log,
+    simulate_plan_with_settings, SystemPlan,
 };
 use crate::solver::goal::{Goal, Metric};
 use crate::solver::state::{get_action_sequence_hash, Action, State};
+use crate::solver::SolverSettings;
 use crate::system::System;
 use crate::tests::support::{
     apply_all, colonized_state, rich_balance, single_planet_system, PlanetBuilder,
@@ -108,10 +110,10 @@ fn replay_satisfies(base: &State, log: &[Action], goal: &Goal) -> bool {
 /// Independent oracle for a *reachable* net income: greedily take any legal
 /// non-wait action, otherwise wait, for a number of steps. Uses only
 /// generator-approved actions so it doesn't assume specific facility gating.
-fn reachable_income(base: &State, steps: u32) -> f64 {
+fn reachable_income(base: &State, steps: u32, exclude_upgrades: bool) -> f64 {
     let mut s = base.clone();
     for _ in 0..steps {
-        let actions = s.get_ordered_possible_actions(true);
+        let actions = s.get_ordered_possible_actions(exclude_upgrades);
         if let Some(a) = actions
             .iter()
             .find(|a| !matches!(a, Action::Wait(_)))
@@ -141,7 +143,7 @@ fn decomp_inner_sim_zero_months_when_already_satisfied() {
 
     let plan = SystemPlan::permit_all(&state);
     let (actions, months) =
-        simulate_plan(&state, &goal, &plan, true).expect("a trivially-satisfied goal is solvable");
+        simulate_plan(&state, &goal, &plan, false).expect("a trivially-satisfied goal is solvable");
 
     assert_eq!(months, 0, "no waiting needed when the goal holds at t=0");
     assert!(
@@ -159,7 +161,7 @@ fn decomp_inner_sim_log_is_consistent_and_correct() {
     let mut colonized = base.clone();
     colonized.apply_action_raw(&Action::Colonize(hash), false);
 
-    let target = reachable_income(&colonized, 60);
+    let target = reachable_income(&colonized, 60, true);
     assert!(
         target > 0.0,
         "test setup expects a built-up Terran colony to reach positive income, got {target}"
@@ -168,7 +170,7 @@ fn decomp_inner_sim_log_is_consistent_and_correct() {
     let goal = Goal::new(target * 0.5, None, None);
 
     let plan = SystemPlan::permit_all(&colonized);
-    let (log, months) = simulate_plan(&colonized, &goal, &plan, true)
+    let (log, months) = simulate_plan(&colonized, &goal, &plan, false)
         .expect("half the reachable income is solvable");
 
     assert_eq!(
@@ -182,6 +184,63 @@ fn decomp_inner_sim_log_is_consistent_and_correct() {
     );
 }
 
+#[test]
+fn decomp_inner_sim_respects_build_queue_setting() {
+    let (base, hash) = terran_base();
+    let mut colonized = base.clone();
+    colonized.apply_action_raw(&Action::Colonize(hash), false);
+
+    let target = reachable_income(&colonized, 80, true);
+    let goal = Goal::new((target * 0.75).max(1.0), None, None);
+    let plan = SystemPlan::permit_all(&colonized);
+
+    let queued = simulate_plan_with_settings(
+        &colonized,
+        &goal,
+        &plan,
+        SolverSettings {
+            include_industry_upgrades: true,
+            allow_parallel_builds: false,
+        },
+    )
+    .expect("queued fixed plan should satisfy the income goal")
+    .0;
+    let parallel = simulate_plan_with_settings(
+        &colonized,
+        &goal,
+        &plan,
+        SolverSettings {
+            include_industry_upgrades: true,
+            allow_parallel_builds: true,
+        },
+    )
+    .expect("parallel fixed plan should satisfy the income goal")
+    .0;
+
+    assert!(
+        queued.windows(2).all(|pair| !matches!(
+            (&pair[0], &pair[1]),
+            (
+                Action::AddFacility(a_hash, _),
+                Action::AddFacility(b_hash, _)
+            ) if a_hash == b_hash
+        )),
+        "queued mode must not start two facilities on the same colony back-to-back: {queued:?}"
+    );
+    assert!(
+        parallel
+            .windows(2)
+            .any(|pair| matches!(
+                (&pair[0], &pair[1]),
+                (
+                    Action::AddFacility(a_hash, _),
+                    Action::AddFacility(b_hash, _)
+                ) if a_hash == b_hash
+            )),
+        "parallel-build mode should preserve the old overlapping construction behavior: {parallel:?}"
+    );
+}
+
 /// The inner simulator is deterministic: identical inputs yield an identical
 /// (log, cost) result.
 #[test]
@@ -190,12 +249,12 @@ fn decomp_inner_sim_is_deterministic() {
     let mut colonized = base.clone();
     colonized.apply_action_raw(&Action::Colonize(hash), false);
 
-    let target = reachable_income(&colonized, 60);
+    let target = reachable_income(&colonized, 60, true);
     let goal = Goal::new((target * 0.5).max(1.0), None, None);
     let plan = SystemPlan::permit_all(&colonized);
 
-    let first = simulate_plan(&colonized, &goal, &plan, true);
-    let second = simulate_plan(&colonized, &goal, &plan, true);
+    let first = simulate_plan(&colonized, &goal, &plan, false);
+    let second = simulate_plan(&colonized, &goal, &plan, false);
     assert_eq!(first, second, "the inner simulator must be deterministic");
 }
 
@@ -207,14 +266,14 @@ fn decomp_search_returns_satisfying_plan() {
     let mut colonized = base.clone();
     colonized.apply_action_raw(&Action::Colonize(hash), false);
 
-    let target = reachable_income(&colonized, 60);
+    let target = reachable_income(&colonized, 60, true);
     assert!(
         target > 0.0,
         "expected a reachable positive income, got {target}"
     );
     let goal = Goal::new(target * 0.5, None, None);
 
-    let result = decomp_search(&mut colonized, &goal, 2_000, true)
+    let result = decomp_search(&mut colonized, &goal, 2_000, false)
         .expect("outer search should find a plan for a reachable goal");
     let log = result
         .solution
@@ -240,7 +299,7 @@ fn decomp_maximize_income_holds_stability_floor() {
     let mut colonized = base.clone();
     colonized.apply_action_raw(&Action::Colonize(hash), false);
 
-    let target = reachable_income(&colonized, 60);
+    let target = reachable_income(&colonized, 60, true);
     assert!(
         target > 0.0,
         "expected a reachable positive income, got {target}"
@@ -248,7 +307,7 @@ fn decomp_maximize_income_holds_stability_floor() {
 
     // Maximize income with no income floor but a stability floor of 5.
     let floors = Goal::new(f64::NEG_INFINITY, None, Some(5));
-    let result = decomp_search_maximize(&mut colonized, Metric::Income, &floors, 120, 3_000, true)
+    let result = decomp_search_maximize(&mut colonized, Metric::Income, &floors, 120, 3_000, false)
         .expect("a single colony can hold stability 5 while earning income");
     let log = result
         .solution
@@ -289,9 +348,9 @@ fn decomp_maximize_longer_horizon_is_no_worse_for_fixed_plan() {
     let plan = SystemPlan::permit_all(&colonized);
     let floors = Goal::new(f64::NEG_INFINITY, None, None);
 
-    let (short, _) = simulate_plan_maximize(&colonized, Metric::Income, &floors, 12, &plan, true)
+    let (short, _) = simulate_plan_maximize(&colonized, Metric::Income, &floors, 12, &plan, false)
         .expect("income is maximizable with no floor");
-    let (long, _) = simulate_plan_maximize(&colonized, Metric::Income, &floors, 120, &plan, true)
+    let (long, _) = simulate_plan_maximize(&colonized, Metric::Income, &floors, 120, &plan, false)
         .expect("income is maximizable with no floor");
 
     assert!(
@@ -315,7 +374,7 @@ fn decomp_maximize_schedules_production_before_commerce_multiplier() {
     let plan = SystemPlan::permit_all(&colonized);
     let floors = Goal::new(f64::NEG_INFINITY, None, None);
     let (_income, _months, log) =
-        simulate_plan_maximize_with_log(&colonized, Metric::Income, &floors, 12, &plan, true)
+        simulate_plan_maximize_with_log(&colonized, Metric::Income, &floors, 12, &plan, false)
             .expect("income is maximizable with no floor");
 
     let first_facility = log
@@ -343,7 +402,14 @@ fn decomp_maximize_schedules_production_before_commerce_multiplier() {
 /// now all land on the same 271797 (no gap). So this test no longer exercises a
 /// trap escape — it pins the deterministic maximize optimum, holds the floor,
 /// and confirms run-to-run determinism. Any regression below the optimum (e.g.
-/// back toward the 268797 seed) fails.
+/// back toward the 268797 seed) fails. The 271797/268797 figures were measured
+/// with upgrades excluded; the search now runs with improvements/alpha cores
+/// included (the default), which can only raise the optimum, so the >270k
+/// threshold still holds.
+///
+/// Under the market-share economy (2026-06) the climb with upgrades lands
+/// well above 270k on this system (~380k+ observed), so the threshold is
+/// unchanged; the test's main teeth are the floor and the determinism check.
 ///
 /// Uses the real game data (loaded from the crate-root CSVs during tests).
 #[test]
@@ -362,8 +428,15 @@ fn decomp_maximize_mia_bravos_escapes_local_optimum() {
     let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(6));
     let run = || {
         let mut state = State::new(Balance::new(5_000_000.0, 5, 1), system.clone());
-        let result = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 5_000, true)
-            .expect("Mia Bravos can hold stability 6 while earning income");
+        // Generous budget: the time limit is now a hard deadline, and a debug
+        // build that hits it returns a machine-dependent best-effort plan,
+        // which would break the determinism assertion below. Under the
+        // market-share economy the climb converges in ~60s alone in debug,
+        // but a fully parallel `cargo test` starves it past 120s, so the cap
+        // is sized for contention (it is a cap, not a sleep).
+        let result =
+            decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 360_000, false)
+                .expect("Mia Bravos can hold stability 6 while earning income");
         let log = result
             .solution
             .expect("a successful result carries a solution");
@@ -411,7 +484,10 @@ fn decomp_maximize_mia_bravos_stability_8_keeps_three_planet_basin() {
 
     let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(8));
     let mut state = State::new(Balance::new(5_000_000.0, 5, 1), system.clone());
-    let result = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 15_000, true)
+    // Generous budget: the time limit is now a hard deadline — a cutoff under
+    // `cargo test` rayon-pool contention would return a weaker basin and fail
+    // the assertion below. Sized for contention (it is a cap, not a sleep).
+    let result = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 360_000, false)
         .expect("Mia Bravos can hold stability 8 while earning income");
     let log = result
         .solution
@@ -422,13 +498,30 @@ fn decomp_maximize_mia_bravos_stability_8_keeps_three_planet_basin() {
 
     let income = replay.balance().net_income();
     let stability = replay.system().avg_stability();
+    let colonized = replay
+        .system()
+        .planets()
+        .values()
+        .filter(|p| p.has_colony())
+        .count();
     assert!(
         stability >= 8.0,
         "maximize must hold the stability-8 floor, got {stability}"
     );
+    // The cliff this test guards against is the climb settling on a two-planet
+    // seed and never revisiting colonization; assert the basin directly.
+    assert_eq!(
+        colonized, 3,
+        "maximize must keep the three-planet basin alive, got {colonized} colonies \
+         (income {income})"
+    );
+    // Income floor re-derived under the market-share economy (2026-06): the
+    // pooled `value*P/(S+P)` model pays duplicate industries much less than
+    // the old independent slices, so the pre-market-share figures (~500k
+    // basin, ~401849 cliff) no longer apply.
     assert!(
-        income > 500_000.0,
-        "income {income} regressed toward the old two-planet Pareto cliff (~401849)"
+        income > 299_000.0,
+        "income {income} regressed below the market-share three-planet basin"
     );
 }
 
@@ -453,7 +546,7 @@ fn decomp_factored_lookahead_matches_reference_on_mia_bravos() {
         &floors,
         120,
         &plan,
-        true,
+        false,
         250,
     );
 
@@ -483,16 +576,21 @@ fn distinct_colonized(log: &[Action]) -> usize {
 }
 
 /// The joint solver must satisfy a *system-wide* goal that no single planet can
-/// reach alone by developing several planets on one shared timeline — and the
-/// legacy per-planet split must fail at the same goal. This is the core proof of
-/// multi-planet interleaving.
+/// reach alone by developing several planets on one shared timeline. This is the
+/// core proof of multi-planet interleaving.
+///
+/// Runs upgrade-free (`exclude_upgrades = true`) on purpose: the test needs a
+/// goal sandwiched strictly between one planet's ceiling and two planets'
+/// combined ceiling, and the upgrade-free oracle gives a tight solo bound.
+/// With improvements/alpha cores enabled, a single planet overshoots 1.5x that
+/// bound, collapsing the contrast the test depends on.
 #[test]
 fn decomp_joint_interleaves_planets_for_system_goal() {
     // Solo income one Terran colony can reach on its own.
     let (solo_base, hash) = terran_base();
     let mut solo = solo_base.clone();
     solo.apply_action_raw(&Action::Colonize(hash), false);
-    let solo_income = reachable_income(&solo, 80);
+    let solo_income = reachable_income(&solo, 80, true);
     assert!(
         solo_income > 0.0,
         "expected positive solo income, got {solo_income}"
@@ -522,16 +620,6 @@ fn decomp_joint_interleaves_planets_for_system_goal() {
         distinct_colonized(&log),
         2,
         "a goal beyond solo capacity should force developing both planets"
-    );
-
-    // The legacy per-planet split solves each planet in isolation, so it cannot
-    // reach a goal that only the planets *combined* can meet.
-    let mut split = base.clone();
-    let split_results =
-        crate::solver::archive::split::search_all_planets_decomp(&mut split, &goal, 4_000, true);
-    assert!(
-        split_results.len() < 2,
-        "per-planet decomposition should not solve a goal that needs planets combined"
     );
 }
 
@@ -576,7 +664,7 @@ fn generator_does_not_reoffer_lower_tiers_of_a_completed_chain() {
     );
 
     let reoffered: Vec<_> = state
-        .get_ordered_possible_actions(true)
+        .get_ordered_possible_actions(false)
         .into_iter()
         .filter(|a| {
             matches!(
@@ -589,5 +677,75 @@ fn generator_does_not_reoffer_lower_tiers_of_a_completed_chain() {
     assert!(
         reoffered.is_empty(),
         "lower station tiers must not be re-offered once a star fortress exists, got {reoffered:?}"
+    );
+}
+
+/// The `time_limit` argument is a hard wall-clock deadline: a maximize solve
+/// on a real multi-planet system given a tiny budget must return within
+/// seconds (seed generation/scoring plus one poll interval), not run minutes
+/// to climb convergence. Regression for the "--time-limit not enforced on
+/// large systems" bug.
+#[test]
+fn decomp_time_limit_is_a_hard_deadline() {
+    use crate::parser::load_game_data;
+    use crate::solver::state::Balance;
+    use std::time::{Duration, Instant};
+
+    let systems = load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")
+        .expect("game data CSVs load from the crate root during tests");
+    let system = systems
+        .get("Mia Bravos")
+        .expect("Mia Bravos is present in Planets.csv")
+        .clone();
+
+    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(6));
+    let mut state = State::new(Balance::new(5_000_000.0, 5, 1), system);
+    // Dedicated rayon pool: under `cargo test` the global pool is saturated
+    // by the heavy solver tests, which can queue this test's parallel work
+    // for minutes and make a wall-clock assertion flaky.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .build()
+        .unwrap();
+    let t0 = Instant::now();
+    let _ = pool
+        .install(|| decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 200, false));
+    // Alone this finishes in <1s even in debug; the original bug ran minutes.
+    assert!(
+        t0.elapsed() < Duration::from_secs(30),
+        "200ms-budget solve ran {:?}; the wall-clock deadline is not being enforced",
+        t0.elapsed()
+    );
+}
+
+/// Cooperative cancel must stop an in-flight search almost immediately.
+///
+/// Ignored by default: `solver::cancel` is a process-wide flag, so this test
+/// would cut off unrelated solver tests running in parallel. Run it with
+/// `cargo test decomp_cancel -- --ignored --test-threads=1`.
+#[test]
+#[ignore = "uses the process-global cancel flag; run with --ignored --test-threads=1"]
+fn decomp_cancel_stops_search() {
+    use crate::parser::load_game_data;
+    use crate::solver::state::Balance;
+    use std::time::{Duration, Instant};
+
+    let systems = load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")
+        .expect("game data CSVs load from the crate root during tests");
+    let system = systems
+        .get("Mia Bravos")
+        .expect("Mia Bravos is present in Planets.csv")
+        .clone();
+
+    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(6));
+    let mut state = State::new(Balance::new(5_000_000.0, 5, 1), system);
+    crate::solver::cancel::request();
+    let t0 = Instant::now();
+    let _ = decomp_search_maximize(&mut state, Metric::Income, &floors, 120, 600_000, false);
+    let elapsed = t0.elapsed();
+    crate::solver::cancel::clear();
+    assert!(
+        elapsed < Duration::from_secs(30),
+        "cancelled solve with a 600s budget ran {elapsed:?}; cancel is not being honored"
     );
 }

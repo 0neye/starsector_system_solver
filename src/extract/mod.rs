@@ -1,4 +1,4 @@
-//! Save-game extraction layer. See SAVE_EXTRACTION_DESIGN.md for the full spec.
+//! Save-game extraction layer. See workspace/SAVE_EXTRACTION_DESIGN.md for the full spec.
 
 pub mod cli;
 pub mod db;

@@ -1,4 +1,4 @@
-//! Save discovery + descriptor.xml parsing. See SAVE_EXTRACTION_DESIGN.md.
+//! Save discovery + descriptor.xml parsing. See workspace/SAVE_EXTRACTION_DESIGN.md.
 //! PUBLIC SIGNATURES ARE PINNED - bin/extract.rs is written against them.
 
 use std::fs;

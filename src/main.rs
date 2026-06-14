@@ -2,25 +2,35 @@ mod constants;
 mod cpu_affinity;
 mod extract;
 mod parser;
+mod paths;
 mod planet;
+mod rank;
+mod solve;
 mod solver;
 mod system;
+mod tui;
 mod utils;
 
 use clap::{Parser, Subcommand, ValueEnum};
+use constants::ColonyItem;
+use extract::db::Db;
+use extract::locate;
 use planet::Planet;
+use rank::{
+    filter_system_names, peak_income, rank_systems, score_per_planet, sort_rows_best_first,
+    RankScorer, RankSortMode,
+};
+use solver::Action;
 use solver::{
-    diagnose_maximize_gap, search_system_decomp, search_system_maximize, solve_pareto,
-    solve_pareto_bound, solve_pareto_quick, solve_pareto_template, Balance, Goal, Metric, State,
+    diagnose_maximize_gap, search_system_decomp, search_system_maximize,
+    solve_pareto_with_settings, Balance, Goal, Metric, SolverSettings, State,
 };
 use std::collections::HashMap;
 use std::error::Error;
+use std::io;
 use std::path::PathBuf;
-// Archived solvers, kept reachable for benchmarking/comparison:
-use constants::{ColonyItem, FacilityType};
-use solver::archive::{astar::search_all_planets, split::search_all_planets_decomp};
-use solver::Action;
 use system::System;
+use tui::config::{DiscoveryDefinition, TuiConfig};
 
 #[derive(Parser)]
 #[command(about = "Starsector colony system solver")]
@@ -32,8 +42,9 @@ struct Cli {
     #[arg(long, default_value = "Mia's Star")]
     system: String,
 
-    /// Extraction DB to load game data from (produced by `extract run`)
-    #[arg(long, default_value = "save_data.db")]
+    /// Extraction DB to load game data from (produced by `extract run`).
+    /// Defaults to the per-user data dir, falling back to `./save_data.db`.
+    #[arg(long, default_value_os_t = paths::default_db_path())]
     db: PathBuf,
 
     /// Extracted save to load (substring of save dir or character name).
@@ -70,6 +81,17 @@ struct Cli {
     #[arg(long, default_value_t = 1)]
     alpha_cores: u32,
 
+    /// Disable story-point improvements and industry/structure alpha-core installs.
+    /// They are included by default.
+    #[arg(long = "no-industry-upgrades", action = clap::ArgAction::SetFalse, default_value_t = true)]
+    include_industry_upgrades: bool,
+
+    /// Modded behavior: allow multiple industries/structures to build at once
+    /// on the same colony. By default, vanilla one-at-a-time colony build
+    /// queueing is enforced.
+    #[arg(long)]
+    parallel_builds: bool,
+
     /// Colony item to start with (repeatable, e.g. --item "corrupted nanoforge")
     #[arg(long = "item")]
     items: Vec<ColonyItem>,
@@ -79,7 +101,7 @@ struct Cli {
     time_limit: u32,
 
     /// Rank systems by quick Pareto score (sparse floors, reduced search; see
-    /// QUICK_RANKING_DESIGN.md). Ranks every system in the DB unless
+    /// workspace/QUICK_RANKING_DESIGN.md). Ranks every system in the DB unless
     /// `--rank-system` filters are given. Ignores `--system`.
     #[arg(long)]
     rank: bool,
@@ -93,9 +115,29 @@ struct Cli {
     /// in practice a Tier-0 lower bound (`solve_pareto_template`); `bound` =
     /// per-planet decomposed credit-relaxed near-certain upper bound, the
     /// Tier-0 "potential" ceiling (`solve_pareto_bound`). See
-    /// QUICK_RANKING_DESIGN.md.
+    /// workspace/QUICK_RANKING_DESIGN.md.
     #[arg(long = "rank-scorer", value_enum, default_value_t = RankScorer::Quick)]
     rank_scorer: RankScorer,
+
+    /// Which systems `--rank` considers before name filters are applied.
+    #[arg(long = "rank-scope", value_enum, default_value_t = RankScope::All)]
+    rank_scope: RankScope,
+
+    /// Discovery rule used by `--rank-scope discovered`.
+    #[arg(
+        long = "discovery-definition",
+        value_enum,
+        default_value_t = DiscoveryDefinition::AtLeastOneSurveyed
+    )]
+    discovery_definition: DiscoveryDefinition,
+
+    /// Include core-world systems when using `--rank-scope discovered`.
+    #[arg(long)]
+    include_core_worlds: bool,
+
+    /// Sort `--rank` output by score per planet or total score.
+    #[arg(long = "rank-sort", value_enum, default_value_t = RankSortMode::ScorePerPlanet)]
+    rank_sort: RankSortMode,
 
     /// Emit `--rank` results as CSV (system,score,peak_income,seconds) instead
     /// of the human-readable table — used by the rank-validation harness.
@@ -114,35 +156,92 @@ struct Cli {
     horizon: i32,
 }
 
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum Command {
     /// Save-game extraction tools (parse saves into the DB, search, export)
     #[command(subcommand)]
     Extract(extract::cli::ExtractCommand),
+    /// Locate the Starsector install and its saves directory.
+    Locate {
+        /// Starsector install directory. When omitted, auto-detected from the
+        /// STARSECTOR_DIR environment variable or common install locations.
+        #[arg(long)]
+        starsector_dir: Option<PathBuf>,
+    },
+    /// Save the Starsector install path and build the first extraction DB.
+    Init {
+        /// Starsector install directory. When omitted, auto-detected from the
+        /// STARSECTOR_DIR environment variable or common install locations.
+        #[arg(long)]
+        starsector_dir: Option<PathBuf>,
+        /// Save substring to extract. When omitted, `--latest` is used by
+        /// default so a no-argument installer run can initialize the DB.
+        #[arg(long)]
+        save: Option<String>,
+        /// Extract the newest save.
+        #[arg(long)]
+        latest: bool,
+        /// Output DB. Defaults to the per-user data dir.
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    /// Inspect extracted system planet, resource, and infrastructure data.
+    Inspect {
+        /// Extraction DB to inspect. Defaults to the per-user data dir.
+        #[arg(long, default_value_os_t = paths::default_db_path())]
+        db: PathBuf,
+        /// Extracted save to inspect. Defaults to the most recently extracted save.
+        #[arg(long)]
+        save: Option<String>,
+        /// Show every system in the save.
+        #[arg(long)]
+        all: bool,
+        /// System name substring(s) to inspect.
+        #[arg(value_name = "SYSTEM")]
+        systems: Vec<String>,
+    },
+    /// Open the interactive terminal UI.
+    Tui {
+        /// Starsector install directory. Overrides workspace/solver_tui.toml for this run.
+        #[arg(long)]
+        starsector_dir: Option<PathBuf>,
+    },
 }
 
-/// `--rank` scoring strategy. `Quick` is the Tier-1 budgeted search; `Template`
-/// and `Bound` are the two Tier-0 instant scorers (in practice a lower and an
-/// upper bound on the score, respectively — see the soundness caveats on
-/// `solve_pareto_template` / `solve_pareto_bound`). See QUICK_RANKING_DESIGN.md.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-enum RankScorer {
-    Quick,
-    Template,
-    Bound,
+enum RankScope {
+    All,
+    Discovered,
 }
 
 /// Load solver game data from the extraction DB. Env-var modes use
 /// `SYSTEM_SOLVER_DB` / `SYSTEM_SOLVER_SAVE` since they bypass CLI parsing.
 fn load_systems_from_env() -> Result<HashMap<String, System>, Box<dyn Error>> {
-    let db = std::env::var("SYSTEM_SOLVER_DB").unwrap_or_else(|_| "save_data.db".to_string());
+    // `paths::default_db_path` already honors `SYSTEM_SOLVER_DB`, then the
+    // per-user data dir, then `./save_data.db`.
+    let db = paths::default_db_path();
     let save = std::env::var("SYSTEM_SOLVER_SAVE").ok();
     Ok(parser::load_game_data_from_db(&db, save.as_deref())?)
 }
 
+fn env_solver_settings(include_industry_upgrades: bool) -> SolverSettings {
+    SolverSettings {
+        include_industry_upgrades,
+        allow_parallel_builds: std::env::var_os("SYSTEM_SOLVER_PARALLEL_BUILDS")
+            .is_some_and(|value| !value.is_empty() && value != "0"),
+    }
+}
+
 /// Run the maximize-mode solver and report the best plan plus the metric values
 /// it actually achieves (by replaying the solution onto a fresh copy of `state`).
-fn test_maximize(mut state: State, metric: Metric, floors: &Goal, horizon: i32, time_limit: u32) {
+fn test_maximize(
+    mut state: State,
+    metric: Metric,
+    floors: &Goal,
+    horizon: i32,
+    time_limit: u32,
+    settings: SolverSettings,
+) {
     println!(
         "\nStarting maximize solver ({}, horizon {} months)...",
         metric.as_str(),
@@ -150,7 +249,9 @@ fn test_maximize(mut state: State, metric: Metric, floors: &Goal, horizon: i32, 
     );
 
     let replay_base = state.clone();
-    let results = search_system_maximize(&mut state, metric, floors, horizon, time_limit, true);
+    let results = solver::search_system_maximize_with_settings(
+        &mut state, metric, floors, horizon, time_limit, settings,
+    );
 
     if results.is_empty() {
         println!("No plan satisfies the floors within the horizon.");
@@ -178,12 +279,13 @@ fn test_maximize(mut state: State, metric: Metric, floors: &Goal, horizon: i32, 
     }
 }
 
-fn test_solver(mut state: State, goal: &Goal, time_limit: u32) {
+fn test_solver(mut state: State, goal: &Goal, time_limit: u32, settings: SolverSettings) {
     println!("\nStarting solver test...");
     println!("Initial state score: {}", state.score() as i32);
 
     // Default solver: the joint two-level decomposition (shared timeline).
-    let results = search_system_decomp(&mut state, goal, time_limit, true);
+    let results =
+        solver::search_system_decomp_with_settings(&mut state, goal, time_limit, settings);
 
     if results.is_empty() {
         println!("No solution found within time limit.");
@@ -195,13 +297,32 @@ fn test_solver(mut state: State, goal: &Goal, time_limit: u32) {
     }
 }
 
-fn print_action_log(actions: &[Action]) {
+fn planet_name_map(system: &System) -> HashMap<u64, String> {
+    system
+        .planets()
+        .iter()
+        .map(|(hash, planet)| (*hash, planet.name().to_string()))
+        .collect()
+}
+
+fn print_action_log(actions: &[Action], planet_names: &HashMap<u64, String>) {
     for (i, action) in actions.iter().enumerate() {
-        println!("    {:>2}. {:?}", i + 1, action);
+        println!(
+            "    {:>2}. {}",
+            i + 1,
+            solver::state::format_action(action, planet_names)
+        );
     }
 }
 
-fn run_solve(system_name: &str, system: &System, balance: &Balance, horizon: i32, time_limit: u32) {
+fn run_solve(
+    system_name: &str,
+    system: &System,
+    balance: &Balance,
+    horizon: i32,
+    time_limit: u32,
+    settings: SolverSettings,
+) {
     println!("Pareto solve for {system_name} (horizon {horizon} months)");
     println!(
         "Starting balance: credits={:.0}, story_points={}, alpha_cores={}",
@@ -210,7 +331,7 @@ fn run_solve(system_name: &str, system: &System, balance: &Balance, horizon: i32
         balance.alpha_cores(),
     );
 
-    let solution = solve_pareto(system, balance, horizon, time_limit);
+    let solution = solve_pareto_with_settings(system, balance, horizon, time_limit, settings);
 
     println!("\nSystem score: {:.1}", solution.score);
     println!(
@@ -249,7 +370,7 @@ fn run_solve(system_name: &str, system: &System, balance: &Balance, horizon: i32
             point.months,
         );
         println!("Action sequence:");
-        print_action_log(&point.actions);
+        print_action_log(&point.actions, &planet_name_map(system));
     } else {
         println!("\nNo feasible Pareto point found within the time budget.");
     }
@@ -261,85 +382,96 @@ fn run_solve(system_name: &str, system: &System, balance: &Balance, horizon: i32
 /// scorers (in practice a lower and an upper bound on the score). All are
 /// deterministic and meant for *ordering* systems, not as final numbers —
 /// `--solve` on the chosen system gives the real frontier. See
-/// QUICK_RANKING_DESIGN.md.
+/// workspace/QUICK_RANKING_DESIGN.md.
+#[allow(clippy::too_many_arguments)]
 fn run_rank(
     systems: &HashMap<String, System>,
     balance: &Balance,
+    db_path: &PathBuf,
+    save: Option<&str>,
     filters: &[String],
+    scope: RankScope,
+    discovery_definition: DiscoveryDefinition,
+    include_core_worlds: bool,
     horizon: i32,
     time_limit: u32,
     csv: bool,
     scorer: RankScorer,
+    sort_mode: RankSortMode,
+    settings: SolverSettings,
 ) {
-    let mut names: Vec<&String> = systems.keys().collect();
-    names.sort();
-    if !filters.is_empty() {
-        let needles: Vec<String> = filters.iter().map(|f| f.to_lowercase()).collect();
-        names.retain(|n| {
-            let lower = n.to_lowercase();
-            needles.iter().any(|needle| lower.contains(needle))
-        });
-        if names.is_empty() {
-            eprintln!("error: no system matches the --rank-system filter(s)");
-            std::process::exit(1);
-        }
+    let names = rank_names(
+        systems,
+        db_path,
+        save,
+        filters,
+        scope,
+        discovery_definition,
+        include_core_worlds,
+    )
+    .unwrap_or_else(|err| {
+        eprintln!("{err}");
+        std::process::exit(1);
+    });
+
+    if names.is_empty() {
+        eprintln!("error: no system matches the selected rank scope/filter(s)");
+        std::process::exit(1);
     }
 
-    let scorer_fn: fn(&System, &Balance, i32, u32) -> solver::pareto::ParetoSolve = match scorer {
-        RankScorer::Quick => solve_pareto_quick,
-        RankScorer::Template => solve_pareto_template,
-        RankScorer::Bound => solve_pareto_bound,
-    };
-
     eprintln!(
-        "Ranking {} systems ({scorer:?} scorer, horizon {horizon} months)...",
+        "Ranking {} systems ({scorer:?} scorer, {sort_mode:?} sort, horizon {horizon} months)...",
         names.len()
     );
 
-    let mut ranked: Vec<(&String, solver::pareto::ParetoSolve, f64)> = Vec::new();
-    for name in names {
-        let t0 = std::time::Instant::now();
-        let solve = scorer_fn(&systems[name], balance, horizon, time_limit);
-        let secs = t0.elapsed().as_secs_f64();
-        eprintln!("  [{name}] score {:.1} in {secs:.1}s", solve.score);
-        ranked.push((name, solve, secs));
-    }
-    // Best first; name breaks exact ties so the order is total and reproducible.
-    ranked.sort_by(|a, b| b.1.score.total_cmp(&a.1.score).then_with(|| a.0.cmp(b.0)));
-
-    let peak_income = |solve: &solver::pareto::ParetoSolve| {
-        solve
-            .stability_frontier
-            .iter()
-            .chain(solve.defense_frontier.iter())
-            .map(|p| p.income)
-            .fold(0.0_f64, f64::max)
-    };
+    let mut ranked = rank_systems(
+        systems,
+        balance,
+        &names,
+        horizon,
+        time_limit,
+        scorer,
+        settings,
+        &mut |row| {
+            eprintln!(
+                "  [{}] score {:.1} ({:.1}/planet) in {:.1}s",
+                row.system,
+                row.solve.score,
+                score_per_planet(row),
+                row.seconds
+            );
+        },
+    );
+    sort_rows_best_first(&mut ranked, sort_mode);
 
     if csv {
         println!("system,score,peak_income,seconds");
-        for (name, solve, secs) in &ranked {
+        for row in &ranked {
             println!(
-                "{name},{:.3},{:.0},{secs:.2}",
-                solve.score,
-                peak_income(solve)
+                "{},{:.3},{:.0},{:.2}",
+                row.system,
+                row.solve.score,
+                peak_income(&row.solve),
+                row.seconds
             );
         }
         return;
     }
 
     println!(
-        "\n#   {:<24} {:>8}  {:>12}  {:>7}",
-        "system", "score", "peak income", "time"
+        "\n#   {:<24} {:>7}  {:>8}  {:>10}  {:>12}  {:>7}",
+        "system", "planets", "score", "score/pl", "peak income", "time"
     );
-    for (i, (name, solve, secs)) in ranked.iter().enumerate() {
+    for (i, row) in ranked.iter().enumerate() {
         println!(
-            "{:<3} {:<24} {:>8.1}  {:>12.0}  {:>6.1}s",
+            "{:<3} {:<24} {:>7}  {:>8.1}  {:>10.1}  {:>12.0}  {:>6.1}s",
             i + 1,
-            name,
-            solve.score,
-            peak_income(solve),
-            secs,
+            row.system,
+            row.planet_count,
+            row.solve.score,
+            score_per_planet(row),
+            peak_income(&row.solve),
+            row.seconds,
         );
     }
     println!(
@@ -348,95 +480,13 @@ fn run_rank(
     );
 }
 
-/// Build the standard A/B starting balance: generous credits plus a couple of
-/// colony items, matching the default `main` setup so the comparison is
-/// representative.
+/// Build a representative starting balance (generous credits plus a couple of
+/// colony items) matching the default `main` setup. Used by the verify harness.
 fn ab_balance() -> Balance {
     let mut balance = Balance::new(5_000_000.0, 5, 1);
     balance.add_colony_item(ColonyItem::CorruptedNanoforge);
     balance.add_colony_item(ColonyItem::SoilNanites);
     balance
-}
-
-/// Summarize a solver's per-planet results into (solved, best_months, all_costs).
-fn summarize(results: &[solver::AStarSearchResult]) -> (usize, Option<i32>, Vec<i32>) {
-    let costs: Vec<i32> = results.iter().map(|r| r.cost).collect();
-    let best = costs.iter().copied().min();
-    (results.len(), best, costs)
-}
-
-/// Run both solvers over every loaded system at an equal per-planet time budget
-/// and print a side-by-side comparison. Triggered by `SYSTEM_SOLVER_AB=1`.
-fn run_ab(systems: &HashMap<String, System>, budget_ms: u32) {
-    use std::time::Instant;
-
-    // A few goals spanning easy -> hard so we can see where each solver wins.
-    let goals = [
-        ("income>=10k, stab>=6", Goal::new(10_000.0, None, Some(6))),
-        ("income>=40k, stab>=8", Goal::new(40_000.0, None, Some(8))),
-        ("income>=80k, stab>=8", Goal::new(80_000.0, None, Some(8))),
-    ];
-
-    let mut names: Vec<&String> = systems.keys().collect();
-    names.sort();
-
-    println!("\n================ A/B: IDA* vs two-level decomposition ================");
-    println!("per-planet budget: {} ms\n", budget_ms);
-
-    for name in names {
-        let system = &systems[name];
-        let planet_count = system.planets().len();
-        println!("### {name} ({planet_count} planets)");
-
-        for (label, goal) in &goals {
-            // Fresh state per solver so neither sees the other's mutations.
-            let mut ida_state = State::new(ab_balance(), system.clone());
-            let mut dec_state = State::new(ab_balance(), system.clone());
-
-            let t0 = Instant::now();
-            let ida = search_all_planets(&mut ida_state, goal, budget_ms, true);
-            let ida_ms = t0.elapsed().as_millis();
-
-            let t1 = Instant::now();
-            let dec = search_all_planets_decomp(&mut dec_state, goal, budget_ms, true);
-            let dec_ms = t1.elapsed().as_millis();
-
-            let mut joint_state = State::new(ab_balance(), system.clone());
-            let t2 = Instant::now();
-            let joint = search_system_decomp(&mut joint_state, goal, budget_ms, true);
-            let joint_ms = t2.elapsed().as_millis();
-
-            let (ida_solved, ida_best, ida_costs) = summarize(&ida);
-            let (dec_solved, dec_best, dec_costs) = summarize(&dec);
-            let joint_cost = joint.first().map(|r| r.cost);
-
-            let fmt_best = |b: Option<i32>| b.map_or("--".to_string(), |m| format!("{m}mo"));
-
-            // NOTE: IDA* and per-planet decomp force *each* planet to meet the
-            // threshold alone; joint solves the true system-wide goal (totals
-            // across planets), so its cost is not directly comparable.
-            println!("  goal: {label}");
-            println!(
-                "    IDA*         : solved {ida_solved}/{planet_count}  best {:>5}  {:>7}ms  costs {:?}",
-                fmt_best(ida_best),
-                ida_ms,
-                ida_costs
-            );
-            println!(
-                "    decomp/split : solved {dec_solved}/{planet_count}  best {:>5}  {:>7}ms  costs {:?}",
-                fmt_best(dec_best),
-                dec_ms,
-                dec_costs
-            );
-            println!(
-                "    decomp/joint : {}  {:>7}ms  (system-wide goal)",
-                joint_cost.map_or("unsolved".to_string(), |c| format!("solved cost {c}mo")),
-                joint_ms,
-            );
-        }
-        println!();
-    }
-    println!("=====================================================================\n");
 }
 
 /// Independently verify the joint decomp solver: solve the whole system, then
@@ -445,7 +495,7 @@ fn run_ab(systems: &HashMap<String, System>, budget_ms: u32) {
 /// whether any one-off resource (alpha cores / story points) went negative,
 /// which would mean a shared resource was double-spent. Trusts nothing about the
 /// simulator's incremental bookkeeping.
-fn verify_decomp(systems: &HashMap<String, System>) {
+fn verify_decomp(systems: &HashMap<String, System>, settings: SolverSettings) {
     let goal = Goal::new(40_000.0, None, Some(6));
     let mut names: Vec<&String> = systems.keys().collect();
     names.sort();
@@ -455,7 +505,9 @@ fn verify_decomp(systems: &HashMap<String, System>) {
         let mut state = State::new(ab_balance(), systems[name].clone());
         let planet_count = state.system().planets().len();
 
-        let Some(result) = solver::decomp::decomp_search(&mut state, &goal, 50000, true) else {
+        let Some(result) =
+            solver::decomp::decomp_search_with_settings(&mut state, &goal, 50000, settings)
+        else {
             println!("### {name}: no solution");
             continue;
         };
@@ -517,7 +569,9 @@ fn verify_decomp(systems: &HashMap<String, System>) {
 /// longer reflects bound-search suboptimality.
 /// Triggered by `SYSTEM_SOLVER_BOUND=1`; horizon/budget via
 /// `SYSTEM_SOLVER_BOUND_HORIZON` / `SYSTEM_SOLVER_BOUND_MS`;
-/// `SYSTEM_SOLVER_BOUND_SYSTEM=<substring>` limits the sweep to one system.
+/// `SYSTEM_SOLVER_BOUND_SYSTEM=<substring>` limits the sweep to one system;
+/// `SYSTEM_SOLVER_NO_UPGRADES=1` disables improvements/alpha-core installs
+/// (matches the CLI's `--no-industry-upgrades`).
 fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
     use solver::decomp::{SearchProfile, SystemPlan};
     use solver::pareto::{
@@ -544,6 +598,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
         floors: &Goal,
         horizon: i32,
         time_limit: u32,
+        settings: SolverSettings,
         warm_greedy: &mut Option<SystemPlan>,
         warm_bound: &mut Option<SystemPlan>,
     ) -> (Option<ParetoPoint>, Option<ParetoPoint>) {
@@ -555,6 +610,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
             floors,
             horizon,
             time_limit,
+            settings,
             warm_greedy,
             &[],
             SearchProfile::FULL,
@@ -568,12 +624,15 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
             floors,
             horizon,
             time_limit,
+            settings,
             warm_bound,
             &cross,
             SearchProfile::FULL,
         );
         (greedy, bound)
     }
+
+    let settings = env_solver_settings(std::env::var_os("SYSTEM_SOLVER_NO_UPGRADES").is_none());
 
     let mut names: Vec<&String> = systems.keys().collect();
     names.sort();
@@ -614,6 +673,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
             &first_floors,
             horizon,
             time_limit,
+            settings,
             &mut stab_warm_greedy,
             &mut stab_warm_bound,
         );
@@ -628,6 +688,8 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
         let defense_relaxed = relaxed.clone();
         let (stab_tail, def_pairs) = std::thread::scope(|scope| {
             let stability_handle = scope.spawn(move || {
+                cpu_affinity::prefer_performance_cores();
+
                 let mut points = Vec::new();
                 for stab in STABILITY_FLOORS.iter().copied().skip(1) {
                     let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(stab));
@@ -642,6 +704,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
                             &floors,
                             horizon,
                             time_limit,
+                            settings,
                             &mut stab_warm_greedy,
                             &mut stab_warm_bound,
                         ),
@@ -650,6 +713,8 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
                 points
             });
             let defense_handle = scope.spawn(move || {
+                cpu_affinity::prefer_performance_cores();
+
                 let mut points = Vec::new();
                 for def_floor in DEFENSE_FLOORS {
                     let floors = Goal::new(f64::NEG_INFINITY, Some(def_floor), Some(0));
@@ -664,6 +729,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
                             &floors,
                             horizon,
                             time_limit,
+                            settings,
                             &mut def_warm_greedy,
                             &mut def_warm_bound,
                         ),
@@ -765,6 +831,7 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
             );
         }
     }
+
     if greedy_infeasible > 0 {
         eprintln!(
             "\nnote: {greedy_infeasible} point(s) where the budget-relaxed search found a \
@@ -772,6 +839,225 @@ fn run_bound(systems: &HashMap<String, System>, horizon: i32, time_limit: u32) {
         );
     }
     eprintln!("========================================================\n");
+}
+
+fn rank_names<'a>(
+    systems: &'a HashMap<String, System>,
+    db_path: &PathBuf,
+    save: Option<&str>,
+    filters: &[String],
+    scope: RankScope,
+    discovery_definition: DiscoveryDefinition,
+    include_core_worlds: bool,
+) -> Result<Vec<&'a String>, String> {
+    let mut names = filter_system_names(systems, filters)
+        .map_err(|_| "error: no system matches the --rank-system filter(s)".to_string())?;
+
+    if scope == RankScope::All {
+        return Ok(names);
+    }
+
+    let db = Db::open(db_path).map_err(|err| format!("error: DB unreadable: {err}"))?;
+    let discovery = db
+        .system_discovery(save)
+        .map_err(|err| format!("error: discovery data unavailable: {err}"))?;
+    let allowed: std::collections::HashSet<String> = discovery
+        .into_iter()
+        .filter(|row| include_core_worlds || !row.is_core)
+        .filter(|row| match discovery_definition {
+            DiscoveryDefinition::AtLeastOneSurveyed => row.surveyed_any >= 1,
+            DiscoveryDefinition::FullySurveyed => {
+                row.planet_count > 0 && row.surveyed_full == row.planet_count
+            }
+        })
+        .map(|row| row.system_name)
+        .collect();
+    names.retain(|name| allowed.contains(name.as_str()));
+    Ok(names)
+}
+
+fn inspect_systems(
+    db_path: &PathBuf,
+    save: Option<&str>,
+    all: bool,
+    filters: &[String],
+) -> Result<(), Box<dyn Error>> {
+    if !all && filters.is_empty() {
+        return Err("inspect needs at least one SYSTEM substring or --all".into());
+    }
+
+    let db = Db::open(db_path)?;
+    let save_filter = save.map(|value| value.to_lowercase());
+    let systems = db.fetch_systems(save_filter.as_deref(), None)?;
+    let needles: Vec<String> = filters.iter().map(|value| value.to_lowercase()).collect();
+    let matched: Vec<_> = systems
+        .into_iter()
+        .filter(|system| {
+            all || needles.iter().any(|needle| {
+                system.name.to_lowercase().contains(needle)
+                    || system.display_name.to_lowercase().contains(needle)
+            })
+        })
+        .collect();
+
+    if matched.is_empty() {
+        return Err("no system matched the inspect filter(s)".into());
+    }
+
+    for (index, system) in matched.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+        println!("System: {}", system.name);
+        if system.display_name != system.name {
+            println!("  display: {}", system.display_name);
+        }
+        println!("  save: {}", system.save_dir_name);
+        println!("  internal id: {}", system.internal_id);
+        println!(
+            "  location: x={}, y={}, distance={}",
+            fmt_optional_f64(system.x_ly, " ly"),
+            fmt_optional_f64(system.y_ly, " ly"),
+            fmt_optional_f64(system.dist_from_com_ly, " ly"),
+        );
+        println!(
+            "  stable points: {} | gate: {} | remnants: {}{}",
+            system.stable_points,
+            yes_no(system.has_gate),
+            yes_no(system.has_remnants),
+            if system.remnant_damaged {
+                " (damaged)"
+            } else {
+                ""
+            }
+        );
+        println!(
+            "  stars: {}",
+            if system.star_types.is_empty() {
+                "-".to_string()
+            } else {
+                system.star_types.join(", ")
+            }
+        );
+
+        let infrastructure = db.fetch_infrastructure(system.id, &system.name)?;
+        if infrastructure.is_empty() {
+            println!("  infrastructure: -");
+        } else {
+            println!("  infrastructure:");
+            for row in infrastructure {
+                println!(
+                    "    - {}{}{}",
+                    row.infrastructure_type,
+                    if row.is_domain { " [domain]" } else { "" },
+                    if row.is_damaged { " [damaged]" } else { "" },
+                );
+            }
+        }
+
+        let planets = db.fetch_planets(system.id, &system.name)?;
+        println!("  planets: {}", planets.len());
+        for planet in planets {
+            let conditions = db.fetch_planet_conditions(planet.id).unwrap_or_default();
+            println!(
+                "    - {}: {}{} | hazard {:.0}% | survey {} | owner {}",
+                planet.name,
+                planet.planet_type,
+                if planet.is_moon { " moon" } else { "" },
+                planet.hazard_percent,
+                planet.survey_level.as_deref().unwrap_or("-"),
+                planet.owner_faction.as_deref().unwrap_or("-"),
+            );
+            println!(
+                "      resources: farmland {}, ores {}, rare ores {}, volatiles {}, organics {}, ruins {}",
+                fmt_optional_f64(planet.farmland, ""),
+                fmt_optional_f64(planet.ores, ""),
+                fmt_optional_f64(planet.rare_ores, ""),
+                fmt_optional_f64(planet.volatiles, ""),
+                fmt_optional_f64(planet.organics, ""),
+                fmt_optional_f64(planet.ruins, ""),
+            );
+            println!(
+                "      flags: accessibility {}, radius {:.0}, no_atmosphere {}, very_hot {}, gas_giant {}, habitable {}, extreme_activity {}, water {}, hazard_incomplete {}",
+                fmt_optional_f64(planet.accessibility_percent, "%"),
+                planet.radius,
+                yes_no(planet.no_atmosphere),
+                yes_no(planet.very_hot),
+                yes_no(planet.gas_giant),
+                yes_no(planet.habitable),
+                yes_no(planet.extreme_activity),
+                yes_no(planet.water),
+                yes_no(planet.hazard_incomplete),
+            );
+            println!(
+                "      conditions: {}",
+                if conditions.is_empty() {
+                    "-".to_string()
+                } else {
+                    conditions.join(", ")
+                }
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn fmt_optional_f64(value: Option<f64>, suffix: &str) -> String {
+    value
+        .map(|value| format!("{value:.1}{suffix}"))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+fn run_locate(starsector_dir: Option<PathBuf>) -> Result<(), Box<dyn Error>> {
+    let starsector_dir = locate::resolve_starsector_dir(starsector_dir.as_deref())?;
+    let saves_dir = locate::default_saves_dir(&starsector_dir);
+    println!("Starsector: {}", starsector_dir.display());
+    println!("Saves: {}", saves_dir.display());
+    Ok(())
+}
+
+fn run_init(
+    starsector_dir: Option<PathBuf>,
+    save: Option<String>,
+    latest: bool,
+    db: Option<PathBuf>,
+) -> Result<(), Box<dyn Error>> {
+    let starsector_dir = locate::resolve_starsector_dir(starsector_dir.as_deref())?;
+    let db = db.unwrap_or_else(paths::default_db_path);
+    let config_path = paths::config_path();
+    let effective_latest = latest || save.is_none();
+
+    let (mut config, warning) = TuiConfig::load(&config_path);
+    if let Some(warning) = warning {
+        eprintln!("warning: {warning}");
+    }
+    config.starsector_dir = Some(starsector_dir.clone());
+    config.db_path = db.clone();
+    config.save(&config_path).map_err(io::Error::other)?;
+
+    extract::cli::run(extract::cli::ExtractCommand::Run {
+        saves_dir: None,
+        save,
+        latest: effective_latest,
+        starsector_dir: Some(starsector_dir.clone()),
+        db: db.clone(),
+        system: vec![],
+    })?;
+
+    println!("Initialized Starsector System Ranker.");
+    println!("Starsector: {}", starsector_dir.display());
+    println!("DB: {}", db.display());
+    println!("Config: {}", config_path.display());
+    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -793,21 +1079,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    if std::env::var_os("SYSTEM_SOLVER_AB").is_some() {
-        println!("Loading game data...");
-        let systems = load_systems_from_env()?;
-        let budget_ms = std::env::var("SYSTEM_SOLVER_AB_MS")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(8_000);
-        run_ab(&systems, budget_ms);
-        return Ok(());
-    }
-
     if std::env::var_os("SYSTEM_SOLVER_VERIFY").is_some() {
         println!("Loading game data...");
         let systems = load_systems_from_env()?;
-        verify_decomp(&systems);
+        verify_decomp(&systems, env_solver_settings(true));
         return Ok(());
     }
 
@@ -836,7 +1111,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // Pareto-frontier sweep used by plot_pareto_frontiers.py. For each system,
-    // maximize income (slim/CLI path) while sweeping the stability floor (5..=10)
+    // maximize income while sweeping the stability floor (5..=10)
     // and the ground-defense floor, printing CSV rows of the achieved
     // (income, stability, defense). Triggered by SYSTEM_SOLVER_PARETO=1.
     //
@@ -893,6 +1168,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
         let show_stats = std::env::var_os("SYSTEM_SOLVER_STATS").is_some();
+        // SYSTEM_SOLVER_NO_UPGRADES=1 disables improvements/alpha-core installs
+        // (matches the CLI's `--no-industry-upgrades`).
+        let settings = env_solver_settings(std::env::var_os("SYSTEM_SOLVER_NO_UPGRADES").is_none());
 
         // Reuse the maximize-then-replay measurement and floor grids from the
         // Pareto library so the CSV sweep and `--solve` can't drift apart. The
@@ -937,6 +1215,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 &floors,
                 horizon,
                 time_limit,
+                settings,
                 &mut stability_warm,
             );
             let first_elapsed = t0.elapsed().as_secs_f64();
@@ -948,6 +1227,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             let defense_balance = base_balance.clone();
             let (stability_tail, defense_points) = std::thread::scope(|scope| {
                 let stability_handle = scope.spawn(move || {
+                    cpu_affinity::prefer_performance_cores();
+
                     let mut warm = stability_warm;
                     let mut points = Vec::new();
                     for stab in STABILITY_FLOORS.iter().copied().skip(1) {
@@ -961,6 +1242,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             &floors,
                             horizon,
                             time_limit,
+                            settings,
                             &mut warm,
                         );
                         points.push((stab as f64, point, t0.elapsed().as_secs_f64()));
@@ -969,6 +1251,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 });
 
                 let defense_handle = scope.spawn(move || {
+                    cpu_affinity::prefer_performance_cores();
+
                     let mut warm = defense_initial_warm;
                     let mut points = Vec::new();
                     for def_floor in DEFENSE_FLOORS {
@@ -982,6 +1266,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             &floors,
                             horizon,
                             time_limit,
+                            settings,
                             &mut warm,
                         );
                         points.push((def_floor, point, t0.elapsed().as_secs_f64()));
@@ -1022,11 +1307,50 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let cli = Cli::parse();
+    let settings = SolverSettings {
+        include_industry_upgrades: cli.include_industry_upgrades,
+        allow_parallel_builds: cli.parallel_builds,
+    };
 
-    if let Some(Command::Extract(command)) = cli.command {
-        if let Err(err) = extract::cli::run(command) {
-            eprintln!("{err}");
-            std::process::exit(1);
+    if let Some(command) = cli.command {
+        match command {
+            Command::Extract(command) => {
+                if let Err(err) = extract::cli::run(command) {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                }
+            }
+            Command::Locate { starsector_dir } => {
+                if let Err(err) = run_locate(starsector_dir) {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                }
+            }
+            Command::Init {
+                starsector_dir,
+                save,
+                latest,
+                db,
+            } => {
+                if let Err(err) = run_init(starsector_dir, save, latest, db) {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                }
+            }
+            Command::Inspect {
+                db,
+                save,
+                all,
+                systems,
+            } => {
+                inspect_systems(&db, save.as_deref(), all, &systems)?;
+            }
+            Command::Tui { starsector_dir } => {
+                if let Err(err) = tui::run(starsector_dir) {
+                    eprintln!("{err}");
+                    std::process::exit(1);
+                }
+            }
         }
         return Ok(());
     }
@@ -1044,11 +1368,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         run_rank(
             &systems,
             &initial_balance,
+            &cli.db,
+            cli.save.as_deref(),
             &cli.rank_systems,
+            cli.rank_scope,
+            cli.discovery_definition,
+            cli.include_core_worlds,
             cli.horizon,
             cli.time_limit,
             cli.rank_csv,
             cli.rank_scorer,
+            cli.rank_sort,
+            settings,
         );
         return Ok(());
     }
@@ -1078,6 +1409,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             state.balance(),
             cli.horizon,
             cli.time_limit,
+            settings,
         );
         return Ok(());
     }
@@ -1124,7 +1456,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             floors_desc,
         );
 
-        test_maximize(state, metric, &floors, cli.horizon, cli.time_limit);
+        test_maximize(
+            state,
+            metric,
+            &floors,
+            cli.horizon,
+            cli.time_limit,
+            settings,
+        );
         return Ok(());
     }
 
@@ -1140,109 +1479,151 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map_or(String::new(), |d| format!(", defense >= {d}")),
     );
 
-    test_solver(state, &goal, cli.time_limit);
-    return Ok(());
-
-    // Test growth update
-    // Apply actions to set up the initial state
-    let terran_1_hash = 1160120806187968324; //Planet::_get_planet_name_hash("Terran 1");
-    let action_sequence = vec![
-        Action::Colonize(terran_1_hash),
-        Action::Wait(1),
-        Action::UpgradeAdmin(terran_1_hash),
-        Action::AddFacility(terran_1_hash, FacilityType::Megaport),
-        Action::AddFacility(terran_1_hash, FacilityType::LightIndustry),
-        Action::AddFacility(terran_1_hash, FacilityType::GroundDefenses),
-        Action::AddFacility(terran_1_hash, FacilityType::OrbitalStation),
-        Action::SetHazardPay(terran_1_hash, true),
-        Action::SetFreePort(terran_1_hash, true),
-        Action::Wait(3),
-        Action::InstallItem(
-            terran_1_hash,
-            FacilityType::LightIndustry,
-            ColonyItem::BiofactoryEmbryo,
-        ),
-        Action::Wait(2),
-    ];
-
-    let test_action_sequence = vec![
-        // Action::AddFacility(terran_1_hash, FacilityType::LightIndustry),
-        // Action::Wait(10),
-        // Action::AddFacility(terran_1_hash, FacilityType::HeavyIndustry),
-        // Action::Wait(10),
-    ];
-
-    println!("\nInitial state:");
-    println!("{:#?}", state.balance());
-
-    // Apply action sequence
-    for action in &action_sequence {
-        state.apply_action_raw(action, true);
-    }
-
-    println!("\nState after applying action sequence:");
-    println!("{:#?}", state.balance());
-
-    let initial_credits = state.balance().credits();
-
-    // Apply test actions
-    for action in &test_action_sequence {
-        state.apply_action_raw(action, true);
-    }
-
-    // Undo test actions
-    for _ in 0..test_action_sequence.len() {
-        state.undo_last_action(true);
-    }
-
-    println!("\nState after undoing test actions:");
-    println!("{:#?}", state.balance());
-
-    // Check for credit inconsistency
-    let final_credits = state.balance().credits();
-    let credit_difference = final_credits - initial_credits;
-    println!("\nCredit difference: {}", credit_difference);
-
-    if credit_difference.abs() > 1e-6 {
-        println!("Warning: Credit inconsistency detected!");
-    } else {
-        println!("No credit inconsistency detected.");
-    }
-
-    crate::solver::_test_path_undo_consistency(&state);
-
+    test_solver(state, &goal, cli.time_limit, settings);
     Ok(())
 }
 
-/*
-TODOS:
-- Make everything hashable - Done
-- Add State struct for system info - Done
-- Add new actions for waiting a number of months and colonizing a planet - Done
-- Add corresponding functions for the system impl - Done
-- Add a bank/balance struct to keep track of credits, SPs, and alpha cores - Done
-- Give harvested organs the same treatment as drugs for production functions - Done
-- Add income functions to facilities and planets - Done
-- Add score function to system/state structs - Done
-- Hash action sequences instead of system state - Done
-- Add the ability to undo any action so we can efficiently search the game tree - Done
-- Get a DFS working - Doneish
-- Redo the upkeep/production formulas to be a function pointer - Done
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::Parser;
 
-- Rework facility upgrading/downgrading to do less reallocation
-- Rework lazy static hashmaps in constants file to be match statements
-- Implement system-wide restrictions on commerce facility
-- Fix colony growth and reversability
-- Search in two or more phases, first without any facility improvements, then use those action logs to help the full search
-- ^ Could also search without any defenseive structures first, then try to fit them in later
-- Search one planet at a time, and then plug in the results of each planet into the overall search tree at the end
-- Use a different search algorithm, like IDA* with heuristics
-- Let the user give a specific goal (net income and/or credits, defense multiplier) to optimize for
+    #[test]
+    fn tui_subcommand_accepts_starsector_dir() {
+        let cli = Cli::parse_from([
+            "system_solver",
+            "tui",
+            "--starsector-dir",
+            r"C:\Games\Starsector",
+        ]);
 
+        match cli.command {
+            Some(Command::Tui {
+                starsector_dir: Some(path),
+            }) => assert_eq!(path, PathBuf::from(r"C:\Games\Starsector")),
+            other => panic!("expected tui --starsector-dir, got {other:?}"),
+        }
+    }
 
-Since the search space for the full tree is quintillions of nodes the plan to do things in stages:
-1. Search each planet individually using state.to_vec_by_planet; in 'slim' mode to limit the search space; this should be parallelizable
-2. Run a quick algorithm to insert AddImprovement and AddAlphaCore actions into the sequence where they'd be most effective, for each optimal action sequence returned from the slim searches
-3. Use these near-optimal action sequences and other data from each individual planet to do one big combined search on the full tree relying on the heuristic data gathered to traverse it quickly and find the optimal solution
+    #[test]
+    fn locate_subcommand_accepts_no_args() {
+        let cli = Cli::parse_from(["system_solver", "locate"]);
 
-*/
+        match cli.command {
+            Some(Command::Locate {
+                starsector_dir: None,
+            }) => {}
+            other => panic!("expected locate command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn locate_subcommand_accepts_starsector_dir() {
+        let cli = Cli::parse_from([
+            "system_solver",
+            "locate",
+            "--starsector-dir",
+            r"C:\Games\Starsector",
+        ]);
+
+        match cli.command {
+            Some(Command::Locate {
+                starsector_dir: Some(path),
+            }) => assert_eq!(path, PathBuf::from(r"C:\Games\Starsector")),
+            other => panic!("expected locate --starsector-dir, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn init_subcommand_accepts_no_args() {
+        let cli = Cli::parse_from(["system_solver", "init"]);
+
+        match cli.command {
+            Some(Command::Init {
+                starsector_dir: None,
+                save: None,
+                latest: false,
+                db: None,
+            }) => {}
+            other => panic!("expected init command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn init_subcommand_accepts_options() {
+        let cli = Cli::parse_from([
+            "system_solver",
+            "init",
+            "--starsector-dir",
+            r"C:\Games\Starsector",
+            "--save",
+            "DEMIURGE",
+            "--latest",
+            "--db",
+            "workspace/test.db",
+        ]);
+
+        match cli.command {
+            Some(Command::Init {
+                starsector_dir: Some(starsector_dir),
+                save: Some(save),
+                latest: true,
+                db: Some(db),
+            }) => {
+                assert_eq!(starsector_dir, PathBuf::from(r"C:\Games\Starsector"));
+                assert_eq!(save, "DEMIURGE");
+                assert_eq!(db, PathBuf::from("workspace/test.db"));
+            }
+            other => panic!("expected init command with options, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rank_accepts_discovery_scope_and_sort_options() {
+        let cli = Cli::parse_from([
+            "system_solver",
+            "--rank",
+            "--rank-scope",
+            "discovered",
+            "--discovery-definition",
+            "fully-surveyed",
+            "--include-core-worlds",
+            "--rank-sort",
+            "total-score",
+        ]);
+
+        assert!(cli.rank);
+        assert_eq!(cli.rank_scope, RankScope::Discovered);
+        assert_eq!(cli.discovery_definition, DiscoveryDefinition::FullySurveyed);
+        assert!(cli.include_core_worlds);
+        assert_eq!(cli.rank_sort, RankSortMode::TotalScore);
+    }
+
+    #[test]
+    fn inspect_subcommand_accepts_system_filters() {
+        let cli = Cli::parse_from([
+            "system_solver",
+            "inspect",
+            "--db",
+            "save_data.db",
+            "--save",
+            "latest",
+            "Moloch",
+            "Haojing",
+        ]);
+
+        match cli.command {
+            Some(Command::Inspect {
+                db,
+                save: Some(save),
+                all: false,
+                systems,
+            }) => {
+                assert_eq!(db, PathBuf::from("save_data.db"));
+                assert_eq!(save, "latest");
+                assert_eq!(systems, vec!["Moloch", "Haojing"]);
+            }
+            other => panic!("expected inspect command, got {other:?}"),
+        }
+    }
+}

@@ -1,11 +1,11 @@
 //! campaign.xml extraction rows mapped into solver/DB-friendly records.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::extract::gamedata::GameData;
 use crate::extract::model::{
     InfraRow, MappedOutput, MappedSystem, PlanetRow, RawPlanet, RawSave, RawSystem, SystemRow,
-    TypeMapping, UnknownCondition,
+    UnknownCondition,
 };
 
 const LY_TO_RAW_UNITS: f64 = 2000.0;
@@ -70,252 +70,23 @@ pub fn map_save(raw: RawSave, game_data: &GameData) -> MappedOutput {
         None
     };
 
-    let type_profiles = build_type_profiles(&raw, game_data);
-    let vanilla_types: HashSet<_> = game_data
-        .planet_types
-        .iter()
-        .filter(|(_, spec)| spec.source == "vanilla" && !spec.is_star_like)
-        .map(|(id, _)| id.clone())
-        .collect();
-
-    let mut mapped_type_for_raw: HashMap<String, Option<String>> = HashMap::new();
-    let mut type_mappings = Vec::new();
-    let mut unknown_types = HashSet::new();
-
-    for (type_id, profile) in &type_profiles {
-        let known = game_data.planet_types.get(type_id);
-        if known.is_none() {
-            unknown_types.insert(type_id.clone());
-            mapped_type_for_raw.insert(type_id.clone(), None);
-            continue;
-        }
-
-        let spec = known.unwrap();
-        if spec.source == "vanilla" {
-            mapped_type_for_raw.insert(type_id.clone(), Some(type_id.clone()));
-            continue;
-        }
-
-        // No planets of this type in the save (or none with surveyed conditions)
-        // means there is no statistical evidence to map from.
-        if profile.sample_count == 0 || profile.features.is_empty() {
-            mapped_type_for_raw.insert(type_id.clone(), None);
-            continue;
-        }
-
-        let mut candidates: Vec<&TypeProfile> = type_profiles
-            .values()
-            .filter(|candidate| {
-                candidate.type_id != *type_id
-                    && vanilla_types.contains(&candidate.type_id)
-                    && !candidate.is_star_like
-            })
-            .collect();
-
-        let gas_filtered: Vec<&TypeProfile> = candidates
-            .iter()
-            .copied()
-            .filter(|candidate| candidate.is_gas_giant == profile.is_gas_giant)
-            .collect();
-        if !gas_filtered.is_empty() {
-            candidates = gas_filtered;
-        }
-
-        let hab_filtered: Vec<&TypeProfile> = candidates
-            .iter()
-            .copied()
-            .filter(|candidate| candidate.is_majority_habitable == profile.is_majority_habitable)
-            .collect();
-        if !hab_filtered.is_empty() {
-            candidates = hab_filtered;
-        }
-
-        let mut scored: Vec<TypeScore> = candidates
-            .into_iter()
-            .map(|candidate| TypeScore {
-                type_id: candidate.type_id.clone(),
-                similarity: cosine_similarity(&profile.features, &candidate.features),
-                samples: candidate.sample_count,
-            })
-            .collect();
-        scored.retain(|score| score.similarity > 0.0);
-        scored.sort_by(|a, b| {
-            b.similarity
-                .partial_cmp(&a.similarity)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.type_id.cmp(&b.type_id))
-        });
-
-        mapped_type_for_raw.insert(
-            type_id.clone(),
-            scored.first().map(|best| best.type_id.clone()),
-        );
-        for score in scored.into_iter().take(3) {
-            type_mappings.push(TypeMapping {
-                modded_type: type_id.clone(),
-                vanilla_type: score.type_id,
-                similarity: score.similarity,
-                modded_samples: profile.sample_count,
-                vanilla_samples: score.samples,
-            });
-        }
-    }
-
-    type_mappings.sort_by(|a, b| {
-        a.modded_type
-            .cmp(&b.modded_type)
-            .then_with(|| {
-                b.similarity
-                    .partial_cmp(&a.similarity)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .then_with(|| a.vanilla_type.cmp(&b.vanilla_type))
-    });
-
     let systems = raw
         .systems
         .into_iter()
-        .map(|system| map_system(system, game_data, com, &mapped_type_for_raw))
+        .map(|system| map_system(system, game_data, com))
         .collect();
 
     let mut unknown_conditions: Vec<UnknownCondition> = unknown_conditions.into_values().collect();
     unknown_conditions.sort_by(|a, b| a.condition_id.cmp(&b.condition_id));
 
-    let mut unknown_types: Vec<String> = unknown_types.into_iter().collect();
-    unknown_types.sort();
-
     MappedOutput {
         systems,
+        player: raw.player,
         unknown_conditions,
-        type_mappings,
-        unknown_types,
     }
 }
 
-#[derive(Debug, Clone)]
-struct TypeStats {
-    features: HashMap<String, f64>,
-    sample_count: u32,
-    habitable_count: u32,
-    gas_count: u32,
-}
-
-impl TypeStats {
-    fn new() -> Self {
-        Self {
-            features: HashMap::new(),
-            sample_count: 0,
-            habitable_count: 0,
-            gas_count: 0,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct TypeProfile {
-    type_id: String,
-    features: HashMap<String, f64>,
-    sample_count: u32,
-    is_gas_giant: bool,
-    is_majority_habitable: bool,
-    is_star_like: bool,
-}
-
-#[derive(Debug, Clone)]
-struct TypeScore {
-    type_id: String,
-    similarity: f64,
-    samples: u32,
-}
-
-fn build_type_profiles(raw: &RawSave, game_data: &GameData) -> HashMap<String, TypeProfile> {
-    let mut stats: HashMap<String, TypeStats> = HashMap::new();
-
-    for system in &raw.systems {
-        for planet in &system.planets {
-            if is_star_like(&planet.planet_type, game_data) {
-                continue;
-            }
-            let entry = stats
-                .entry(planet.planet_type.clone())
-                .or_insert_with(TypeStats::new);
-            entry.sample_count += 1;
-            if planet.conditions.iter().any(|c| c == "habitable") {
-                entry.habitable_count += 1;
-            }
-            if planet.tags.iter().any(|tag| tag == "gas_giant") {
-                entry.gas_count += 1;
-            }
-            for condition in &planet.conditions {
-                let feature = game_data
-                    .condition_feature_key(condition)
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| condition.clone());
-                *entry.features.entry(feature).or_insert(0.0) += 1.0;
-            }
-        }
-    }
-
-    let mut profiles = HashMap::new();
-    for (type_id, stat) in stats {
-        profiles.insert(
-            type_id.clone(),
-            TypeProfile {
-                type_id,
-                features: normalize_features(stat.features, stat.sample_count),
-                sample_count: stat.sample_count,
-                is_gas_giant: stat.gas_count * 2 >= stat.sample_count.max(1),
-                is_majority_habitable: stat.habitable_count * 2 >= stat.sample_count.max(1),
-                is_star_like: false,
-            },
-        );
-    }
-
-    for (type_id, spec) in &game_data.planet_types {
-        if spec.is_star_like || profiles.contains_key(type_id) {
-            continue;
-        }
-        profiles.insert(
-            type_id.clone(),
-            TypeProfile {
-                type_id: type_id.clone(),
-                features: HashMap::new(),
-                sample_count: 0,
-                is_gas_giant: false,
-                is_majority_habitable: false,
-                is_star_like: spec.is_star_like,
-            },
-        );
-    }
-
-    for profile in profiles.values_mut() {
-        if let Some(spec) = game_data.planet_types.get(&profile.type_id) {
-            profile.is_star_like = spec.is_star_like || is_star_like_raw(&profile.type_id);
-        } else {
-            profile.is_star_like = is_star_like_raw(&profile.type_id);
-        }
-    }
-
-    profiles
-}
-
-fn normalize_features(features: HashMap<String, f64>, sample_count: u32) -> HashMap<String, f64> {
-    if sample_count == 0 {
-        return features;
-    }
-    let denom = sample_count as f64;
-    features
-        .into_iter()
-        .map(|(key, value)| (key, value / denom))
-        .collect()
-}
-
-fn map_system(
-    system: RawSystem,
-    game_data: &GameData,
-    com: Option<(f64, f64)>,
-    mapped_type_for_raw: &HashMap<String, Option<String>>,
-) -> MappedSystem {
+fn map_system(system: RawSystem, game_data: &GameData, com: Option<(f64, f64)>) -> MappedSystem {
     let dist_from_com_ly = system
         .hyper_loc
         .zip(com)
@@ -388,10 +159,11 @@ fn map_system(
         });
     }
 
+    let tags = system.tags.clone();
     let planets = system
         .planets
         .into_iter()
-        .map(|planet| map_planet(&planet, game_data, mapped_type_for_raw, dist_from_com_ly))
+        .map(|planet| map_planet(&planet, game_data, dist_from_com_ly))
         .collect();
 
     MappedSystem {
@@ -407,6 +179,7 @@ fn map_system(
             has_remnants: remnant_state.0,
             remnant_damaged: remnant_state.1,
             star_types: system.star_types,
+            tags,
         },
         planets,
         infrastructure,
@@ -416,22 +189,8 @@ fn map_system(
 fn map_planet(
     planet: &RawPlanet,
     game_data: &GameData,
-    mapped_type_for_raw: &HashMap<String, Option<String>>,
     dist_from_com_ly: Option<f64>,
 ) -> PlanetRow {
-    let mapped_vanilla_type = mapped_type_for_raw
-        .get(&planet.planet_type)
-        .cloned()
-        .unwrap_or_else(|| {
-            if game_data.planet_types.contains_key(&planet.planet_type)
-                && !game_data.is_star_type(&planet.planet_type)
-            {
-                Some(planet.planet_type.clone())
-            } else {
-                None
-            }
-        });
-
     let accessibility_percent =
         dist_from_com_ly.map(|dist| (100.0 * (1.0 - dist / 50.0)).round().max(0.0));
 
@@ -479,14 +238,12 @@ fn map_planet(
         "organics_abundant",
         "organics_plentiful",
     );
-    let water =
-        has_condition(planet, "water_surface") || mapped_vanilla_type.as_deref() == Some("water");
+    let water = has_condition(planet, "water_surface");
 
     PlanetRow {
         name: planet.name.clone(),
         internal_id: planet.internal_id.clone(),
         planet_type: planet.planet_type.clone(),
-        mapped_vanilla_type,
         is_moon: planet.is_moon,
         survey_level: planet.survey_level.clone(),
         owner_faction: planet.owner_faction.clone(),
@@ -592,31 +349,6 @@ fn remnant_state(system: &RawSystem) -> (bool, bool) {
     (false, false)
 }
 
-fn cosine_similarity(a: &HashMap<String, f64>, b: &HashMap<String, f64>) -> f64 {
-    if a.is_empty() || b.is_empty() {
-        return 0.0;
-    }
-    let mut dot = 0.0;
-    let mut a_norm = 0.0;
-    let mut b_norm = 0.0;
-    for value in a.values() {
-        a_norm += value * value;
-    }
-    for value in b.values() {
-        b_norm += value * value;
-    }
-    for (key, a_val) in a {
-        if let Some(b_val) = b.get(key) {
-            dot += a_val * b_val;
-        }
-    }
-    if a_norm <= f64::EPSILON || b_norm <= f64::EPSILON {
-        0.0
-    } else {
-        dot / (a_norm.sqrt() * b_norm.sqrt())
-    }
-}
-
 fn distance_ly(a: (f64, f64), b: (f64, f64)) -> f64 {
     let dx = (a.0 - b.0) / LY_TO_RAW_UNITS;
     let dy = (a.1 - b.1) / LY_TO_RAW_UNITS;
@@ -713,8 +445,9 @@ mod tests {
     }
 
     #[test]
-    fn maps_hazard_accessibility_and_type_similarity() {
+    fn maps_hazard_accessibility_and_save_derived_flags() {
         let raw = RawSave {
+            player: None,
             systems: vec![
                 RawSystem {
                     name: "Alpha".to_string(),
@@ -734,7 +467,10 @@ mod tests {
                     display_name: "Beta Star System".to_string(),
                     internal_id: "2".to_string(),
                     hyper_loc: Some((2000.0, 0.0)),
-                    tags: vec!["theme_remnant_suppressed".to_string()],
+                    tags: vec![
+                        "theme_outer".to_string(),
+                        "theme_remnant_suppressed".to_string(),
+                    ],
                     star_types: vec!["star_yellow".to_string()],
                     planets: vec![planet(
                         "B",
@@ -767,17 +503,17 @@ mod tests {
         assert_eq!(alpha.planets[0].accessibility_percent, Some(99.0));
         assert!(alpha.planets[0].gas_giant);
         let beta = &mapped.systems[1];
+        assert_eq!(
+            beta.system.tags,
+            vec![
+                "theme_outer".to_string(),
+                "theme_remnant_suppressed".to_string()
+            ]
+        );
         assert!(beta.system.has_remnants);
         assert!(beta.system.remnant_damaged);
         assert_eq!(beta.planets[0].ores, Some(0.0));
         assert_eq!(beta.planets[0].rare_ores, Some(2.0));
-        assert_eq!(
-            beta.planets[0].mapped_vanilla_type.as_deref(),
-            Some("water")
-        );
-        assert!(mapped
-            .type_mappings
-            .iter()
-            .any(|m| m.modded_type == "mod_water" && m.vanilla_type == "water"));
+        assert!(beta.planets[0].water);
     }
 }

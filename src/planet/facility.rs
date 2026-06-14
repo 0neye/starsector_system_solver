@@ -8,7 +8,7 @@ use crate::constants::{
     COLONY_ITEM_DATA, FACILITY_ALPHA_CORES, FACILITY_DATA, FACILITY_IMPROVEMENTS, MAX_DEMANDS,
     MAX_PRODUCTION, POSSIBLE_COLONY_ITEMS,
 };
-use crate::solver::{Action, Balance};
+use crate::solver::{improvement_story_point_cost, Action, Balance};
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone)]
@@ -602,7 +602,57 @@ impl Facility {
         }
     }
 
-    /// Per month
+    /// Market-share economy inputs, per month: adds this facility's
+    /// marketable production (units) per commodity into `production_units`,
+    /// and returns its direct (non-export) income. The planet caps the
+    /// per-resource totals by accessibility-derived export capacity and
+    /// weights them by accessibility; the market-share division against
+    /// sector supply happens at system scope, where all player producers of a
+    /// commodity share one denominator.
+    pub fn collect_export_production(
+        &self,
+        size: u32,
+        planet: &dyn PlanetConditionChecker,
+        accessibility: f64,
+        production_units: &mut [f64; Resource::COUNT],
+    ) -> f64 {
+        if self.current_build_days > 0 || accessibility == 0.0 {
+            return 0.0;
+        }
+
+        let mut direct_income = 0.0;
+        if self.facility_type == FacilityType::Population {
+            direct_income += 10000.0 * (size as f64 - 2.0);
+        }
+
+        let freeport = planet.is_free_port();
+        for resource in self.base_production.keys() {
+            // Skip resources with no market value (Crew and Marines)
+            if resource.market_value() == 0 {
+                continue;
+            }
+
+            // Extraction resources are gated on deposit presence and get the deposit's
+            // abundance modifier added as a bonus; non-deposit resources are unaffected.
+            let deposit_bonus = match deposit_status(*resource, planet) {
+                DepositStatus::Absent => continue, // no deposit -> no production
+                DepositStatus::Present(modifier) => modifier,
+                DepositStatus::NotDeposit => 0.0,
+            };
+
+            let production =
+                self.get_or_calculate_production(*resource, size, deposit_bonus, freeport);
+            if production > 0.0 {
+                production_units[*resource as usize] += production;
+            }
+        }
+
+        direct_income
+    }
+
+    /// Per month. Independent-denominator income (player supply excluded from
+    /// the market-share denominator); the standalone single-colony view,
+    /// superseded at system scope by `collect_export_supply` + market share.
     pub fn calculate_gross_income(
         &self,
         size: u32,
@@ -668,11 +718,11 @@ impl Facility {
         &self,
         planet: &dyn PlanetConditionChecker,
         balance: &Balance,
-        slim: bool,
+        exclude_upgrades: bool,
     ) -> Vec<Action> {
         // TODO: experiment with allowing adding items before building is done
 
-        let mut actions = Vec::with_capacity(if !slim { 4 } else { 2 });
+        let mut actions = Vec::with_capacity(if !exclude_upgrades { 4 } else { 2 });
         let planet_name_hash = planet.name_hash();
 
         // Add possible colony items if none present
@@ -689,10 +739,10 @@ impl Facility {
             }
         }
 
-        if !slim {
+        if !exclude_upgrades {
             // Add improvements if not present
             if !self.has_improvements() {
-                let improvement_cost = 2_u32.pow(planet.improvements());
+                let improvement_cost = improvement_story_point_cost(planet.improvements());
                 if balance.story_points() >= improvement_cost {
                     actions.push(Action::AddImprovement(planet_name_hash, self.facility_type));
                 }
