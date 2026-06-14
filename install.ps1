@@ -1,30 +1,12 @@
+# Thin shim: the installer now lives in the binary itself.
+# Runs `system_solver install` from this unpacked release archive.
 $ErrorActionPreference = "Stop"
 
-$python = $null
-foreach ($candidate in @("py -3", "python", "python3")) {
-    $parts = $candidate.Split(" ")
-    $exe = $parts[0]
-    $extra = @()
-    if ($parts.Count -gt 1) {
-        $extra = $parts[1..($parts.Count - 1)]
-    }
-
-    $cmd = Get-Command $exe -ErrorAction SilentlyContinue
-    if ($cmd) {
-        $python = @($cmd.Source) + $extra
-        break
-    }
-}
-
-if (-not $python) {
-    Write-Error "Python 3 is required. Install it from https://www.python.org/downloads/windows/ or the Microsoft Store, then rerun this installer."
+$binary = Join-Path $PSScriptRoot "system_solver.exe"
+if (-not (Test-Path $binary)) {
+    Write-Error "system_solver.exe not found next to this script; run it from inside the unpacked release archive."
     exit 1
 }
 
-$script = Join-Path $PSScriptRoot "install.py"
-if ($python.Count -gt 1) {
-    & $python[0] @($python[1..($python.Count - 1)]) $script @args
-} else {
-    & $python[0] $script @args
-}
+& $binary install @args
 exit $LASTEXITCODE

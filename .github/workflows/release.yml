@@ -62,7 +62,6 @@ jobs:
           $stage = "starsector-system-ranker-$tag-windows"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item "target/release/system_solver.exe" "$stage/system_solver.exe"
-          Copy-Item "install.py" "$stage/install.py"
           Copy-Item "install.ps1" "$stage/install.ps1"
           Copy-Item "README.md" "$stage/README.md"
           Copy-Item "LICENSE" "$stage/LICENSE"
@@ -79,7 +78,6 @@ jobs:
           stage="starsector-system-ranker-${tag}-linux"
           mkdir -p "$stage"
           cp "target/x86_64-unknown-linux-musl/release/system_solver" "$stage/system_solver"
-          cp install.py "$stage/install.py"
           cp install.sh "$stage/install.sh"
           cp README.md "$stage/README.md"
           cp LICENSE "$stage/LICENSE"

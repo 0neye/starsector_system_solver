@@ -1,14 +1,14 @@
 #!/bin/sh
+# Thin shim: the installer now lives in the binary itself.
+# Runs `system_solver install` from this unpacked release archive.
 set -eu
 
-if command -v python3 >/dev/null 2>&1; then
-    PYTHON=python3
-elif command -v python >/dev/null 2>&1; then
-    PYTHON=python
-else
-    echo "Python 3 is required. Install python3 with your package manager, then rerun this installer." >&2
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+BINARY="$SCRIPT_DIR/system_solver"
+
+if [ ! -x "$BINARY" ]; then
+    echo "system_solver not found next to this script; run it from inside the unpacked release archive." >&2
     exit 1
 fi
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-exec "$PYTHON" "$SCRIPT_DIR/install.py" "$@"
+exec "$BINARY" install "$@"

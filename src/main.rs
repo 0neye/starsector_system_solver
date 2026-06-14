@@ -1,6 +1,7 @@
 mod constants;
 mod cpu_affinity;
 mod extract;
+mod install;
 mod parser;
 mod paths;
 mod planet;
@@ -110,13 +111,13 @@ struct Cli {
     #[arg(long = "rank-system")]
     rank_systems: Vec<String>,
 
-    /// Which `--rank` scorer to use: `quick` (default) = budgeted real search
+    /// Which `--rank` scorer to use: `bound` (default) = per-planet decomposed
+    /// credit-relaxed near-certain upper bound, the Tier-0 "potential" ceiling
+    /// (`solve_pareto_bound`); `quick` = budgeted real search
     /// (`solve_pareto_quick`, Tier 1); `template` = instant template portfolio,
-    /// in practice a Tier-0 lower bound (`solve_pareto_template`); `bound` =
-    /// per-planet decomposed credit-relaxed near-certain upper bound, the
-    /// Tier-0 "potential" ceiling (`solve_pareto_bound`). See
+    /// in practice a Tier-0 lower bound (`solve_pareto_template`). See
     /// workspace/QUICK_RANKING_DESIGN.md.
-    #[arg(long = "rank-scorer", value_enum, default_value_t = RankScorer::Quick)]
+    #[arg(long = "rank-scorer", value_enum, default_value_t = RankScorer::Bound)]
     rank_scorer: RankScorer,
 
     /// Which systems `--rank` considers before name filters are applied.
@@ -206,6 +207,31 @@ enum Command {
         #[arg(long)]
         starsector_dir: Option<PathBuf>,
     },
+    /// Install this binary for the current user from an unpacked release archive
+    /// (copy onto PATH, build the first DB, create a launcher).
+    Install {
+        /// Starsector install directory. When omitted, auto-detected or prompted.
+        #[arg(long)]
+        starsector_dir: Option<PathBuf>,
+        /// Skip creating a Start Menu shortcut / desktop launcher.
+        #[arg(long)]
+        no_shortcut: bool,
+        /// Skip the initial save extraction.
+        #[arg(long)]
+        skip_extract: bool,
+        /// Install the bundled agent skill into existing Claude Code/Codex dirs.
+        #[arg(long, conflicts_with = "no_skills")]
+        with_skills: bool,
+        /// Skip agent skill installation.
+        #[arg(long)]
+        no_skills: bool,
+        /// Non-interactive install (auto-detect everything, no prompts).
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Remove the installed binary, launcher, and PATH entry. User data and
+    /// settings are left untouched.
+    Uninstall,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -1348,6 +1374,48 @@ fn main() -> Result<(), Box<dyn Error>> {
             Command::Tui { starsector_dir } => {
                 if let Err(err) = tui::run(starsector_dir) {
                     eprintln!("{err}");
+                    std::process::exit(1);
+                }
+            }
+            Command::Install {
+                starsector_dir,
+                no_shortcut,
+                skip_extract,
+                with_skills,
+                no_skills,
+                yes,
+            } => {
+                // Keep a double-clicked window open afterward, but not for
+                // scripted (`--yes`) or piped runs.
+                let pause = !yes && install::interactive_session();
+                let result = install::run_install(install::InstallOpts {
+                    starsector_dir,
+                    no_shortcut,
+                    skip_extract,
+                    with_skills,
+                    no_skills,
+                    yes,
+                });
+                if let Err(err) = &result {
+                    eprintln!("error: {err}");
+                }
+                if pause {
+                    install::pause();
+                }
+                if result.is_err() {
+                    std::process::exit(1);
+                }
+            }
+            Command::Uninstall => {
+                let pause = install::interactive_session();
+                let result = install::run_uninstall();
+                if let Err(err) = &result {
+                    eprintln!("error: {err}");
+                }
+                if pause {
+                    install::pause();
+                }
+                if result.is_err() {
                     std::process::exit(1);
                 }
             }

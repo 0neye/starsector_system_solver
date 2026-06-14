@@ -28,6 +28,12 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 directories = "5"
 
+# Native installer support (PATH editing, Start Menu shortcut, env broadcast).
+[target.'cfg(windows)'.dependencies]
+winreg = "0.52"
+mslnk = "0.1"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
 [lints.rust]
 unused = "allow"
 

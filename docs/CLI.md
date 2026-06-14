@@ -45,6 +45,8 @@ Commands:
 - `init` - save the Starsector install path and build the first DB.
 - `inspect` - inspect extracted system data.
 - `tui` - open the terminal UI.
+- `install` - install this binary for the current user from a release archive.
+- `uninstall` - remove the installed binary, launcher, and PATH entry.
 
 ### Data selection
 
@@ -95,7 +97,7 @@ deterministic only when the solve finishes inside the budget.
 
 - `--rank`: rank systems by quick Pareto score. Ignores `--system`.
 - `--rank-system <RANK_SYSTEMS>`: repeatable case-insensitive substring filter.
-- `--rank-scorer <quick|template|bound>`: scorer. Default: `quick`.
+- `--rank-scorer <quick|template|bound>`: scorer. Default: `bound`.
 - `--rank-scope <all|discovered>`: systems considered before name filters.
   Default: `all`.
 - `--discovery-definition <at-least-one-surveyed|fully-surveyed>`: discovery
@@ -111,9 +113,9 @@ not final colony values; use `--solve --system <NAME>` on finalists.
 
 Scorers:
 
-- `quick`: budgeted real search and the default ranking scorer.
+- `bound`: credit-relaxed per-planet potential ceiling and the default ranking scorer.
+- `quick`: budgeted real search.
 - `template`: instant template portfolio, typically a rough lower bound.
-- `bound`: credit-relaxed per-planet potential ceiling.
 
 ## `extract`
 
@@ -227,3 +229,33 @@ system_solver tui [OPTIONS]
 
 - `--starsector-dir <STARSECTOR_DIR>`: Starsector install directory for this
   run, overriding the saved TUI config.
+
+## `install`
+
+```text
+system_solver install [OPTIONS]
+```
+
+Installs the binary for the current user from an unpacked release archive: copies
+it to a per-user location (`%LOCALAPPDATA%\Programs\StarsectorSystemRanker` on
+Windows, `~/.local/bin` on Linux), adds that to the user `PATH`, runs the first
+save extraction, and creates a launcher (Start Menu shortcut / `.desktop` entry).
+The archive's `install.ps1` / `install.sh` are thin wrappers around this command.
+
+- `--starsector-dir <STARSECTOR_DIR>`: install directory to extract from. When
+  omitted, auto-detected or prompted for.
+- `--no-shortcut`: skip launcher creation.
+- `--skip-extract`: skip the initial save extraction.
+- `--with-skills` / `--no-skills`: install / skip the bundled Claude Code & Codex
+  agent skill (interactive prompt otherwise).
+- `--yes`: non-interactive install (auto-detect everything, no prompts).
+
+## `uninstall`
+
+```text
+system_solver uninstall
+```
+
+Removes the installed binary, launcher, `PATH` entry, and bundled agent skills.
+Extracted data and settings in the per-user data/config directories are left
+untouched (their paths are printed on completion).

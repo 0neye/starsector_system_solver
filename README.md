@@ -23,18 +23,22 @@ It reads your local game files and save data only; it never modifies your game.
 
 - A Starsector installation (the tool auto-detects common install locations, or
   you can point it with `--starsector-dir` / the `STARSECTOR_DIR` env var).
-- [Python 3](https://www.python.org/downloads/) — used by the installer only
-  (the tool itself is a self-contained native binary).
+- Nothing else — the tool is a self-contained native binary and the installer is
+  built in (no Python or other runtime required).
 - For building from source: a [Rust toolchain](https://rustup.rs/) (1.74+).
 
 ## Install (recommended)
 
 Grab the archive for your OS from the
 [latest release](https://github.com/0neye/starsector_system_solver/releases),
-unpack it, and run the bundled installer from inside the unpacked folder.
+unpack it, and run the bundled installer from inside the unpacked folder. The
+installer is built into the binary; `install.ps1` / `install.sh` are thin
+wrappers around `system_solver install` (equivalently, run that directly).
 
-**Windows** (PowerShell, in the unpacked `starsector-system-ranker-*-windows`
-folder):
+**Windows**: in the unpacked `starsector-system-ranker-*-windows` folder,
+right-click `install.ps1` and choose **Run with PowerShell** (or run it from a
+PowerShell prompt). It walks you through the rest and keeps the window open when
+it finishes.
 
 ```powershell
 .\install.ps1
@@ -60,10 +64,10 @@ Useful installer flags (pass them to `install.ps1` / `install.sh`):
 | `--skip-extract` | Don't run the initial save extraction |
 | `--no-shortcut` | Don't create a launcher |
 | `--with-skills` / `--no-skills` | Install / skip the bundled Claude Code & Codex agent skill |
-| `--uninstall` | Remove the binary, launcher, and `PATH` entry (your extracted data and settings are left untouched) |
 
 To upgrade, unpack a newer release and run the installer again. To remove
-everything, run the installer with `--uninstall`.
+everything, run `system_solver uninstall` (your extracted data and settings are
+left untouched).
 
 ## Build from source
 
