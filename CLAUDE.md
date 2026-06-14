@@ -73,7 +73,7 @@ cargo run --release -- --db workspace/system_benchmark.db --rank
 cargo run --release -- --rank --rank-system askonia --rank-system corvus  # filter
 cargo run --release -- --rank --rank-csv > workspace/rank.csv  # machine-readable
 python workspace/rank_validation.py workspace/final_sweep.csv workspace/rank.csv   # rank-agreement gate vs full sweep
-# --rank-scorer picks the scorer (default `quick` = Tier-1 budgeted search):
+# --rank-scorer picks the scorer (default `bound` = Tier-0 credit-relaxed upper bound):
 #   bound    = floor-aware per-planet credit-relaxed upper bound
 #              (solve_pareto_bound): floor-0 one-shot rationing, per-floor
 #              menus, integer average-floor DP, and flat-left AUC, then a
@@ -85,9 +85,10 @@ python workspace/rank_validation.py workspace/final_sweep.csv workspace/rank.csv
 #              floor 0, and the pooled correction is a validated heuristic
 #              (benchmark ratios 1.04-1.20, tau 1.0). Validate: bound/full
 #              should be >= 1; frontier incomes stay additive ceilings.
+#   quick    = Tier-1 budgeted real search (solve_pareto_quick).
 #   template = instant template portfolio, no search, in practice a lower bound
 #              (solve_pareto_template, ~ms/system, rougher ordering).
-cargo run --release -- --rank --rank-scorer bound
+cargo run --release -- --rank --rank-scorer quick
 cargo run --release -- --rank --rank-scorer template
 ```
 

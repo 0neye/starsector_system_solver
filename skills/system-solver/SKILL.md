@@ -83,8 +83,8 @@ Ranking:
 
 Scorer notes:
 
-- `quick`: default, budgeted real search.
-- `bound`: credit-relaxed potential ceiling.
+- `bound`: default, credit-relaxed potential ceiling.
+- `quick`: budgeted real search.
 - `template`: instant rough lower bound.
 
 ## Interpreting Output
