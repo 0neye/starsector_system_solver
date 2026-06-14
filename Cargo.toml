@@ -1,6 +1,6 @@
 [package]
 name = "system_solver"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.74"
 description = "A colony-planning solver and ranker for Starsector star systems: extracts your save, ranks discovered systems, and computes time-optimal build plans."
