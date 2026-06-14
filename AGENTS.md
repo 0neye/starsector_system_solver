@@ -170,4 +170,4 @@ Planets are stored in `HashMap<u64, Planet>` keyed by name hash (`Planet::_get_p
 
 1. Add variant to `FacilityType` in `constants.rs` and update `as_str()`/`from_str()`.
 2. Add entry to `FACILITY_DATA` with cost, build time, and production/demand functions.
-3. Update Planets.csv if any planet should start with it.
+3. Update `src/tests/fixtures/Planets.csv` if any planet should start with it.

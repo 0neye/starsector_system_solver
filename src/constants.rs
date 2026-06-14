@@ -1339,10 +1339,6 @@ pub const MAX_FACILITIES: usize = 1 + 4 + 7;
 pub const MAX_PRODUCTION: usize = 4;
 pub const MAX_DEMANDS: usize = 6;
 
-// File paths for example files
-pub const PLANETS_PATH: &str = "planets.csv";
-pub const SYSTEMS_PATH: &str = "systems.csv";
-
 #[derive(Debug, Clone)]
 pub struct FacilityEffects {
     pub accessibility_bonus: f64,

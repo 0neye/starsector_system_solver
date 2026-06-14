@@ -417,7 +417,11 @@ fn decomp_maximize_mia_bravos_escapes_local_optimum() {
     use crate::parser::load_game_data;
     use crate::solver::state::Balance;
 
-    let systems = load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")
+    let systems = load_game_data(
+        "src/tests/fixtures/Planets.csv",
+        "src/tests/fixtures/Systems.csv",
+        "src/tests/fixtures/Infrastructure.csv",
+    )
         .expect("game data CSVs load from the crate root during tests");
     let system = systems
         .get("Mia Bravos")
@@ -475,7 +479,11 @@ fn decomp_maximize_mia_bravos_stability_8_keeps_three_planet_basin() {
     use crate::parser::load_game_data;
     use crate::solver::state::Balance;
 
-    let systems = load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")
+    let systems = load_game_data(
+        "src/tests/fixtures/Planets.csv",
+        "src/tests/fixtures/Systems.csv",
+        "src/tests/fixtures/Infrastructure.csv",
+    )
         .expect("game data CSVs load from the crate root during tests");
     let system = systems
         .get("Mia Bravos")
@@ -530,7 +538,11 @@ fn decomp_factored_lookahead_matches_reference_on_mia_bravos() {
     use crate::parser::load_game_data;
     use crate::solver::state::Balance;
 
-    let systems = load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")
+    let systems = load_game_data(
+        "src/tests/fixtures/Planets.csv",
+        "src/tests/fixtures/Systems.csv",
+        "src/tests/fixtures/Infrastructure.csv",
+    )
         .expect("game data CSVs load from the crate root during tests");
     let system = systems
         .get("Mia Bravos")
@@ -691,7 +703,11 @@ fn decomp_time_limit_is_a_hard_deadline() {
     use crate::solver::state::Balance;
     use std::time::{Duration, Instant};
 
-    let systems = load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")
+    let systems = load_game_data(
+        "src/tests/fixtures/Planets.csv",
+        "src/tests/fixtures/Systems.csv",
+        "src/tests/fixtures/Infrastructure.csv",
+    )
         .expect("game data CSVs load from the crate root during tests");
     let system = systems
         .get("Mia Bravos")
@@ -730,7 +746,11 @@ fn decomp_cancel_stops_search() {
     use crate::solver::state::Balance;
     use std::time::{Duration, Instant};
 
-    let systems = load_game_data("Planets.csv", "Systems.csv", "Infrastructure.csv")
+    let systems = load_game_data(
+        "src/tests/fixtures/Planets.csv",
+        "src/tests/fixtures/Systems.csv",
+        "src/tests/fixtures/Infrastructure.csv",
+    )
         .expect("game data CSVs load from the crate root during tests");
     let system = systems
         .get("Mia Bravos")
