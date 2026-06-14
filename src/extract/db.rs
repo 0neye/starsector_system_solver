@@ -70,6 +70,16 @@ pub struct WriteSummary {
 
 impl Db {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        // SQLite won't create intermediate directories, so a first-run install
+        // pointing at a fresh per-user data dir (e.g.
+        // `%APPDATA%\StarsectorSystemRanker\data\save_data.db`) fails to open
+        // until the parent exists. Create it up front.
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)?;
+            }
+        }
         let conn = Connection::open(path)?;
         conn.execute_batch(
             r#"
@@ -1099,6 +1109,18 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("system_solver_db_{name}_{unique}.sqlite"))
+    }
+
+    #[test]
+    fn open_creates_missing_parent_dirs() {
+        // A fresh install points the DB at a per-user data dir that does not
+        // exist yet; SQLite won't create it, so Db::open must.
+        let base = temp_db_path("nested_parent");
+        let nested = base.join("data").join("save_data.db");
+        assert!(!nested.parent().unwrap().exists());
+        Db::open(&nested).expect("open should create the parent dir");
+        assert!(nested.exists());
+        let _ = fs::remove_dir_all(&base);
     }
 
     fn sample_game_data() -> GameData {
