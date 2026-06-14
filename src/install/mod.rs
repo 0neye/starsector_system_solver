@@ -116,7 +116,13 @@ pub fn run_install(opts: InstallOpts) -> Fallible {
     }
 
     let home = home_dir()?;
-    install_agent_skills(&archive_dir, opts.with_skills, opts.no_skills, opts.yes, &home)?;
+    install_agent_skills(
+        &archive_dir,
+        opts.with_skills,
+        opts.no_skills,
+        opts.yes,
+        &home,
+    )?;
 
     println!();
     println!("Installation complete!");
@@ -160,7 +166,10 @@ pub fn run_uninstall() -> Fallible {
 // Starsector dir selection + skills (cross-platform)
 // ---------------------------------------------------------------------------
 
-fn choose_starsector_dir(provided: Option<PathBuf>, assume_yes: bool) -> Result<PathBuf, Box<dyn Error>> {
+fn choose_starsector_dir(
+    provided: Option<PathBuf>,
+    assume_yes: bool,
+) -> Result<PathBuf, Box<dyn Error>> {
     if assume_yes {
         return match provided {
             Some(dir) => {
@@ -175,7 +184,10 @@ fn choose_starsector_dir(provided: Option<PathBuf>, assume_yes: bool) -> Result<
 
     let detected = provided.or_else(locate::detect_starsector_dir);
     if let Some(dir) = &detected {
-        let answer = prompt(&format!("Use Starsector install at {}? [Y/n] ", dir.display()))?;
+        let answer = prompt(&format!(
+            "Use Starsector install at {}? [Y/n] ",
+            dir.display()
+        ))?;
         if matches!(answer.to_lowercase().as_str(), "" | "y" | "yes") {
             return Ok(dir.clone());
         }
@@ -209,7 +221,10 @@ fn install_agent_skills(
     let source = archive_dir.join("skills").join(SKILL_NAME);
     if !source.is_dir() {
         if force || !assume_yes {
-            println!("warning: bundled agent skill not found at {}", source.display());
+            println!(
+                "warning: bundled agent skill not found at {}",
+                source.display()
+            );
         }
         return Ok(());
     }
@@ -230,7 +245,9 @@ fn install_agent_skills(
         let should_install = if force {
             true
         } else {
-            let answer = prompt(&format!("Install the {SKILL_NAME} agent skill for {name}? [y/N] "))?;
+            let answer = prompt(&format!(
+                "Install the {SKILL_NAME} agent skill for {name}? [y/N] "
+            ))?;
             matches!(answer.to_lowercase().as_str(), "y" | "yes")
         };
         if should_install {
@@ -525,7 +542,10 @@ fn broadcast_environment_change() {
         SendMessageTimeoutW, HWND_BROADCAST, SMTO_ABORTIFHUNG, WM_SETTINGCHANGE,
     };
 
-    let param: Vec<u16> = "Environment".encode_utf16().chain(std::iter::once(0)).collect();
+    let param: Vec<u16> = "Environment"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
     let mut result: usize = 0;
     unsafe {
         SendMessageTimeoutW(
@@ -542,14 +562,19 @@ fn broadcast_environment_change() {
 
 #[cfg(windows)]
 fn create_launcher(installed_binary: &Path) {
-    match windows_shortcut_path().and_then(|shortcut| create_windows_shortcut(installed_binary, &shortcut)) {
+    match windows_shortcut_path()
+        .and_then(|shortcut| create_windows_shortcut(installed_binary, &shortcut))
+    {
         Ok(shortcut) => println!("Created Start Menu shortcut: {}", shortcut.display()),
         Err(err) => println!("warning: could not create Start Menu shortcut: {err}"),
     }
 }
 
 #[cfg(windows)]
-fn create_windows_shortcut(installed_binary: &Path, shortcut: &Path) -> Result<PathBuf, Box<dyn Error>> {
+fn create_windows_shortcut(
+    installed_binary: &Path,
+    shortcut: &Path,
+) -> Result<PathBuf, Box<dyn Error>> {
     use mslnk::ShellLink;
 
     if let Some(parent) = shortcut.parent() {
@@ -709,8 +734,14 @@ mod tests {
         let targets = agent_skill_targets(home);
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[0].1, home.join(".claude"));
-        assert_eq!(targets[0].2, home.join(".claude").join("skills").join(SKILL_NAME));
-        assert_eq!(targets[1].2, home.join(".codex").join("skills").join(SKILL_NAME));
+        assert_eq!(
+            targets[0].2,
+            home.join(".claude").join("skills").join(SKILL_NAME)
+        );
+        assert_eq!(
+            targets[1].2,
+            home.join(".codex").join("skills").join(SKILL_NAME)
+        );
     }
 
     #[test]
