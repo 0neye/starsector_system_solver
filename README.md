@@ -12,18 +12,13 @@ Point it at your save and it will:
 
 It reads your local game files and save data only; it never modifies your game.
 
-> **Disclaimer:** This is an unofficial fan-made tool. It is not affiliated with,
-> endorsed by, or supported by Fractal Softworks. You must own a copy of
-> Starsector to use it — the tool reads the game's data files and your saves
-> from your own machine. "Starsector" is a trademark of Fractal Softworks.
-
 ---
 
 ## Requirements
 
 - A Starsector installation (the tool auto-detects common install locations, or
   you can point it with `--starsector-dir` / the `STARSECTOR_DIR` env var).
-- Nothing else — the tool is a self-contained native binary and the installer is
+- Nothing else - the tool is a self-contained native binary and the installer is
   built in (no Python or other runtime required).
 - For building from source: a [Rust toolchain](https://rustup.rs/) (1.74+).
 
@@ -144,8 +139,8 @@ cargo clippy
 
 Tests live in `src/tests/` (in-crate, so they can exercise `pub(crate)`
 internals). Contributor/agent guidance lives in [`CLAUDE.md`](CLAUDE.md) and
-[`AGENTS.md`](AGENTS.md) — these two files are kept in sync.
+[`AGENTS.md`](AGENTS.md) - these two files are kept in sync.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT - see [`LICENSE`](LICENSE).

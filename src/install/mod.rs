@@ -61,7 +61,7 @@ fn welcome_and_confirm() -> io::Result<()> {
     } else {
         "add an application launcher"
     };
-    println!("Starsector System Ranker — Installer");
+    println!("Starsector System Ranker - Installer");
     println!();
     println!("This will set the program up just for your user account. It will:");
     println!("  - copy the program to a personal folder and add it to your PATH");
@@ -534,7 +534,7 @@ fn encode_utf16(value: &str) -> Vec<u8> {
 }
 
 /// Notify already-running shells/Explorer that the environment changed. Purely
-/// cosmetic — new processes read the updated PATH regardless — so failures are
+/// cosmetic - new processes read the updated PATH regardless - so failures are
 /// ignored.
 #[cfg(windows)]
 fn broadcast_environment_change() {
@@ -615,19 +615,28 @@ fn windows_shortcut_path() -> Result<PathBuf, Box<dyn Error>> {
 }
 
 /// Delete a path shortly after the current (running) process can release it.
-/// Uses a detached `cmd` helper because Windows won't delete a running exe.
+/// Uses detached Windows helpers because Windows won't delete a running exe.
 #[cfg(windows)]
 fn schedule_delete(path: &Path) -> io::Result<()> {
     use std::process::{Command, Stdio};
-    Command::new("cmd")
-        .arg("/C")
-        .arg(format!(
-            "ping 127.0.0.1 -n 3 >nul & del /f /q \"{}\"",
-            path.display()
-        ))
+
+    let mut wait = Command::new("ping")
+        .args(["127.0.0.1", "-n", "3"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
+    let path = path.to_path_buf();
+
+    std::thread::spawn(move || {
+        let _ = wait.wait();
+        let _ = Command::new("cmd")
+            .args(["/C", "del", "/f", "/q"])
+            .arg(path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    });
+
     Ok(())
 }
 
