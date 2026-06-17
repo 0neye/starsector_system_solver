@@ -765,7 +765,15 @@ fn run_plan(
 
     // Pass 2 — replay: re-run the masked plan, injecting the chosen upgrades as
     // early as each becomes legal so the timeline reflects the boosts.
-    run_plan_once(initial_state, objective, &masked, settings, Some(&chosen), false).score
+    run_plan_once(
+        initial_state,
+        objective,
+        &masked,
+        settings,
+        Some(&chosen),
+        false,
+    )
+    .score
 }
 
 fn should_use_two_pass_facility_upgrades(
