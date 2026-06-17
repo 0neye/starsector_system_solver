@@ -6,11 +6,11 @@ use crate::planet::Planet;
 use crate::solver::decomp::{
     assert_factored_lookahead_matches_reference, decomp_search, decomp_search_maximize,
     simulate_plan, simulate_plan_maximize, simulate_plan_maximize_with_log,
-    simulate_plan_with_settings, SystemPlan,
+    simulate_plan_maximize_with_settings_and_log, simulate_plan_with_settings, SystemPlan,
 };
 use crate::solver::goal::{Goal, Metric};
-use crate::solver::state::{get_action_sequence_hash, Action, State};
-use crate::solver::SolverSettings;
+use crate::solver::state::{get_action_sequence_hash, Action, Balance, State};
+use crate::solver::{FacilityUpgradePlacement, SolverSettings};
 use crate::system::System;
 use crate::tests::support::{
     apply_all, colonized_state, rich_balance, single_planet_system, PlanetBuilder,
@@ -201,6 +201,7 @@ fn decomp_inner_sim_respects_build_queue_setting() {
         SolverSettings {
             include_industry_upgrades: true,
             allow_parallel_builds: false,
+            ..Default::default()
         },
     )
     .expect("queued fixed plan should satisfy the income goal")
@@ -212,6 +213,7 @@ fn decomp_inner_sim_respects_build_queue_setting() {
         SolverSettings {
             include_industry_upgrades: true,
             allow_parallel_builds: true,
+            ..Default::default()
         },
     )
     .expect("parallel fixed plan should satisfy the income goal")
@@ -239,6 +241,215 @@ fn decomp_inner_sim_respects_build_queue_setting() {
             )),
         "parallel-build mode should preserve the old overlapping construction behavior: {parallel:?}"
     );
+}
+
+#[test]
+fn decomp_two_pass_alpha_core_targets_best_built_facility() {
+    let planet = PlanetBuilder::new("Core Target").build();
+    let hash = planet.name_hash();
+    let mut colonized = State::new(
+        Balance::new(10_000_000.0, 0, 1),
+        single_planet_system(planet),
+    );
+    colonized.apply_action_raw(&Action::Colonize(hash), false);
+
+    let mut plan = SystemPlan::permit_all(&colonized);
+    plan.set_upgrade_admin(hash, false);
+    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), None);
+    let (_income, _months, log) =
+        simulate_plan_maximize_with_log(&colonized, Metric::Income, &floors, 120, &plan, false)
+            .expect("maximize log should be produced");
+
+    assert!(
+        log.iter()
+            .any(|a| matches!(a, Action::AddAlphaCore(h, FacilityType::Megaport) if *h == hash)),
+        "the single facility alpha core should be allocated to a later built high-value facility"
+    );
+    assert!(
+        !log.iter()
+            .any(|a| matches!(a, Action::AddAlphaCore(h, FacilityType::Population) if *h == hash)),
+        "Population must not grab the alpha core before the built facility set is known"
+    );
+}
+
+#[test]
+fn decomp_two_pass_replays_chosen_upgrade_as_early_as_legal() {
+    let planet = PlanetBuilder::new("Early Upgrade").build();
+    let hash = planet.name_hash();
+    let mut colonized = State::new(
+        Balance::new(10_000_000.0, 2, 0),
+        single_planet_system(planet),
+    );
+    colonized.apply_action_raw(&Action::Colonize(hash), false);
+
+    let mut plan = SystemPlan::permit_all(&colonized);
+    plan.set_upgrade_admin(hash, false);
+    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), None);
+    let (_income, _months, log) =
+        simulate_plan_maximize_with_log(&colonized, Metric::Income, &floors, 120, &plan, false)
+            .expect("maximize log should be produced");
+
+    let megaport_build = log
+        .iter()
+        .position(|a| matches!(a, Action::AddFacility(h, FacilityType::Megaport) if *h == hash))
+        .expect("Megaport should be built in the fixed plan");
+    let megaport_improvement = log
+        .iter()
+        .position(|a| matches!(a, Action::AddImprovement(h, FacilityType::Megaport) if *h == hash))
+        .expect("Megaport should receive the selected improvement");
+
+    assert_eq!(
+        megaport_improvement,
+        megaport_build + 1,
+        "a selected improvement should be replayed immediately after its facility becomes legal"
+    );
+    assert!(
+        !log.iter().any(
+            |a| matches!(a, Action::AddImprovement(h, FacilityType::Population) if *h == hash)
+        ),
+        "unchosen Population improvement should stay out of the replay log"
+    );
+}
+
+#[test]
+fn decomp_late_apply_scores_chosen_upgrade_without_replay() {
+    let planet = PlanetBuilder::new("Late Apply").build();
+    let hash = planet.name_hash();
+    let mut colonized = State::new(
+        Balance::new(10_000_000.0, 2, 0),
+        single_planet_system(planet),
+    );
+    colonized.apply_action_raw(&Action::Colonize(hash), false);
+
+    let mut plan = SystemPlan::permit_all(&colonized);
+    plan.set_upgrade_admin(hash, false);
+    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), None);
+    let (_income, _months, log) = simulate_plan_maximize_with_settings_and_log(
+        &colonized,
+        Metric::Income,
+        &floors,
+        120,
+        &plan,
+        SolverSettings::default()
+            .with_facility_upgrade_placement(FacilityUpgradePlacement::LateApply),
+    )
+    .expect("maximize log should be produced");
+
+    let (improved_facility, improvement_pos) = log
+        .iter()
+        .enumerate()
+        .find_map(|(idx, action)| match action {
+            Action::AddImprovement(h, facility) if *h == hash => Some((*facility, idx)),
+            _ => None,
+        })
+        .expect("one selected improvement should be late-applied");
+    let build_pos = log
+        .iter()
+        .position(|a| matches!(a, Action::AddFacility(h, facility) if *h == hash && *facility == improved_facility))
+        .expect("the improved facility should have been built during discovery");
+
+    assert!(
+        improvement_pos > build_pos + 1,
+        "late-apply should append the selected improvement after discovery, not replay the timeline"
+    );
+    assert_ne!(
+        improved_facility,
+        FacilityType::Population,
+        "late-apply should not let Population grab the selected improvement"
+    );
+    assert!(
+        !log.iter().any(
+            |a| matches!(a, Action::AddImprovement(h, FacilityType::Population) if *h == hash)
+        ),
+        "late-apply should still avoid unchosen Population improvement"
+    );
+}
+
+#[test]
+fn decomp_two_pass_leaves_alpha_admin_greedy() {
+    let planet = PlanetBuilder::new("Admin First").build();
+    let hash = planet.name_hash();
+    let mut colonized = State::new(
+        Balance::new(10_000_000.0, 0, 1),
+        single_planet_system(planet),
+    );
+    colonized.apply_action_raw(&Action::Colonize(hash), false);
+
+    let plan = SystemPlan::permit_all(&colonized);
+    let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), None);
+    let (_income, _months, log) =
+        simulate_plan_maximize_with_log(&colonized, Metric::Income, &floors, 36, &plan, false)
+            .expect("maximize log should be produced");
+
+    assert!(
+        log.iter()
+            .any(|a| matches!(a, Action::UpgradeAdmin(h) if *h == hash)),
+        "alpha-core administrator should remain an ordinary greedy action"
+    );
+    assert!(
+        !log.iter().any(|a| matches!(a, Action::AddAlphaCore(..))),
+        "the greedy administrator should consume the only alpha core before facility allocation"
+    );
+}
+
+#[test]
+fn decomp_reach_ignores_facility_upgrade_placement() {
+    // A reach objective minimizes months, which the settled end state cannot
+    // see: once discovery satisfies the floor every upgrade is feasible with
+    // zero violation and two-pass allocation degenerates to a final-income
+    // tie-break, reserving the alpha core for the highest-income facility
+    // instead of applying it as early as it is legal. That breaks the reach
+    // minimum-months contract, so reach must never two-pass: every placement
+    // mode must match single-pass greedy exactly. (Regression: P1 reach scoring.)
+    let planet = PlanetBuilder::new("Reach Core").build();
+    let hash = planet.name_hash();
+    // Two story points (enough to trigger the two-pass for a maximize objective)
+    // and a plan that permits facility improvements.
+    let mut colonized = State::new(
+        Balance::new(10_000_000.0, 2, 0),
+        single_planet_system(planet),
+    );
+    colonized.apply_action_raw(&Action::Colonize(hash), false);
+    let plan = SystemPlan::permit_all(&colonized);
+
+    // An income floor below the peak but above the un-improved ceiling, so the
+    // reach plan must spend a story point on a facility improvement to satisfy
+    // it — exercising the upgrade machinery rather than reaching the floor for
+    // free.
+    let goal = Goal::new(82_000.0, None, None);
+
+    let greedy = simulate_plan_with_settings(
+        &colonized,
+        &goal,
+        &plan,
+        SolverSettings::default().with_facility_upgrade_placement(FacilityUpgradePlacement::Greedy),
+    );
+    let (greedy_log, _) = greedy
+        .as_ref()
+        .expect("greedy reach plan should satisfy the income floor");
+    assert!(
+        greedy_log
+            .iter()
+            .any(|a| matches!(a, Action::AddImprovement(..))),
+        "the reach plan must actually spend a story point on an improvement, else the test proves nothing"
+    );
+
+    // Every placement must reproduce the single-pass greedy reach result exactly.
+    for placement in [
+        FacilityUpgradePlacement::ReplayAsap,
+        FacilityUpgradePlacement::LateApply,
+    ] {
+        let candidate = simulate_plan_with_settings(
+            &colonized,
+            &goal,
+            &plan,
+            SolverSettings::default().with_facility_upgrade_placement(placement),
+        );
+        assert_eq!(
+            candidate, greedy,
+            "reach must not two-pass: {placement:?} must match single-pass greedy exactly"
+        );
+    }
 }
 
 /// The inner simulator is deterministic: identical inputs yield an identical

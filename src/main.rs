@@ -255,6 +255,7 @@ fn env_solver_settings(include_industry_upgrades: bool) -> SolverSettings {
         include_industry_upgrades,
         allow_parallel_builds: std::env::var_os("SYSTEM_SOLVER_PARALLEL_BUILDS")
             .is_some_and(|value| !value.is_empty() && value != "0"),
+        ..Default::default()
     }
 }
 
@@ -1336,6 +1337,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let settings = SolverSettings {
         include_industry_upgrades: cli.include_industry_upgrades,
         allow_parallel_builds: cli.parallel_builds,
+        ..Default::default()
     };
 
     if let Some(command) = cli.command {

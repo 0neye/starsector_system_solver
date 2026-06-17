@@ -20,11 +20,29 @@ pub use pareto::{
 pub(crate) use state::improvement_story_point_cost;
 pub use state::{Action, Balance, State};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FacilityUpgradePlacement {
+    /// Schedule facility improvements and alpha cores greedily as ordinary
+    /// actions.
+    Greedy,
+    /// Discover the built facility set once, allocate upgrades, then apply them
+    /// to the settled state without replaying the timeline. Intended for fast
+    /// ranking approximations.
+    LateApply,
+    /// Discover the built facility set, allocate upgrades, then replay the plan
+    /// with those upgrades inserted as early as possible.
+    #[default]
+    ReplayAsap,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SolverSettings {
     /// Include story-point improvements and alpha-core installs on industries
     /// and structures.
     pub include_industry_upgrades: bool,
+    /// How facility improvements and facility alpha cores are placed once
+    /// upgrades are enabled.
+    pub facility_upgrade_placement: FacilityUpgradePlacement,
     /// Modded behavior: allow multiple industries/structures to build on the
     /// same colony at the same time. Vanilla Starsector queues them one at a
     /// time per colony.
@@ -35,6 +53,7 @@ impl Default for SolverSettings {
     fn default() -> Self {
         Self {
             include_industry_upgrades: true,
+            facility_upgrade_placement: FacilityUpgradePlacement::default(),
             allow_parallel_builds: false,
         }
     }
@@ -48,8 +67,14 @@ impl SolverSettings {
     pub fn legacy(include_industry_upgrades: bool) -> Self {
         Self {
             include_industry_upgrades,
+            facility_upgrade_placement: FacilityUpgradePlacement::default(),
             allow_parallel_builds: true,
         }
+    }
+
+    pub fn with_facility_upgrade_placement(mut self, placement: FacilityUpgradePlacement) -> Self {
+        self.facility_upgrade_placement = placement;
+        self
     }
 
     pub fn exclude_upgrades(self) -> bool {
