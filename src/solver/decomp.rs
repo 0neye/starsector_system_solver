@@ -740,7 +740,7 @@ fn run_plan(
     settings: SolverSettings,
 ) -> PlanScore {
     stats::RUN_PLAN_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if !should_use_two_pass_facility_upgrades(initial_state, plan, settings) {
+    if !should_use_two_pass_facility_upgrades(initial_state, objective, plan, settings) {
         return run_plan_once(initial_state, objective, plan, settings, None, false).score;
     }
 
@@ -778,10 +778,21 @@ fn run_plan(
 
 fn should_use_two_pass_facility_upgrades(
     initial_state: &State,
+    objective: &Objective,
     plan: &SystemPlan,
     settings: SolverSettings,
 ) -> bool {
-    settings.include_industry_upgrades
+    // Maximize only. The two-pass allocates scarce upgrades by scoring the
+    // settled end state, which is exactly the maximize objective. For reach the
+    // objective is minimum months, which the end state cannot see: once the
+    // discovery state satisfies the floor, every upgrade is feasible with zero
+    // violation and allocation degenerates to a final-income tie-break. That can
+    // reserve the only story point for a high-income facility instead of the
+    // improvement that would have met the floor earlier, inflating months and
+    // breaking the reach contract. Single-pass greedy already applies the
+    // violation-reducing upgrade as early as it is legal, so reach defers to it.
+    objective.metric().is_some()
+        && settings.include_industry_upgrades
         && settings.facility_upgrade_placement != FacilityUpgradePlacement::Greedy
         && plan.permits_facility_upgrades()
         && (initial_state.balance().story_points() >= 2

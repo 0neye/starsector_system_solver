@@ -392,6 +392,66 @@ fn decomp_two_pass_leaves_alpha_admin_greedy() {
     );
 }
 
+#[test]
+fn decomp_reach_ignores_facility_upgrade_placement() {
+    // A reach objective minimizes months, which the settled end state cannot
+    // see: once discovery satisfies the floor every upgrade is feasible with
+    // zero violation and two-pass allocation degenerates to a final-income
+    // tie-break, reserving the alpha core for the highest-income facility
+    // instead of applying it as early as it is legal. That breaks the reach
+    // minimum-months contract, so reach must never two-pass: every placement
+    // mode must match single-pass greedy exactly. (Regression: P1 reach scoring.)
+    let planet = PlanetBuilder::new("Reach Core").build();
+    let hash = planet.name_hash();
+    // Two story points (enough to trigger the two-pass for a maximize objective)
+    // and a plan that permits facility improvements.
+    let mut colonized = State::new(
+        Balance::new(10_000_000.0, 2, 0),
+        single_planet_system(planet),
+    );
+    colonized.apply_action_raw(&Action::Colonize(hash), false);
+    let plan = SystemPlan::permit_all(&colonized);
+
+    // An income floor below the peak but above the un-improved ceiling, so the
+    // reach plan must spend a story point on a facility improvement to satisfy
+    // it — exercising the upgrade machinery rather than reaching the floor for
+    // free.
+    let goal = Goal::new(82_000.0, None, None);
+
+    let greedy = simulate_plan_with_settings(
+        &colonized,
+        &goal,
+        &plan,
+        SolverSettings::default().with_facility_upgrade_placement(FacilityUpgradePlacement::Greedy),
+    );
+    let (greedy_log, _) = greedy
+        .as_ref()
+        .expect("greedy reach plan should satisfy the income floor");
+    assert!(
+        greedy_log
+            .iter()
+            .any(|a| matches!(a, Action::AddImprovement(..))),
+        "the reach plan must actually spend a story point on an improvement, else the test proves nothing"
+    );
+
+    // Every placement must reproduce the single-pass greedy reach result exactly.
+    for placement in [
+        FacilityUpgradePlacement::ReplayAsap,
+        FacilityUpgradePlacement::LateApply,
+    ] {
+        let candidate = simulate_plan_with_settings(
+            &colonized,
+            &goal,
+            &plan,
+            SolverSettings::default().with_facility_upgrade_placement(placement),
+        );
+        assert_eq!(
+            candidate, greedy,
+            "reach must not two-pass: {placement:?} must match single-pass greedy exactly"
+        );
+    }
+}
+
 /// The inner simulator is deterministic: identical inputs yield an identical
 /// (log, cost) result.
 #[test]
