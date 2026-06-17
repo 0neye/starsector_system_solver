@@ -119,6 +119,7 @@ impl TuiConfig {
         SolverSettings {
             include_industry_upgrades: self.include_industry_upgrades,
             allow_parallel_builds: self.allow_parallel_builds,
+            ..Default::default()
         }
     }
 

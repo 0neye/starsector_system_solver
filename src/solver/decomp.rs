@@ -45,7 +45,7 @@ use crate::constants::{FacilityType, Resource, FACILITY_DATA, FACILITY_REQUIREME
 use crate::planet::{upgrade_predecessors, Planet};
 use crate::solver::goal::{AStarSearchResult, Goal, Metric};
 use crate::solver::state::{Action, State};
-use crate::solver::SolverSettings;
+use crate::solver::{FacilityUpgradePlacement, SolverSettings};
 
 /// What the search optimizes.
 ///
@@ -370,6 +370,12 @@ impl SystemPlan {
         }
     }
 
+    fn permits_facility_upgrades(&self) -> bool {
+        self.planets
+            .values()
+            .any(|p| p.improvements || p.alpha_cores)
+    }
+
     /// Total number of decisions across all planets.
     fn size(&self) -> usize {
         self.planets.values().map(PlanetPlan::size).sum::<usize>()
@@ -401,6 +407,13 @@ impl SystemPlan {
         SystemPlan {
             planets,
             makeshift_comm_relay: true,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_upgrade_admin(&mut self, planet_hash: u64, value: bool) {
+        if let Some(plan) = self.planets.get_mut(&planet_hash) {
+            plan.upgrade_admin = value;
         }
     }
 }
@@ -482,6 +495,49 @@ pub(crate) struct PlanScore {
 struct PlanActionScoreCache {
     candidates: Vec<Action>,
     scores: HashMap<Action, ActionLookaheadScore>,
+}
+
+#[derive(Default)]
+struct ChosenFacilityUpgrades {
+    /// Chosen upgrades in allocation order (drives `ReplayAsap`/`LateApply`).
+    order: Vec<Action>,
+    /// Same actions in a set for O(1) `contains` on the replay hot path.
+    set: HashSet<Action>,
+}
+
+impl ChosenFacilityUpgrades {
+    fn is_empty(&self) -> bool {
+        self.order.is_empty()
+    }
+
+    fn insert(&mut self, action: &Action) {
+        if is_deferred_facility_upgrade(action) && self.set.insert(action.clone()) {
+            self.order.push(action.clone());
+        }
+    }
+
+    fn contains(&self, action: &Action) -> bool {
+        self.set.contains(action)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SimulationMode<'a> {
+    Normal,
+    DiscoverFacilityUpgrades,
+    ReplayFacilityUpgrades(&'a ChosenFacilityUpgrades),
+}
+
+impl SimulationMode<'_> {
+    fn continue_after_reach(self) -> bool {
+        matches!(self, SimulationMode::DiscoverFacilityUpgrades)
+    }
+}
+
+struct SimulationResult {
+    score: PlanScore,
+    final_state: State,
+    final_months: i32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -638,6 +694,26 @@ pub(crate) fn simulate_plan_maximize_with_log(
         .then_some((score.value, score.months, score.log))
 }
 
+#[cfg(test)]
+pub(crate) fn simulate_plan_maximize_with_settings_and_log(
+    initial_state: &State,
+    metric: Metric,
+    floors: &Goal,
+    horizon_months: i32,
+    plan: &SystemPlan,
+    settings: SolverSettings,
+) -> Option<(f64, i32, Vec<Action>)> {
+    let objective = Objective::Maximize {
+        metric,
+        floors,
+        horizon_months,
+    };
+    let score = run_plan(initial_state, &objective, plan, settings);
+    score
+        .feasible
+        .then_some((score.value, score.months, score.log))
+}
+
 /// Forced forward simulation of a fixed plan, returning a full [`PlanScore`].
 ///
 /// Reach and maximize modes share the build-ASAP/wait-to-next-event schedule and
@@ -657,6 +733,62 @@ fn run_plan(
     settings: SolverSettings,
 ) -> PlanScore {
     stats::RUN_PLAN_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if !should_use_two_pass_facility_upgrades(initial_state, plan, settings) {
+        return run_plan_once(
+            initial_state,
+            objective,
+            plan,
+            settings,
+            SimulationMode::Normal,
+        )
+        .score;
+    }
+
+    let discovery = run_plan_once(
+        initial_state,
+        objective,
+        plan,
+        settings,
+        SimulationMode::DiscoverFacilityUpgrades,
+    );
+    let chosen = choose_facility_upgrades(&discovery.final_state, objective, plan, settings);
+    if chosen.is_empty() {
+        return discovery.score;
+    }
+
+    if settings.facility_upgrade_placement == FacilityUpgradePlacement::LateApply {
+        return apply_facility_upgrades_late(discovery, objective, &chosen);
+    }
+
+    run_plan_once(
+        initial_state,
+        objective,
+        plan,
+        settings,
+        SimulationMode::ReplayFacilityUpgrades(&chosen),
+    )
+    .score
+}
+
+fn should_use_two_pass_facility_upgrades(
+    initial_state: &State,
+    plan: &SystemPlan,
+    settings: SolverSettings,
+) -> bool {
+    settings.include_industry_upgrades
+        && settings.facility_upgrade_placement != FacilityUpgradePlacement::Greedy
+        && plan.permits_facility_upgrades()
+        && (initial_state.balance().story_points() >= 2
+            || initial_state.balance().alpha_cores() > 0)
+}
+
+fn run_plan_once(
+    initial_state: &State,
+    objective: &Objective,
+    plan: &SystemPlan,
+    settings: SolverSettings,
+    mode: SimulationMode,
+) -> SimulationResult {
     let floors = objective.floors();
     let horizon = objective.horizon_months();
     let metric = objective.metric();
@@ -698,14 +830,25 @@ fn run_plan(
         if violation <= 0.0 {
             match metric {
                 None => {
-                    // Reach: the first satisfying instant is the answer.
-                    return PlanScore {
-                        feasible: true,
-                        months: total_months,
-                        violation: 0.0,
-                        value: 0.0,
-                        log: state.action_log().clone(),
-                    };
+                    // Reach: the first satisfying instant is the answer, except
+                    // discovery must keep rolling to learn the final build set.
+                    if best_log_len.is_none() {
+                        best_months = total_months;
+                        best_log_len = Some(state.action_log().len());
+                    }
+                    if !mode.continue_after_reach() {
+                        return SimulationResult {
+                            score: PlanScore {
+                                feasible: true,
+                                months: total_months,
+                                violation: 0.0,
+                                value: 0.0,
+                                log: state.action_log().clone(),
+                            },
+                            final_state: state,
+                            final_months: total_months,
+                        };
+                    }
                 }
                 Some(metric) => {
                     let value = metric.value(&state);
@@ -741,6 +884,7 @@ fn run_plan(
             plan,
             &actions,
             settings,
+            mode,
             &mut score_cache,
             &mut score_cache_dirty,
             total_months,
@@ -794,15 +938,21 @@ fn run_plan(
         }
     }
 
-    match best_log_len {
+    let score = match best_log_len {
         Some(len) => PlanScore {
             feasible: true,
             months: best_months,
             violation: 0.0,
-            value: best_value,
+            value: metric.map_or(0.0, |_| best_value),
             log: state.action_log()[..len].to_vec(),
         },
         None => infeasible(total_months, min_violation),
+    };
+
+    SimulationResult {
+        score,
+        final_state: state,
+        final_months: total_months,
     }
 }
 
@@ -813,6 +963,7 @@ fn choose_plan_action(
     plan: &SystemPlan,
     actions: &[Action],
     settings: SolverSettings,
+    mode: SimulationMode,
     cache: &mut PlanActionScoreCache,
     dirty: &mut bool,
     total_months: i32,
@@ -822,11 +973,22 @@ fn choose_plan_action(
     // per-candidate `State` clone — that clone was the run_plan hot-spot), then
     // pick the max. `max_by` would call the comparator O(n) times and recompute
     // both operands' scores on every call.
-    let candidates: Vec<Action> = actions
+    let mut candidates: Vec<Action> = actions
         .iter()
-        .filter(|a| !is_wait(a) && plan.allows(a) && queue_allows_action(state, a, settings))
+        .filter(|a| {
+            !is_wait(a)
+                && plan.allows(a)
+                && queue_allows_action(state, a, settings)
+                && simulation_mode_allows_action(mode, a)
+        })
         .cloned()
         .collect();
+
+    if matches!(mode, SimulationMode::ReplayFacilityUpgrades(_))
+        && candidates.iter().any(is_deferred_facility_upgrade)
+    {
+        candidates.retain(is_deferred_facility_upgrade);
+    }
 
     if candidates.is_empty() {
         cache.candidates.clear();
@@ -888,6 +1050,138 @@ fn choose_plan_action(
         .map(|(_, a)| a)
 }
 
+fn is_deferred_facility_upgrade(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::AddImprovement(..) | Action::AddAlphaCore(..)
+    )
+}
+
+fn simulation_mode_allows_action(mode: SimulationMode, action: &Action) -> bool {
+    match mode {
+        SimulationMode::Normal => true,
+        SimulationMode::DiscoverFacilityUpgrades => !is_deferred_facility_upgrade(action),
+        SimulationMode::ReplayFacilityUpgrades(chosen) => {
+            !is_deferred_facility_upgrade(action) || chosen.contains(action)
+        }
+    }
+}
+
+fn choose_facility_upgrades(
+    discovery_state: &State,
+    objective: &Objective,
+    plan: &SystemPlan,
+    settings: SolverSettings,
+) -> ChosenFacilityUpgrades {
+    let mut state = discovery_state.clone();
+    let mut chosen = ChosenFacilityUpgrades::default();
+
+    loop {
+        let actions = state.get_possible_actions(settings.exclude_upgrades());
+        let candidates: Vec<_> = actions
+            .iter()
+            .filter(|a| is_deferred_facility_upgrade(a) && plan.allows(a))
+            .collect();
+        if candidates.is_empty() {
+            break;
+        }
+
+        let current_score = score_state(&state, objective, 0);
+        let scores = action_lookahead_scores(&mut state, objective, &candidates);
+        let best = candidates
+            .into_iter()
+            .zip(scores)
+            .filter(|(_, score)| *score > current_score)
+            .max_by(|(a_action, a_score), (b_action, b_score)| {
+                a_score
+                    .cmp(b_score)
+                    .then_with(|| b_action.cmp(a_action))
+                    .then_with(|| b_action.get_hash().cmp(&a_action.get_hash()))
+            });
+
+        let Some((action, _)) = best else {
+            break;
+        };
+        let action = action.clone();
+        state.apply_action_raw(&action, false);
+        chosen.insert(&action);
+    }
+
+    chosen
+}
+
+/// Build the comparison score for `state` as it stands, attributing `earlier`
+/// as the lookahead-delay tie-breaker (0 for the settled state, `-wait_months`
+/// when scoring a hypothetical post-wait state).
+fn score_state(state: &State, objective: &Objective, earlier: i32) -> ActionLookaheadScore {
+    let violation = goal_violation(objective.floors(), state);
+    let metric_value = objective
+        .metric()
+        .map_or_else(|| -violation, |metric| metric.value(state));
+
+    ActionLookaheadScore {
+        feasible: violation <= 0.0,
+        objective_value: score_units(metric_value),
+        floor_violation: score_units(violation),
+        income: score_units(state.balance().net_income()),
+        stability: score_units(state.system().avg_stability()),
+        defense: score_units(state.system().avg_ground_defense()),
+        earlier,
+    }
+}
+
+fn apply_facility_upgrades_late(
+    discovery: SimulationResult,
+    objective: &Objective,
+    chosen: &ChosenFacilityUpgrades,
+) -> PlanScore {
+    let mut state = discovery.final_state;
+    for action in &chosen.order {
+        state.apply_action_raw(action, false);
+    }
+
+    let violation = goal_violation(objective.floors(), &state);
+    if violation <= 0.0 {
+        let late = PlanScore {
+            feasible: true,
+            months: discovery.final_months,
+            violation: 0.0,
+            value: objective
+                .metric()
+                .map_or(0.0, |metric| metric.value(&state)),
+            log: state.action_log().clone(),
+        };
+
+        return match objective {
+            Objective::Reach(_) if discovery.score.feasible => discovery.score,
+            Objective::Reach(_) => late,
+            Objective::Maximize { .. } => {
+                if discovery.score.feasible
+                    && (discovery.score.value > late.value
+                        || (discovery.score.value == late.value
+                            && discovery.score.months < late.months))
+                {
+                    discovery.score
+                } else {
+                    late
+                }
+            }
+        };
+    }
+
+    if discovery.score.feasible {
+        discovery.score
+    } else {
+        PlanScore {
+            feasible: false,
+            months: discovery.final_months,
+            violation: discovery.score.violation.min(violation),
+            value: f64::NEG_INFINITY,
+            log: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ActionLookaheadScore {
     feasible: bool,
@@ -937,21 +1231,7 @@ fn action_lookahead_score(
         state.apply_action_raw(&Action::Wait(wait_months), false);
     }
 
-    let floors = objective.floors();
-    let violation = goal_violation(floors, state);
-    let metric_value = objective
-        .metric()
-        .map_or_else(|| -violation, |metric| metric.value(state));
-
-    let score = ActionLookaheadScore {
-        feasible: violation <= 0.0,
-        objective_value: score_units(metric_value),
-        floor_violation: score_units(violation),
-        income: score_units(state.balance().net_income()),
-        stability: score_units(state.system().avg_stability()),
-        defense: score_units(state.system().avg_ground_defense()),
-        earlier: -(wait_months as i32),
-    };
+    let score = score_state(state, objective, -(wait_months as i32));
 
     // Undo in the exact reverse order applied, restoring `state`.
     if wait_months > 0 {

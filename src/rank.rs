@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::solver::pareto::ParetoSolve;
 use crate::solver::{
     solve_pareto_bound_with_settings, solve_pareto_quick_with_settings,
-    solve_pareto_template_with_settings, Balance, SolverSettings,
+    solve_pareto_template_with_settings, Balance, FacilityUpgradePlacement, SolverSettings,
 };
 use crate::system::System;
 
@@ -117,6 +117,7 @@ pub fn rank_systems(
         RankScorer::Template => solve_pareto_template_with_settings,
         RankScorer::Bound => solve_pareto_bound_with_settings,
     };
+    let settings = settings.with_facility_upgrade_placement(FacilityUpgradePlacement::LateApply);
 
     let mut rows = Vec::with_capacity(names.len());
     for name in names {
