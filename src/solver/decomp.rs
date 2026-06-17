@@ -376,6 +376,20 @@ impl SystemPlan {
             .any(|p| p.improvements || p.alpha_cores)
     }
 
+    /// A copy of this plan with every facility-improvement and alpha-core toggle
+    /// cleared, so [`SystemPlan::allows`] rejects deferred upgrades and the
+    /// greedy simulator never schedules one on its own. The two-pass discovery
+    /// and replay passes both run over this masked plan; replay reintroduces the
+    /// chosen upgrades explicitly via pin injection.
+    fn without_facility_upgrades(&self) -> SystemPlan {
+        let mut masked = self.clone();
+        for plan in masked.planets.values_mut() {
+            plan.improvements = false;
+            plan.alpha_cores = false;
+        }
+        masked
+    }
+
     /// Total number of decisions across all planets.
     fn size(&self) -> usize {
         self.planets.values().map(PlanetPlan::size).sum::<usize>()
@@ -501,7 +515,7 @@ struct PlanActionScoreCache {
 struct ChosenFacilityUpgrades {
     /// Chosen upgrades in allocation order (drives `ReplayAsap`/`LateApply`).
     order: Vec<Action>,
-    /// Same actions in a set for O(1) `contains` on the replay hot path.
+    /// Same actions in a set, so `insert` dedups in O(1).
     set: HashSet<Action>,
 }
 
@@ -516,21 +530,14 @@ impl ChosenFacilityUpgrades {
         }
     }
 
-    fn contains(&self, action: &Action) -> bool {
-        self.set.contains(action)
-    }
-}
-
-#[derive(Clone, Copy)]
-enum SimulationMode<'a> {
-    Normal,
-    DiscoverFacilityUpgrades,
-    ReplayFacilityUpgrades(&'a ChosenFacilityUpgrades),
-}
-
-impl SimulationMode<'_> {
-    fn continue_after_reach(self) -> bool {
-        matches!(self, SimulationMode::DiscoverFacilityUpgrades)
+    /// The first chosen upgrade (in allocation order) that is legal right now —
+    /// i.e. present in `actions` and not yet applied. Drives the ASAP replay:
+    /// the simulator applies it before any ordinary plan action.
+    fn next_applicable(&self, actions: &[Action]) -> Option<Action> {
+        self.order
+            .iter()
+            .find(|chosen| actions.contains(chosen))
+            .cloned()
     }
 }
 
@@ -734,23 +741,19 @@ fn run_plan(
 ) -> PlanScore {
     stats::RUN_PLAN_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if !should_use_two_pass_facility_upgrades(initial_state, plan, settings) {
-        return run_plan_once(
-            initial_state,
-            objective,
-            plan,
-            settings,
-            SimulationMode::Normal,
-        )
-        .score;
+        return run_plan_once(initial_state, objective, plan, settings, None, false).score;
     }
 
-    let discovery = run_plan_once(
-        initial_state,
-        objective,
-        plan,
-        settings,
-        SimulationMode::DiscoverFacilityUpgrades,
-    );
+    // Two-pass facility upgrades. Both passes run over a plan with deferred
+    // upgrades masked off, so the greedy simulator only schedules the facility
+    // builds; the upgrades are reintroduced deliberately once the full built
+    // set is known.
+    let masked = plan.without_facility_upgrades();
+
+    // Pass 1 — discovery: build the plan out to the horizon (rolling past the
+    // reach goal) to settle which facilities exist, then allocate upgrades onto
+    // that settled state using the original (unmasked) plan's intent.
+    let discovery = run_plan_once(initial_state, objective, &masked, settings, None, true);
     let chosen = choose_facility_upgrades(&discovery.final_state, objective, plan, settings);
     if chosen.is_empty() {
         return discovery.score;
@@ -760,14 +763,9 @@ fn run_plan(
         return apply_facility_upgrades_late(discovery, objective, &chosen);
     }
 
-    run_plan_once(
-        initial_state,
-        objective,
-        plan,
-        settings,
-        SimulationMode::ReplayFacilityUpgrades(&chosen),
-    )
-    .score
+    // Pass 2 — replay: re-run the masked plan, injecting the chosen upgrades as
+    // early as each becomes legal so the timeline reflects the boosts.
+    run_plan_once(initial_state, objective, &masked, settings, Some(&chosen), false).score
 }
 
 fn should_use_two_pass_facility_upgrades(
@@ -782,12 +780,20 @@ fn should_use_two_pass_facility_upgrades(
             || initial_state.balance().alpha_cores() > 0)
 }
 
+/// Forward-simulate a fixed plan once.
+///
+/// `pins`, when set, are facility upgrades to inject as early as each becomes
+/// legal (the `ReplayAsap` second pass); the plan itself should have its
+/// upgrade toggles masked off so the greedy never schedules an unpinned one.
+/// `roll_to_end` keeps a reach simulation running past the first satisfying
+/// instant so the discovery pass settles the full built set.
 fn run_plan_once(
     initial_state: &State,
     objective: &Objective,
     plan: &SystemPlan,
     settings: SolverSettings,
-    mode: SimulationMode,
+    pins: Option<&ChosenFacilityUpgrades>,
+    roll_to_end: bool,
 ) -> SimulationResult {
     let floors = objective.floors();
     let horizon = objective.horizon_months();
@@ -831,12 +837,13 @@ fn run_plan_once(
             match metric {
                 None => {
                     // Reach: the first satisfying instant is the answer, except
-                    // discovery must keep rolling to learn the final build set.
+                    // discovery (`roll_to_end`) keeps rolling to learn the final
+                    // build set.
                     if best_log_len.is_none() {
                         best_months = total_months;
                         best_log_len = Some(state.action_log().len());
                     }
-                    if !mode.continue_after_reach() {
+                    if !roll_to_end {
                         return SimulationResult {
                             score: PlanScore {
                                 feasible: true,
@@ -853,8 +860,7 @@ fn run_plan_once(
                 Some(metric) => {
                     let value = metric.value(&state);
                     if best_log_len.is_none()
-                        || value > best_value
-                        || (value == best_value && total_months < best_months)
+                        || maximize_improves(value, total_months, best_value, best_months)
                     {
                         best_value = value;
                         best_months = total_months;
@@ -874,7 +880,16 @@ fn run_plan_once(
 
         let actions = state.get_possible_actions(settings.exclude_upgrades());
 
-        // 1) Take the best immediately-applicable plan action. The static
+        // 1) Replay: apply the next legal pinned facility upgrade immediately,
+        //    in the discovered allocation order, ahead of any ordinary plan
+        //    action. The masked plan rejects upgrades in `choose_plan_action`,
+        //    so this injection is the only way a deferred upgrade enters replay.
+        if let Some(action) = pins.and_then(|pins| pins.next_applicable(&actions)) {
+            state.apply_action_raw(&action, false);
+            continue;
+        }
+
+        // 2) Take the best immediately-applicable plan action. The static
         // action priority is only a tie-breaker here; for fixed-plan scheduling
         // we need to avoid building a generic multiplier (notably Commerce)
         // before the production it is supposed to multiply.
@@ -884,7 +899,6 @@ fn run_plan_once(
             plan,
             &actions,
             settings,
-            mode,
             &mut score_cache,
             &mut score_cache_dirty,
             total_months,
@@ -894,7 +908,7 @@ fn run_plan_once(
             continue;
         }
 
-        // 2) Nothing to do right now: advance to the next meaningful event.
+        // 3) Nothing to do right now: advance to the next meaningful event.
         //    A single Wait ticks every colonized planet at once.
         let mut wait: Option<u32> = None;
         for action in &actions {
@@ -963,7 +977,6 @@ fn choose_plan_action(
     plan: &SystemPlan,
     actions: &[Action],
     settings: SolverSettings,
-    mode: SimulationMode,
     cache: &mut PlanActionScoreCache,
     dirty: &mut bool,
     total_months: i32,
@@ -973,22 +986,11 @@ fn choose_plan_action(
     // per-candidate `State` clone — that clone was the run_plan hot-spot), then
     // pick the max. `max_by` would call the comparator O(n) times and recompute
     // both operands' scores on every call.
-    let mut candidates: Vec<Action> = actions
+    let candidates: Vec<Action> = actions
         .iter()
-        .filter(|a| {
-            !is_wait(a)
-                && plan.allows(a)
-                && queue_allows_action(state, a, settings)
-                && simulation_mode_allows_action(mode, a)
-        })
+        .filter(|a| !is_wait(a) && plan.allows(a) && queue_allows_action(state, a, settings))
         .cloned()
         .collect();
-
-    if matches!(mode, SimulationMode::ReplayFacilityUpgrades(_))
-        && candidates.iter().any(is_deferred_facility_upgrade)
-    {
-        candidates.retain(is_deferred_facility_upgrade);
-    }
 
     if candidates.is_empty() {
         cache.candidates.clear();
@@ -1057,14 +1059,10 @@ fn is_deferred_facility_upgrade(action: &Action) -> bool {
     )
 }
 
-fn simulation_mode_allows_action(mode: SimulationMode, action: &Action) -> bool {
-    match mode {
-        SimulationMode::Normal => true,
-        SimulationMode::DiscoverFacilityUpgrades => !is_deferred_facility_upgrade(action),
-        SimulationMode::ReplayFacilityUpgrades(chosen) => {
-            !is_deferred_facility_upgrade(action) || chosen.contains(action)
-        }
-    }
+/// For a maximize objective, whether outcome `(value_a, months_a)` strictly
+/// beats `(value_b, months_b)`: higher value wins, ties broken by fewer months.
+fn maximize_improves(value_a: f64, months_a: i32, value_b: f64, months_b: i32) -> bool {
+    value_a > value_b || (value_a == value_b && months_a < months_b)
 }
 
 fn choose_facility_upgrades(
@@ -1157,9 +1155,12 @@ fn apply_facility_upgrades_late(
             Objective::Reach(_) => late,
             Objective::Maximize { .. } => {
                 if discovery.score.feasible
-                    && (discovery.score.value > late.value
-                        || (discovery.score.value == late.value
-                            && discovery.score.months < late.months))
+                    && maximize_improves(
+                        discovery.score.value,
+                        discovery.score.months,
+                        late.value,
+                        late.months,
+                    )
                 {
                     discovery.score
                 } else {
