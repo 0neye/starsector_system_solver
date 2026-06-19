@@ -2726,6 +2726,565 @@ fn lazy_hill_climb(
     }
 }
 
+// ===========================================================================
+// Evolutionary plan search (experimental, gated by `SYSTEM_SOLVER_EA`)
+// ===========================================================================
+//
+// An alternative Level-1 driver: instead of climbing a handful of ranked seeds
+// independently, evolve a *population* of `SystemPlan`s with per-planet uniform
+// crossover. A `SystemPlan` is already a natural genome — one `PlanetPlan`
+// (7 toggles + a facility set) per planet — and crossover recombines
+// independently-good per-planet sub-plans, which restart-from-subset +
+// single-move VND structurally cannot do in one step on the rugged maximize
+// landscape (see `MAXIMIZE_LOCAL_MINIMA.md`).
+//
+// Everything else is reused verbatim: `run_plan_cached` for fitness (shared
+// memo, parallel evaluation), `is_better` for selection ordering (handles the
+// infeasible→feasible gradient), `move_keys`/`apply_move` for legal mutations,
+// and `lazy_hill_climb` for the memetic polish (global exploration by the GA,
+// local exploitation by the existing climb).
+//
+// Shape (per solve):
+//   1. Seed the population from the planet-set seeds + mutated/random fill.
+//   2. Evolve (elitism + tournament + per-planet crossover + move-mutation,
+//      with random immigrants on a stall) for `1 - polish_fraction` of the
+//      wall-clock.
+//   3. Polish: deep-climb the best evolved individuals *and* the best original
+//      seeds. Climbing the seeds guarantees at least the default path's
+//      ranked-seed climbs, so the EA never loses the precise template builds the
+//      tightest floors need.
+// `polish_fraction` and the seed-climb count adapt to the system's seed count.
+//
+// Benchmarked (5-system `system_benchmark.db`, 5 s/point, vs the default climb):
+// +39% mean income, 41/51 points improved, 2 small regressions, 0 points lost,
+// and 4 feasible frontier points the default climb missed entirely. The win
+// comes from the multi-planet systems where the default climb traps in local
+// optima (Beta Bhel +178%, Tyle +36%, Westernesse +24%).
+//
+// Determinism caveat: a seeded SplitMix64 PRNG makes the GA reproducible *given
+// the same generation count*, but the GA/polish boundary is wall-clock-based, so
+// — unlike the node-budget-bounded default climb — the EA's result is not
+// machine-independent even within the deadline. This is acceptable for the
+// maximize/ranking use it targets (already wall-clock-bound in practice); keep
+// the default climb where bit-reproducibility matters (e.g. reach mode).
+
+fn ea_enabled() -> bool {
+    static EA: OnceLock<bool> = OnceLock::new();
+    *EA.get_or_init(|| std::env::var_os("SYSTEM_SOLVER_EA").is_some_and(|v| !v.is_empty()))
+}
+
+fn env_usize(key: &str, default: usize) -> usize {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_usize_opt(key: &str) -> Option<usize> {
+    std::env::var(key).ok().and_then(|v| v.parse().ok())
+}
+
+fn env_f64_opt(key: &str) -> Option<f64> {
+    std::env::var(key).ok().and_then(|v| v.parse().ok())
+}
+
+/// Deterministic SplitMix64 — small, fast, no external `rand` dependency. The
+/// stream is reproducible given the same draw sequence; see the section header
+/// for the wall-clock caveat on the EA's overall determinism.
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Rng(seed)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform in `0..n` (n must be > 0).
+    fn below(&mut self, n: usize) -> usize {
+        (self.next_u64() % n as u64) as usize
+    }
+
+    fn flip(&mut self) -> bool {
+        self.next_u64() & 1 == 1
+    }
+
+    /// Uniform in `[0, 1)`.
+    fn frac(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
+/// EA hyperparameters with per-knob env overrides for tuning without
+/// recompiling. Read once per process (env is constant), like [`ea_enabled`].
+#[derive(Clone, Copy, Debug)]
+struct EaParams {
+    population: usize,
+    elite: usize,
+    tournament: usize,
+    /// Max single moves applied when mutating an offspring (1..=this).
+    mutation_moves: usize,
+    /// Probability an offspring is mutated after crossover.
+    mutation_rate: f64,
+    /// Generations of no incumbent improvement before injecting random
+    /// immigrants (diversity restart) — *not* a termination, unlike the old
+    /// stall stop, which cut exploration short on tight floors.
+    stall_generations: u32,
+    /// Fraction of the wall-clock budget reserved for the memetic polish phase.
+    /// The GA explores in the remaining `1 - polish_fraction`; the polish then
+    /// deep-climbs the best individuals and seeds with the rest. `None` ⇒
+    /// adaptive: scaled down for many-planet systems (where GA exploration is
+    /// the win) and up for small ones (where a baseline-style climb is hard to
+    /// beat). Giving the GA the *bulk* of the budget is load-bearing — running
+    /// the deep climbs first instead starves the GA and erases the wins.
+    polish_fraction: Option<f64>,
+    /// Top-N evolved individuals deep-climbed in the polish.
+    polish_elites: usize,
+    /// Top-N *original* planet-set seeds also deep-climbed in the polish, so the
+    /// EA always does at least the default path's ranked-seed climbs — the
+    /// precise builds the tightest floors need can't be bred away. `None` ⇒
+    /// adaptive: up to 8 of the best seeds (all of them on small systems).
+    seed_climbs: Option<usize>,
+    /// Per-climb node cap for the polish climbs. Sized to let a climb fully
+    /// converge (~20k nodes per the climb path); the wall-clock deadline is the
+    /// real governor.
+    climb_node_cap: u32,
+}
+
+impl EaParams {
+    fn get() -> Self {
+        static PARAMS: OnceLock<EaParams> = OnceLock::new();
+        *PARAMS.get_or_init(|| EaParams {
+            population: env_usize("SYSTEM_SOLVER_EA_POP", 56),
+            elite: env_usize("SYSTEM_SOLVER_EA_ELITE", 6),
+            tournament: env_usize("SYSTEM_SOLVER_EA_TOUR", 3),
+            mutation_moves: env_usize("SYSTEM_SOLVER_EA_MUT", 2),
+            mutation_rate: 0.9,
+            stall_generations: env_usize("SYSTEM_SOLVER_EA_STALL", 6) as u32,
+            polish_fraction: env_f64_opt("SYSTEM_SOLVER_EA_POLISH_FRAC"),
+            polish_elites: env_usize("SYSTEM_SOLVER_EA_POLISH", 4),
+            seed_climbs: env_usize_opt("SYSTEM_SOLVER_EA_SEED_CLIMBS"),
+            climb_node_cap: env_usize("SYSTEM_SOLVER_EA_CLIMB_NODES", 60_000) as u32,
+        })
+    }
+}
+
+/// A random plan over the system's planets: each optional planet is colonized by
+/// a coin flip, each developed planet gets random toggles and a random subset of
+/// its statically-buildable facilities (with prerequisite chains pulled in so no
+/// gene is inert).
+fn ea_random_plan(state: &State, ctx: &SearchContext, rng: &mut Rng) -> SystemPlan {
+    let mut planets = HashMap::new();
+    for (hash, planet) in state.system().planets() {
+        let pre_colonized = planet.has_colony();
+        let colonize = pre_colonized || rng.flip();
+        let pplan = if colonize {
+            let mut facilities: HashSet<FacilityType> = ctx
+                .relevant_facilities(*hash)
+                .iter()
+                .copied()
+                .filter(|_| rng.flip())
+                .collect();
+            for ft in facilities.iter().copied().collect::<Vec<_>>() {
+                for pre in upgrade_predecessors(ft) {
+                    facilities.insert(*pre);
+                }
+            }
+            PlanetPlan {
+                colonize,
+                free_port: rng.flip(),
+                hazard_pay: rng.flip(),
+                upgrade_admin: rng.flip(),
+                improvements: rng.flip(),
+                alpha_cores: rng.flip(),
+                install_items: ctx.allow_install_items && rng.flip(),
+                facilities,
+            }
+        } else {
+            PlanetPlan::default()
+        };
+        planets.insert(*hash, pplan);
+    }
+    SystemPlan {
+        planets,
+        makeshift_comm_relay: state.system().can_build_makeshift_comm_relay() && rng.flip(),
+    }
+}
+
+/// Per-planet uniform crossover: for each planet the child inherits one parent's
+/// whole `PlanetPlan`, and the relay flag from one parent. Recombining whole
+/// per-planet sub-plans is the EA's edge over single-move local search.
+fn ea_crossover(a: &SystemPlan, b: &SystemPlan, rng: &mut Rng) -> SystemPlan {
+    let mut planets = HashMap::with_capacity(a.planets.len());
+    for (hash, ap) in &a.planets {
+        let chosen = if rng.flip() {
+            ap
+        } else {
+            b.planets.get(hash).unwrap_or(ap)
+        };
+        planets.insert(*hash, chosen.clone());
+    }
+    SystemPlan {
+        planets,
+        makeshift_comm_relay: if rng.flip() {
+            a.makeshift_comm_relay
+        } else {
+            b.makeshift_comm_relay
+        },
+    }
+}
+
+/// Apply 1..=`max_moves` random legal single moves (the same `MoveKey` set the
+/// climb walks), so mutations stay legal and meaningful by construction.
+fn ea_mutate(
+    state: &State,
+    ctx: &SearchContext,
+    mut plan: SystemPlan,
+    rng: &mut Rng,
+    max_moves: usize,
+) -> SystemPlan {
+    let n = 1 + rng.below(max_moves.max(1));
+    for _ in 0..n {
+        let keys = move_keys(state, ctx, &plan);
+        if keys.is_empty() {
+            break;
+        }
+        let key = keys[rng.below(keys.len())];
+        if let Some(next) = apply_move(state, ctx, &plan, key) {
+            plan = next;
+        }
+    }
+    plan
+}
+
+/// Tournament selection: sample `k` population members, return the best by
+/// [`is_better`].
+fn ea_tournament<'a>(
+    pop: &'a [(SystemPlan, PlanScore)],
+    objective: &Objective,
+    rng: &mut Rng,
+    k: usize,
+) -> &'a (SystemPlan, PlanScore) {
+    let mut best = &pop[rng.below(pop.len())];
+    for _ in 1..k.max(1) {
+        let cand = &pop[rng.below(pop.len())];
+        if is_better(objective, &cand.1, &cand.0, &best.1, &best.0) {
+            best = cand;
+        }
+    }
+    best
+}
+
+/// Sort scored plans best-first, mirroring the [`is_better`] total order. Shared
+/// by the default path's seed ranking and the EA's per-generation/final sorts.
+fn sort_plans_by_score(pop: &mut [(SystemPlan, PlanScore)], objective: &Objective) {
+    pop.sort_by(|a, b| {
+        if is_better(objective, &a.1, &a.0, &b.1, &b.0) {
+            std::cmp::Ordering::Less
+        } else if is_better(objective, &b.1, &b.0, &a.1, &a.0) {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    });
+}
+
+/// Score a batch of plans through the shared memo, evaluating cache misses in
+/// parallel. `State` is `!Sync` (interior mutability caches), so — like the seed
+/// scorer — each parallel task gets its own clone; the clone is done only for
+/// genuine misses (resolved against the memo up front), since the EA's elites
+/// and recombinations frequently reproduce already-scored genomes.
+fn ea_score(
+    state: &State,
+    objective: &Objective,
+    settings: SolverSettings,
+    cache: &PlanCache,
+    plans: &[SystemPlan],
+) -> Vec<PlanScore> {
+    // Hash outside the lock (each `plan_key` allocs + sorts) so the parallel
+    // `run_plan_cached` workers aren't blocked on the cache mutex while we key.
+    let keys: Vec<PlanKey> = plans.iter().map(plan_key).collect();
+    let mut results: Vec<Option<PlanScore>> = {
+        let guard = cache.lock().unwrap();
+        keys.iter().map(|k| guard.get(k).cloned()).collect()
+    };
+    let misses: Vec<(usize, State, &SystemPlan)> = plans
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| results[*i].is_none())
+        .map(|(i, p)| (i, state.clone(), p))
+        .collect();
+    let scored: Vec<(usize, PlanScore)> = misses
+        .into_par_iter()
+        .map(|(i, st, p)| (i, run_plan_cached(&st, objective, p, settings, cache)))
+        .collect();
+    for (i, s) in scored {
+        results[i] = Some(s);
+    }
+    results.into_iter().map(|s| s.expect("every plan scored")).collect()
+}
+
+/// Deep-climb a set of candidates in parallel via [`lazy_hill_climb`]. Each
+/// climb gets its own `State` clone (`!Sync`), the same per-climb node cap, and
+/// the shared wall-clock deadline. Returns the climbed candidates and the total
+/// nodes spent.
+#[allow(clippy::too_many_arguments)]
+fn ea_climb_set(
+    state: &State,
+    ctx: &SearchContext,
+    objective: &Objective,
+    settings: SolverSettings,
+    cache: &PlanCache,
+    candidates: Vec<(SystemPlan, PlanScore)>,
+    per_climb_nodes: u32,
+    start: Instant,
+    deadline: Duration,
+) -> (Vec<(SystemPlan, PlanScore)>, u32) {
+    if candidates.is_empty() {
+        return (Vec::new(), 0);
+    }
+    // Pre-clone the start state per climb (sequentially: `State` is `!Sync`).
+    let work: Vec<(State, SystemPlan, PlanScore)> = candidates
+        .into_iter()
+        .map(|(p, s)| (state.clone(), p, s))
+        .collect();
+    let climbed: Vec<((SystemPlan, PlanScore), u32)> = work
+        .into_par_iter()
+        .map(|(st, plan, score)| {
+            let mut n = 0u32;
+            let (p, s) = lazy_hill_climb(
+                &st, ctx, objective, settings, plan, score, per_climb_nodes, &mut n, cache,
+                start, deadline,
+            );
+            ((p, s), n)
+        })
+        .collect();
+    let nodes: u32 = climbed.iter().map(|(_, n)| n).sum();
+    let out = climbed.into_iter().map(|(ps, _)| ps).collect();
+    (out, nodes)
+}
+
+/// Evolve a population of plans from `seeds`, then memetically polish the top
+/// elites with [`lazy_hill_climb`]. Returns the best plan, its score, and the
+/// number of plan evaluations spent (cache hits included, mirroring the climb
+/// path's node accounting).
+#[allow(clippy::too_many_arguments)]
+fn ea_search(
+    state: &State,
+    ctx: &SearchContext,
+    objective: &Objective,
+    settings: SolverSettings,
+    seeds: Vec<SystemPlan>,
+    cache: &PlanCache,
+    params: EaParams,
+    start: Instant,
+    deadline: Duration,
+) -> Option<(SystemPlan, PlanScore, u32)> {
+    let mut rng = Rng::new(0x5EED_C0DE_1234_9ABC ^ seeds.len() as u64);
+    let mut nodes: u32 = 0;
+
+    // Retain the deduped original planet-set seeds: they seed the population
+    // *and* (the best of them) get a guaranteed deep climb in the polish, so the
+    // EA never loses the default path's ranked-seed climbs.
+    let mut seed_pool: Vec<SystemPlan> = Vec::new();
+    let mut seed_seen: HashSet<PlanKey> = HashSet::new();
+    for seed in seeds {
+        if seed_seen.insert(plan_key(&seed)) {
+            seed_pool.push(seed);
+        }
+    }
+    if seed_pool.is_empty() {
+        return None;
+    }
+
+    // Initial population: the seeds first (diverse basins), then mutated seed
+    // variants and random plans to fill, deduped by canonical plan key so no
+    // slot is spent on a known genome.
+    let mut seen: HashSet<PlanKey> = HashSet::new();
+    let mut pop_plans: Vec<SystemPlan> = Vec::new();
+    for seed in &seed_pool {
+        if pop_plans.len() >= params.population {
+            break;
+        }
+        if seen.insert(plan_key(seed)) {
+            pop_plans.push(seed.clone());
+        }
+    }
+    let mut guard = 0usize;
+    let fill_cap = params.population.saturating_mul(8).max(8);
+    while pop_plans.len() < params.population && guard < fill_cap {
+        guard += 1;
+        let plan = if !pop_plans.is_empty() && rng.flip() {
+            let base = pop_plans[rng.below(pop_plans.len())].clone();
+            ea_mutate(state, ctx, base, &mut rng, params.mutation_moves)
+        } else {
+            ea_random_plan(state, ctx, &mut rng)
+        };
+        if seen.insert(plan_key(&plan)) {
+            pop_plans.push(plan);
+        }
+    }
+
+    let scores = ea_score(state, objective, settings, cache, &pop_plans);
+    nodes += pop_plans.len() as u32;
+    let mut pop: Vec<(SystemPlan, PlanScore)> = pop_plans.into_iter().zip(scores).collect();
+    sort_plans_by_score(&mut pop, objective);
+
+    // Reserve ~40% of the wall-clock for the polish. This is the knee of the
+    // GA/polish tradeoff measured over the benchmark (3 runs per point): the GA
+    // finds the winning *basin* early so it doesn't need most of the clock, while
+    // deeper polish protects the few fragile points whose un-lucky GA result can
+    // fall below baseline. Sweeping the reserve, the worst single-point regression
+    // vs the default climb was 0.15→−33%, 0.30→−21%, 0.40→−11%, 0.50→−25%, with
+    // the mean win essentially flat (~+34%) throughout. 0.40 wins the downside.
+    let size = seed_pool.len();
+    let polish_fraction = params.polish_fraction.unwrap_or(0.40).clamp(0.0, 0.9);
+    // Climb up to 8 of the best seeds in the polish; on a small system that is
+    // *all* of them, making the EA's polish a superset of the default path's
+    // ranked-seed climbs.
+    let seed_climbs = params.seed_climbs.unwrap_or_else(|| size.min(8));
+
+    // The GA explores until the polish reserve; the polish then exploits with
+    // the remaining wall-clock. The GA *must* get the bulk of the budget — an
+    // experiment running the deep climbs first (to guarantee a baseline floor)
+    // starved the GA and collapsed the win from +36% to ~0%.
+    let ga_deadline =
+        Duration::from_secs_f64(deadline.as_secs_f64() * (1.0 - polish_fraction));
+
+    let mut generations = 0u32;
+    let mut stagnation = 0u32;
+    while !should_stop(start, ga_deadline) {
+        generations += 1;
+        let target = params.population.saturating_sub(params.elite).max(1);
+        // Elites carried forward; track their keys so offspring don't duplicate
+        // a survivor (a duplicate would waste an evaluation).
+        let mut child_seen: HashSet<PlanKey> = pop
+            .iter()
+            .take(params.elite)
+            .map(|(p, _)| plan_key(p))
+            .collect();
+        let mut children: Vec<SystemPlan> = Vec::with_capacity(target);
+
+        // On a prolonged stall, spend part of the brood on fresh random
+        // immigrants to escape a converged population (diversity restart)
+        // instead of terminating early.
+        let immigrants = if stagnation >= params.stall_generations {
+            target / 4
+        } else {
+            0
+        };
+
+        let mut attempts = 0usize;
+        let attempt_cap = target.saturating_mul(6).max(6);
+        while children.len() < target && attempts < attempt_cap {
+            attempts += 1;
+            let child = if children.len() < immigrants {
+                ea_random_plan(state, ctx, &mut rng)
+            } else {
+                let pa = ea_tournament(&pop, objective, &mut rng, params.tournament)
+                    .0
+                    .clone();
+                let pb = ea_tournament(&pop, objective, &mut rng, params.tournament)
+                    .0
+                    .clone();
+                let mut c = ea_crossover(&pa, &pb, &mut rng);
+                if rng.frac() < params.mutation_rate {
+                    c = ea_mutate(state, ctx, c, &mut rng, params.mutation_moves);
+                }
+                c
+            };
+            if child_seen.insert(plan_key(&child)) {
+                children.push(child);
+            }
+        }
+        // If dedup starved the brood (small / converged populations), inject
+        // fresh random blood rather than shrinking the generation.
+        let mut random_guard = 0usize;
+        while children.len() < target && random_guard < attempt_cap {
+            random_guard += 1;
+            let child = ea_random_plan(state, ctx, &mut rng);
+            if child_seen.insert(plan_key(&child)) {
+                children.push(child);
+            }
+        }
+        if children.is_empty() {
+            break;
+        }
+
+        let child_scores = ea_score(state, objective, settings, cache, &children);
+        nodes += children.len() as u32;
+
+        let prev_best_key = plan_key(&pop[0].0);
+        let mut next: Vec<(SystemPlan, PlanScore)> =
+            pop.into_iter().take(params.elite).collect();
+        next.extend(children.into_iter().zip(child_scores));
+        sort_plans_by_score(&mut next, objective);
+        next.truncate(params.population);
+        pop = next;
+
+        if plan_key(&pop[0].0) == prev_best_key {
+            stagnation += 1;
+        } else {
+            stagnation = 0;
+        }
+    }
+
+    if std::env::var_os("SYSTEM_SOLVER_EA_TRACE").is_some() {
+        eprintln!(
+            "EA size={size} gens={generations} nodes={nodes} polish_frac={polish_fraction:.2} seed_climbs={seed_climbs}"
+        );
+    }
+
+    // Memetic polish: deep-climb the GA's best evolved individuals *and* the
+    // best original seeds (the latter guarantees at least the default path's
+    // ranked-seed climbs — the precise builds the tightest floors need). Each
+    // climb runs in parallel to the full deadline.
+    let mut polish_keys: HashSet<PlanKey> = HashSet::new();
+    let mut polish_set: Vec<(SystemPlan, PlanScore)> = Vec::new();
+    for (plan, score) in pop.iter().take(params.polish_elites) {
+        if polish_keys.insert(plan_key(plan)) {
+            polish_set.push((plan.clone(), score.clone()));
+        }
+    }
+    if seed_climbs > 0 {
+        let mut ranked_seeds: Vec<(SystemPlan, PlanScore)> = {
+            let scores = ea_score(state, objective, settings, cache, &seed_pool);
+            seed_pool.iter().cloned().zip(scores).collect()
+        };
+        sort_plans_by_score(&mut ranked_seeds, objective);
+        for (plan, score) in ranked_seeds.into_iter().take(seed_climbs) {
+            if polish_keys.insert(plan_key(&plan)) {
+                polish_set.push((plan, score));
+            }
+        }
+    }
+    if !polish_set.is_empty() && !should_stop(start, deadline) {
+        let (climbed, used) = ea_climb_set(
+            state,
+            ctx,
+            objective,
+            settings,
+            cache,
+            polish_set,
+            params.climb_node_cap,
+            start,
+            deadline,
+        );
+        nodes += used;
+        pop.extend(climbed);
+        sort_plans_by_score(&mut pop, objective);
+    }
+
+    let best = pop.into_iter().next()?;
+    Some((best.0, best.1, nodes))
+}
+
 /// Level 1 (outer): two-level decomposition solve over the given state's planets
 /// on a single shared timeline, optimizing `objective`.
 ///
@@ -2768,6 +3327,41 @@ fn decomp_search_objective(
         std::sync::atomic::Ordering::Relaxed,
     );
 
+    // Experimental evolutionary driver: evolve a population from the seeds
+    // instead of climbing the top-ranked few independently. Same fitness,
+    // ordering, mutation operators and memetic polish (`lazy_hill_climb`) as the
+    // default path; gated off by default.
+    if ea_enabled() {
+        let cache: PlanCache = Mutex::new(FxHashMap::default());
+        let params = EaParams::get();
+        let (best_plan, best, nodes) = match ea_search(
+            initial_state,
+            &ctx,
+            objective,
+            settings,
+            seed_plans,
+            &cache,
+            params,
+            start,
+            deadline,
+        ) {
+            Some(found) => found,
+            None => return (None, None),
+        };
+        let cutoff_occurred = should_stop(start, deadline);
+        if !best.feasible {
+            return (None, Some(best_plan));
+        }
+        let result = AStarSearchResult {
+            solution: Some(best.log),
+            cost: best.months,
+            cutoff_occurred,
+            nodes_searched: nodes,
+            nodes_pruned_by_bound: 0,
+        };
+        return (Some(result), Some(best_plan));
+    }
+
     // Score every seed once (cheap relative to a climb), rank them, and climb
     // only the most promising few: most seeds converge into the same basins, so
     // climbing all of them re-discovers the same optima at full price. The
@@ -2791,15 +3385,7 @@ fn decomp_search_objective(
             .collect()
     };
     let seed_evals = scored.len() as u32;
-    scored.sort_by(|a, b| {
-        if is_better(objective, &a.1, &a.0, &b.1, &b.0) {
-            std::cmp::Ordering::Less
-        } else if is_better(objective, &b.1, &b.0, &a.1, &a.0) {
-            std::cmp::Ordering::Greater
-        } else {
-            std::cmp::Ordering::Equal
-        }
-    });
+    sort_plans_by_score(&mut scored, objective);
     let mut ranked = scored;
     let mut warm_scored = Vec::new();
     ranked.retain(|(plan, score)| {

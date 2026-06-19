@@ -251,8 +251,18 @@ fn load_systems_from_env() -> Result<HashMap<String, System>, Box<dyn Error>> {
 }
 
 fn env_solver_settings(include_industry_upgrades: bool) -> SolverSettings {
+    use solver::FacilityUpgradePlacement;
+    // Experiment hook: select the facility-upgrade placement (the maximize sim's
+    // most expensive variant is the default `ReplayAsap` two-pass; `LateApply`
+    // and `Greedy` are the cheaper "surrogate" evaluations).
+    let placement = match std::env::var("SYSTEM_SOLVER_PLACEMENT").as_deref() {
+        Ok("greedy") | Ok("Greedy") => FacilityUpgradePlacement::Greedy,
+        Ok("lateapply") | Ok("LateApply") => FacilityUpgradePlacement::LateApply,
+        _ => FacilityUpgradePlacement::default(),
+    };
     SolverSettings {
         include_industry_upgrades,
+        facility_upgrade_placement: placement,
         allow_parallel_builds: std::env::var_os("SYSTEM_SOLVER_PARALLEL_BUILDS")
             .is_some_and(|value| !value.is_empty() && value != "0"),
         ..Default::default()
