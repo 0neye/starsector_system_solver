@@ -250,6 +250,17 @@ fn load_systems_from_env() -> Result<HashMap<String, System>, Box<dyn Error>> {
     Ok(parser::load_game_data_from_db(&db, save.as_deref())?)
 }
 
+/// Plan-search driver for the production maximize paths (`--solve`, `--maximize`,
+/// Pareto sweep, TUI). Defaults to the evolutionary driver (better income at
+/// equal budget on multi-planet systems); `SYSTEM_SOLVER_PLAN=climb` forces the
+/// deterministic hill-climb for A/B comparison.
+fn production_plan_search() -> solver::PlanSearch {
+    match std::env::var("SYSTEM_SOLVER_PLAN").as_deref() {
+        Ok("climb") | Ok("Climb") | Ok("hill") => solver::PlanSearch::Climb,
+        _ => solver::PlanSearch::Evolutionary,
+    }
+}
+
 fn env_solver_settings(include_industry_upgrades: bool) -> SolverSettings {
     use solver::FacilityUpgradePlacement;
     // Experiment hook: select the facility-upgrade placement (the maximize sim's
@@ -1207,7 +1218,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         let show_stats = std::env::var_os("SYSTEM_SOLVER_STATS").is_some();
         // SYSTEM_SOLVER_NO_UPGRADES=1 disables improvements/alpha-core installs
         // (matches the CLI's `--no-industry-upgrades`).
-        let settings = env_solver_settings(std::env::var_os("SYSTEM_SOLVER_NO_UPGRADES").is_none());
+        let settings = env_solver_settings(std::env::var_os("SYSTEM_SOLVER_NO_UPGRADES").is_none())
+            .with_plan_search(production_plan_search());
 
         // Reuse the maximize-then-replay measurement and floor grids from the
         // Pareto library so the CSV sweep and `--solve` can't drift apart. The
@@ -1347,6 +1359,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let settings = SolverSettings {
         include_industry_upgrades: cli.include_industry_upgrades,
         allow_parallel_builds: cli.parallel_builds,
+        // `--solve`/`--maximize` use the evolutionary driver; the ranking path
+        // (`run_rank`) shares this `settings` but always climbs because its
+        // reduced search profiles do not permit the evolutionary driver.
+        plan_search: production_plan_search(),
         ..Default::default()
     };
 

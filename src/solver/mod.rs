@@ -20,7 +20,7 @@ pub use pareto::{
 pub(crate) use state::improvement_story_point_cost;
 pub use state::{Action, Balance, State};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum FacilityUpgradePlacement {
     /// Schedule facility improvements and alpha cores greedily as ordinary
     /// actions.
@@ -35,6 +35,24 @@ pub enum FacilityUpgradePlacement {
     ReplayAsap,
 }
 
+/// Which Level-1 plan-search driver to use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PlanSearch {
+    /// Deterministic best-improvement hill-climb over ranked seeds (the original
+    /// Level-1 driver). Bit-reproducible within the time budget on every machine.
+    #[default]
+    Climb,
+    /// Evolutionary (genetic) plan search: evolve a population of `SystemPlan`s
+    /// with per-planet crossover, then memetically polish the best with the
+    /// climb. Escapes the local optima the plain climb traps in on multi-planet
+    /// maximize problems (+income at equal budget), at the cost of
+    /// wall-clock-bound — hence machine-dependent — results even inside the
+    /// budget. Only engages for the full-profile maximize search (the production
+    /// `--solve`/`--maximize`/Pareto path); the reduced-budget ranking profiles
+    /// always climb so ranking stays fast and ordered.
+    Evolutionary,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SolverSettings {
     /// Include story-point improvements and alpha-core installs on industries
@@ -47,6 +65,8 @@ pub struct SolverSettings {
     /// same colony at the same time. Vanilla Starsector queues them one at a
     /// time per colony.
     pub allow_parallel_builds: bool,
+    /// Which Level-1 plan-search driver to use (full-profile maximize only).
+    pub plan_search: PlanSearch,
 }
 
 impl Default for SolverSettings {
@@ -55,6 +75,7 @@ impl Default for SolverSettings {
             include_industry_upgrades: true,
             facility_upgrade_placement: FacilityUpgradePlacement::default(),
             allow_parallel_builds: false,
+            plan_search: PlanSearch::Climb,
         }
     }
 }
@@ -69,11 +90,18 @@ impl SolverSettings {
             include_industry_upgrades,
             facility_upgrade_placement: FacilityUpgradePlacement::default(),
             allow_parallel_builds: true,
+            plan_search: PlanSearch::Climb,
         }
     }
 
     pub fn with_facility_upgrade_placement(mut self, placement: FacilityUpgradePlacement) -> Self {
         self.facility_upgrade_placement = placement;
+        self
+    }
+
+    /// Select the Level-1 plan-search driver (builder form).
+    pub fn with_plan_search(mut self, plan_search: PlanSearch) -> Self {
+        self.plan_search = plan_search;
         self
     }
 

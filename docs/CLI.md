@@ -90,8 +90,15 @@ valid colony plan.
 - `--time-limit <TIME_LIMIT>`: hard wall-clock solver budget in milliseconds.
   Default: `25000`.
 
-If the time limit fires, the solver returns its best-so-far plan. Results are
-deterministic only when the solve finishes inside the budget.
+If the time limit fires, the solver returns its best-so-far plan.
+
+The default goal search (reach a threshold in minimum months) is deterministic
+whenever it finishes inside the budget — the result is identical on every
+machine and run. `--solve` and `--maximize` instead drive an evolutionary
+(genetic) plan search, which finds higher-income plans at equal budget on
+multi-planet systems but is wall-clock-bound: its result can vary run to run and
+machine to machine even within the budget. Set `SYSTEM_SOLVER_PLAN=climb` to fall
+back to the deterministic hill-climb for those modes.
 
 ### Ranking
 

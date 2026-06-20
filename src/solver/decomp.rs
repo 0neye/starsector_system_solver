@@ -45,7 +45,7 @@ use crate::constants::{FacilityType, Resource, FACILITY_DATA, FACILITY_REQUIREME
 use crate::planet::{upgrade_predecessors, Planet};
 use crate::solver::goal::{AStarSearchResult, Goal, Metric};
 use crate::solver::state::{Action, State};
-use crate::solver::{FacilityUpgradePlacement, SolverSettings};
+use crate::solver::{FacilityUpgradePlacement, PlanSearch, SolverSettings};
 
 /// What the search optimizes.
 ///
@@ -181,6 +181,14 @@ impl SearchProfile {
         max_nodes_per_seed: 1,
         warm_seeds_only: false,
     };
+
+    /// Whether the evolutionary driver may engage for this profile. Only the
+    /// full production search ([`SearchProfile::FULL`]) qualifies; the reduced
+    /// ranking profiles (`QUICK`/`QUICK_REPAIR`/`BOUND`/`TEMPLATE`) always climb
+    /// so ranking keeps its fast, budget-bounded behavior.
+    pub(crate) fn permits_evolutionary(&self) -> bool {
+        self.top_seed_climbs == TOP_SEED_CLIMBS && self.max_nodes_per_seed == MAX_NODES_PER_SEED
+    }
 }
 
 /// Static facts about the search instance, computed once per solve and threaded
@@ -1399,6 +1407,10 @@ struct FactoredLookaheadBase {
     waits: Vec<u32>,
     planet_hashes: Vec<u64>,
     by_wait: Vec<Vec<PlanetScoreInputs>>,
+    /// `total_by_wait[w]` = sum of every planet's inputs at wait `waits[w]`,
+    /// precomputed once so a candidate's combined inputs are `total - old + new`
+    /// (O(1)) instead of re-summing all planets (O(planets)) per candidate.
+    total_by_wait: Vec<SystemScoreInputs>,
 }
 
 impl FactoredLookaheadBase {
@@ -1430,10 +1442,22 @@ impl FactoredLookaheadBase {
             planet.restore_wait_state(&snapshot);
         }
 
+        let total_by_wait: Vec<SystemScoreInputs> = by_wait
+            .iter()
+            .map(|planets| {
+                let mut total = SystemScoreInputs::default();
+                for inputs in planets {
+                    total.add(inputs);
+                }
+                total
+            })
+            .collect();
+
         Self {
             waits: waits.to_vec(),
             planet_hashes,
             by_wait,
+            total_by_wait,
         }
     }
 
@@ -1456,15 +1480,28 @@ impl FactoredLookaheadBase {
         replace_index: usize,
         replacement: &PlanetScoreInputs,
     ) -> SystemScoreInputs {
-        let mut totals = SystemScoreInputs::default();
-        for (idx, inputs) in self.by_wait[wait_index].iter().enumerate() {
-            totals.add(if idx == replace_index {
-                replacement
-            } else {
-                inputs
-            });
+        if incremental_sum_enabled() {
+            // total - the replaced planet + its replacement. Mathematically equal
+            // to re-summing all planets with one swapped; the float association
+            // differs by sub-ULP amounts that `score_units` (×1000, rounded)
+            // quantizes away, so the factored-vs-reference exactness check holds.
+            let mut totals = self.total_by_wait[wait_index];
+            totals.sub(&self.by_wait[wait_index][replace_index]);
+            totals.add(replacement);
+            totals
+        } else {
+            // Reference O(planets) recombination (A/B baseline for the speedup;
+            // SYSTEM_SOLVER_NO_INCSUM=1).
+            let mut totals = SystemScoreInputs::default();
+            for (idx, inputs) in self.by_wait[wait_index].iter().enumerate() {
+                totals.add(if idx == replace_index {
+                    replacement
+                } else {
+                    inputs
+                });
+            }
+            totals
         }
-        totals
     }
 }
 
@@ -1496,6 +1533,30 @@ impl SystemScoreInputs {
             mask &= mask - 1;
             self.raw_supply[index] += planet.raw_supply[index];
             self.modded_supply[index] += planet.modded_supply[index];
+        }
+    }
+
+    /// Remove a planet's contribution previously folded in by [`add`]. The export
+    /// mask is intentionally *not* cleared: another planet may still export the
+    /// same resource, and a resource whose supply has dropped to zero contributes
+    /// exactly zero export income, so keeping the (super)mask is correct. This
+    /// lets a per-wait system total be precomputed once and reused for every
+    /// single-planet swap as `total - old_planet + replacement`, turning the
+    /// per-candidate recombination from O(planets) into O(1).
+    fn sub(&mut self, planet: &PlanetScoreInputs) {
+        self.direct_income -= planet.direct_income;
+        self.total_upkeep -= planet.total_upkeep;
+        if planet.colonized {
+            self.stability_sum -= planet.stability;
+            self.colonized_count -= 1;
+            self.ground_defense_sum -= planet.ground_defense;
+        }
+        let mut mask = planet.export_mask;
+        while mask != 0 {
+            let index = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            self.raw_supply[index] -= planet.raw_supply[index];
+            self.modded_supply[index] -= planet.modded_supply[index];
         }
     }
 
@@ -1977,13 +2038,18 @@ fn planet_set_seed_plans(
 /// memo keyed on this is exact.
 type PlanKey = (Vec<(u64, u64)>, bool);
 
-/// Shared memo of plan -> simulated score for one solve. [`run_plan`] is a pure
-/// deterministic function of `(initial_state, objective, plan, settings)`, and all
-/// climbs in one [`decomp_search_objective`] call share the same state and
-/// objective, so a cached score is bit-identical to a fresh simulation. The
-/// seeds' climbs overlap heavily (they converge into similar plans), which is
-/// where the hits come from.
-type PlanCache = Mutex<FxHashMap<PlanKey, PlanScore>>;
+/// Cache key: the plan structure plus the facility-upgrade placement. [`run_plan`]
+/// is a pure deterministic function of `(initial_state, objective, plan, settings)`;
+/// within one solve the state and objective are fixed, but the surrogate-evaluated
+/// EA scores the same plan under two placements (cheap `LateApply` for offspring,
+/// accurate `ReplayAsap` for finalists), so the placement must be part of the key
+/// or the two would collide. The other `SolverSettings` fields are constant per
+/// solve and so need not be keyed.
+type CacheKey = (PlanKey, FacilityUpgradePlacement);
+
+/// Shared memo of plan -> simulated score for one solve. The seeds' climbs overlap
+/// heavily (they converge into similar plans), which is where the hits come from.
+type PlanCache = Mutex<FxHashMap<CacheKey, PlanScore>>;
 
 fn plan_key(plan: &SystemPlan) -> PlanKey {
     let mut planets: Vec<(u64, u64)> = plan
@@ -2015,7 +2081,7 @@ fn run_plan_cached(
     settings: SolverSettings,
     cache: &PlanCache,
 ) -> PlanScore {
-    let key = plan_key(plan);
+    let key = (plan_key(plan), settings.facility_upgrade_placement);
     if let Some(score) = cache.lock().unwrap().get(&key) {
         stats::CACHE_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return score.clone();
@@ -2773,6 +2839,27 @@ fn ea_enabled() -> bool {
     *EA.get_or_init(|| std::env::var_os("SYSTEM_SOLVER_EA").is_some_and(|v| !v.is_empty()))
 }
 
+/// Whether the EA evaluates its population/offspring with the cheap `LateApply`
+/// surrogate placement (confirming finalists with the accurate placement). Lets
+/// the GA run more generations per wall-clock second. Toggleable for A/B:
+/// `SYSTEM_SOLVER_EA_SURROGATE=0` forces it off, any other non-empty value on.
+fn ea_surrogate_enabled() -> bool {
+    static SUR: OnceLock<bool> = OnceLock::new();
+    *SUR.get_or_init(|| {
+        std::env::var_os("SYSTEM_SOLVER_EA_SURROGATE")
+            .is_some_and(|v| !v.is_empty() && v != "0")
+    })
+}
+
+/// Whether the factored lookahead recombines candidate inputs incrementally
+/// (`total - old + new`, O(1)/candidate) vs re-summing all planets (O(planets)).
+/// On by default; `SYSTEM_SOLVER_NO_INCSUM=1` forces the O(planets) path so the
+/// speedup can be A/B'd (the two are result-identical after `score_units`).
+fn incremental_sum_enabled() -> bool {
+    static INC: OnceLock<bool> = OnceLock::new();
+    *INC.get_or_init(|| std::env::var_os("SYSTEM_SOLVER_NO_INCSUM").is_none())
+}
+
 fn env_usize(key: &str, default: usize) -> usize {
     std::env::var(key)
         .ok()
@@ -3009,7 +3096,8 @@ fn ea_score(
 ) -> Vec<PlanScore> {
     // Hash outside the lock (each `plan_key` allocs + sorts) so the parallel
     // `run_plan_cached` workers aren't blocked on the cache mutex while we key.
-    let keys: Vec<PlanKey> = plans.iter().map(plan_key).collect();
+    let placement = settings.facility_upgrade_placement;
+    let keys: Vec<CacheKey> = plans.iter().map(|p| (plan_key(p), placement)).collect();
     let mut results: Vec<Option<PlanScore>> = {
         let guard = cache.lock().unwrap();
         keys.iter().map(|k| guard.get(k).cloned()).collect()
@@ -3089,6 +3177,22 @@ fn ea_search(
     let mut rng = Rng::new(0x5EED_C0DE_1234_9ABC ^ seeds.len() as u64);
     let mut nodes: u32 = 0;
 
+    // Surrogate-accelerated evaluation. Score the GA population/offspring with the
+    // cheap `LateApply` placement (~1.9x more plan evals per second), so the GA
+    // explores more generations; then confirm the finalists with the accurate
+    // `ReplayAsap` placement before any winner is chosen, so a `LateApply`
+    // mis-estimate can never decide the result. Only meaningful when the accurate
+    // placement is the expensive two-pass and upgrades are enabled; otherwise
+    // `cheap_settings == settings` and the path is identical to the plain EA.
+    let surrogate = ea_surrogate_enabled()
+        && settings.facility_upgrade_placement == FacilityUpgradePlacement::ReplayAsap
+        && settings.include_industry_upgrades;
+    let cheap_settings = if surrogate {
+        settings.with_facility_upgrade_placement(FacilityUpgradePlacement::LateApply)
+    } else {
+        settings
+    };
+
     // Retain the deduped original planet-set seeds: they seed the population
     // *and* (the best of them) get a guaranteed deep climb in the polish, so the
     // EA never loses the default path's ranked-seed climbs.
@@ -3131,7 +3235,7 @@ fn ea_search(
         }
     }
 
-    let scores = ea_score(state, objective, settings, cache, &pop_plans);
+    let scores = ea_score(state, objective, cheap_settings, cache, &pop_plans);
     nodes += pop_plans.len() as u32;
     let mut pop: Vec<(SystemPlan, PlanScore)> = pop_plans.into_iter().zip(scores).collect();
     sort_plans_by_score(&mut pop, objective);
@@ -3217,7 +3321,7 @@ fn ea_search(
             break;
         }
 
-        let child_scores = ea_score(state, objective, settings, cache, &children);
+        let child_scores = ea_score(state, objective, cheap_settings, cache, &children);
         nodes += children.len() as u32;
 
         let prev_best_key = plan_key(&pop[0].0);
@@ -3245,25 +3349,35 @@ fn ea_search(
     // best original seeds (the latter guarantees at least the default path's
     // ranked-seed climbs — the precise builds the tightest floors need). Each
     // climb runs in parallel to the full deadline.
+    //
+    // WHICH plans to polish is chosen by the GA's ranking (cheap under the
+    // surrogate); the climbs and every downstream comparison run on the accurate
+    // `settings`, so a `LateApply` mis-estimate can never decide the winner.
     let mut polish_keys: HashSet<PlanKey> = HashSet::new();
-    let mut polish_set: Vec<(SystemPlan, PlanScore)> = Vec::new();
-    for (plan, score) in pop.iter().take(params.polish_elites) {
+    let mut polish_plans: Vec<SystemPlan> = Vec::new();
+    for (plan, _) in pop.iter().take(params.polish_elites) {
         if polish_keys.insert(plan_key(plan)) {
-            polish_set.push((plan.clone(), score.clone()));
+            polish_plans.push(plan.clone());
         }
     }
     if seed_climbs > 0 {
-        let mut ranked_seeds: Vec<(SystemPlan, PlanScore)> = {
-            let scores = ea_score(state, objective, settings, cache, &seed_pool);
-            seed_pool.iter().cloned().zip(scores).collect()
-        };
+        let scores = ea_score(state, objective, settings, cache, &seed_pool);
+        let mut ranked_seeds: Vec<(SystemPlan, PlanScore)> =
+            seed_pool.iter().cloned().zip(scores).collect();
         sort_plans_by_score(&mut ranked_seeds, objective);
-        for (plan, score) in ranked_seeds.into_iter().take(seed_climbs) {
+        for (plan, _) in ranked_seeds.into_iter().take(seed_climbs) {
             if polish_keys.insert(plan_key(&plan)) {
-                polish_set.push((plan, score));
+                polish_plans.push(plan);
             }
         }
     }
+    // Re-score the polish set with the accurate placement so each climb starts
+    // from a true incumbent (a no-op cache hit when not surrogate-evaluating).
+    let polish_scores = ea_score(state, objective, settings, cache, &polish_plans);
+    let polish_set: Vec<(SystemPlan, PlanScore)> =
+        polish_plans.into_iter().zip(polish_scores).collect();
+
+    let mut finalists: Vec<(SystemPlan, PlanScore)> = Vec::new();
     if !polish_set.is_empty() && !should_stop(start, deadline) {
         let (climbed, used) = ea_climb_set(
             state,
@@ -3277,11 +3391,22 @@ fn ea_search(
             deadline,
         );
         nodes += used;
-        pop.extend(climbed);
-        sort_plans_by_score(&mut pop, objective);
+        finalists.extend(climbed);
+    } else {
+        finalists.extend(polish_set);
     }
 
-    let best = pop.into_iter().next()?;
+    // Confirm the strongest GA individuals under the accurate placement too, so a
+    // genuinely-best surrogate-found plan that was not selected for a climb can
+    // still win. Cache hits when not surrogate-evaluating, so this is free there.
+    let confirm_n = params.elite.max(params.polish_elites);
+    let confirm_plans: Vec<SystemPlan> =
+        pop.iter().take(confirm_n).map(|(p, _)| p.clone()).collect();
+    let confirm_scores = ea_score(state, objective, settings, cache, &confirm_plans);
+    finalists.extend(confirm_plans.into_iter().zip(confirm_scores));
+
+    sort_plans_by_score(&mut finalists, objective);
+    let best = finalists.into_iter().next()?;
     Some((best.0, best.1, nodes))
 }
 
@@ -3327,11 +3452,18 @@ fn decomp_search_objective(
         std::sync::atomic::Ordering::Relaxed,
     );
 
-    // Experimental evolutionary driver: evolve a population from the seeds
-    // instead of climbing the top-ranked few independently. Same fitness,
-    // ordering, mutation operators and memetic polish (`lazy_hill_climb`) as the
-    // default path; gated off by default.
-    if ea_enabled() {
+    // Evolutionary driver: evolve a population from the seeds instead of
+    // climbing the top-ranked few independently. Same fitness, ordering,
+    // mutation operators and memetic polish (`lazy_hill_climb`) as the default
+    // path. Engages for the full-profile maximize search when the settings
+    // request it (the production `--solve`/`--maximize`/Pareto path) or when the
+    // `SYSTEM_SOLVER_EA` env override forces it; reach mode and the reduced
+    // ranking profiles always climb (determinism / ranking speed).
+    let use_evolutionary = objective.metric().is_some()
+        && (ea_enabled()
+            || (settings.plan_search == PlanSearch::Evolutionary
+                && profile.permits_evolutionary()));
+    if use_evolutionary {
         let cache: PlanCache = Mutex::new(FxHashMap::default());
         let params = EaParams::get();
         let (best_plan, best, nodes) = match ea_search(

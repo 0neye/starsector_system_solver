@@ -119,6 +119,10 @@ impl TuiConfig {
         SolverSettings {
             include_industry_upgrades: self.include_industry_upgrades,
             allow_parallel_builds: self.allow_parallel_builds,
+            // The interactive solve maximizes income on a fixed budget, so it
+            // uses the evolutionary driver (better optima at equal wall-clock).
+            // The reduced-profile rank job is unaffected (it always climbs).
+            plan_search: crate::solver::PlanSearch::Evolutionary,
             ..Default::default()
         }
     }
