@@ -1,3 +1,11 @@
+// mimalloc as the global allocator: the solver hot path (`run_plan_once` ->
+// `get_possible_actions`) allocates and frees several small `Vec<Action>` per
+// simulation step, millions of times per maximize solve. The Windows system
+// allocator is slow under that churn; mimalloc cuts the per-allocation cost.
+// Pure allocator swap -- no logic change, results are byte-identical.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod constants;
 mod cpu_affinity;
 mod extract;

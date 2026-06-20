@@ -26,6 +26,7 @@ crossterm = "0.29"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 directories = "5"
+mimalloc = { version = "0.1", default-features = false }
 
 # Native installer support (PATH editing, Start Menu shortcut, env broadcast).
 [target.'cfg(windows)'.dependencies]
