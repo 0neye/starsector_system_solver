@@ -2846,8 +2846,7 @@ fn ea_enabled() -> bool {
 fn ea_surrogate_enabled() -> bool {
     static SUR: OnceLock<bool> = OnceLock::new();
     *SUR.get_or_init(|| {
-        std::env::var_os("SYSTEM_SOLVER_EA_SURROGATE")
-            .is_some_and(|v| !v.is_empty() && v != "0")
+        std::env::var_os("SYSTEM_SOLVER_EA_SURROGATE").is_some_and(|v| !v.is_empty() && v != "0")
     })
 }
 
@@ -2865,6 +2864,10 @@ fn env_usize(key: &str, default: usize) -> usize {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+fn env_usize_at_least(key: &str, default: usize, min: usize) -> usize {
+    env_usize(key, default).max(min)
 }
 
 fn env_usize_opt(key: &str) -> Option<usize> {
@@ -2948,16 +2951,16 @@ impl EaParams {
     fn get() -> Self {
         static PARAMS: OnceLock<EaParams> = OnceLock::new();
         *PARAMS.get_or_init(|| EaParams {
-            population: env_usize("SYSTEM_SOLVER_EA_POP", 56),
-            elite: env_usize("SYSTEM_SOLVER_EA_ELITE", 6),
-            tournament: env_usize("SYSTEM_SOLVER_EA_TOUR", 3),
-            mutation_moves: env_usize("SYSTEM_SOLVER_EA_MUT", 2),
+            population: env_usize_at_least("SYSTEM_SOLVER_EA_POP", 56, 1),
+            elite: env_usize_at_least("SYSTEM_SOLVER_EA_ELITE", 6, 1),
+            tournament: env_usize_at_least("SYSTEM_SOLVER_EA_TOUR", 3, 1),
+            mutation_moves: env_usize_at_least("SYSTEM_SOLVER_EA_MUT", 2, 1),
             mutation_rate: 0.9,
             stall_generations: env_usize("SYSTEM_SOLVER_EA_STALL", 6) as u32,
             polish_fraction: env_f64_opt("SYSTEM_SOLVER_EA_POLISH_FRAC"),
-            polish_elites: env_usize("SYSTEM_SOLVER_EA_POLISH", 4),
+            polish_elites: env_usize_at_least("SYSTEM_SOLVER_EA_POLISH", 4, 1),
             seed_climbs: env_usize_opt("SYSTEM_SOLVER_EA_SEED_CLIMBS"),
-            climb_node_cap: env_usize("SYSTEM_SOLVER_EA_CLIMB_NODES", 60_000) as u32,
+            climb_node_cap: env_usize_at_least("SYSTEM_SOLVER_EA_CLIMB_NODES", 60_000, 1) as u32,
         })
     }
 }
@@ -3115,7 +3118,10 @@ fn ea_score(
     for (i, s) in scored {
         results[i] = Some(s);
     }
-    results.into_iter().map(|s| s.expect("every plan scored")).collect()
+    results
+        .into_iter()
+        .map(|s| s.expect("every plan scored"))
+        .collect()
 }
 
 /// Deep-climb a set of candidates in parallel via [`lazy_hill_climb`]. Each
@@ -3147,8 +3153,17 @@ fn ea_climb_set(
         .map(|(st, plan, score)| {
             let mut n = 0u32;
             let (p, s) = lazy_hill_climb(
-                &st, ctx, objective, settings, plan, score, per_climb_nodes, &mut n, cache,
-                start, deadline,
+                &st,
+                ctx,
+                objective,
+                settings,
+                plan,
+                score,
+                per_climb_nodes,
+                &mut n,
+                cache,
+                start,
+                deadline,
             );
             ((p, s), n)
         })
@@ -3258,8 +3273,7 @@ fn ea_search(
     // the remaining wall-clock. The GA *must* get the bulk of the budget — an
     // experiment running the deep climbs first (to guarantee a baseline floor)
     // starved the GA and collapsed the win from +36% to ~0%.
-    let ga_deadline =
-        Duration::from_secs_f64(deadline.as_secs_f64() * (1.0 - polish_fraction));
+    let ga_deadline = Duration::from_secs_f64(deadline.as_secs_f64() * (1.0 - polish_fraction));
 
     let mut generations = 0u32;
     let mut stagnation = 0u32;
@@ -3325,8 +3339,7 @@ fn ea_search(
         nodes += children.len() as u32;
 
         let prev_best_key = plan_key(&pop[0].0);
-        let mut next: Vec<(SystemPlan, PlanScore)> =
-            pop.into_iter().take(params.elite).collect();
+        let mut next: Vec<(SystemPlan, PlanScore)> = pop.into_iter().take(params.elite).collect();
         next.extend(children.into_iter().zip(child_scores));
         sort_plans_by_score(&mut next, objective);
         next.truncate(params.population);
@@ -3457,12 +3470,11 @@ fn decomp_search_objective(
     // mutation operators and memetic polish (`lazy_hill_climb`) as the default
     // path. Engages for the full-profile maximize search when the settings
     // request it (the production `--solve`/`--maximize`/Pareto path) or when the
-    // `SYSTEM_SOLVER_EA` env override forces it; reach mode and the reduced
+    // `SYSTEM_SOLVER_EA` env override opts in; reach mode and the reduced
     // ranking profiles always climb (determinism / ranking speed).
     let use_evolutionary = objective.metric().is_some()
-        && (ea_enabled()
-            || (settings.plan_search == PlanSearch::Evolutionary
-                && profile.permits_evolutionary()));
+        && profile.permits_evolutionary()
+        && (ea_enabled() || settings.plan_search == PlanSearch::Evolutionary);
     if use_evolutionary {
         let cache: PlanCache = Mutex::new(FxHashMap::default());
         let params = EaParams::get();
