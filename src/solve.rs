@@ -1,7 +1,7 @@
 use crate::solver::state::Action;
 use crate::solver::{
-    search_system_decomp_with_settings, search_system_maximize_with_settings, Balance, Goal,
-    Metric, SolverSettings, State,
+    progress, search_system_decomp_with_settings, search_system_maximize_with_settings, Balance,
+    Goal, Metric, SolverPhase, SolverSettings, State,
 };
 use crate::system::System;
 
@@ -42,6 +42,7 @@ pub fn solve_goal_with_settings(
     let result = search_system_decomp_with_settings(&mut state, goal, time_limit, settings)
         .into_iter()
         .find(|result| result.solution.is_some())?;
+    progress::emit(SolverPhase::Replaying);
     replay_outcome(replay_base, result.cost, result.solution.unwrap())
 }
 
@@ -81,6 +82,7 @@ pub fn solve_maximize_with_settings(
     )
     .into_iter()
     .find(|result| result.solution.is_some())?;
+    progress::emit(SolverPhase::Replaying);
     replay_outcome(replay_base, result.cost, result.solution.unwrap())
 }
 

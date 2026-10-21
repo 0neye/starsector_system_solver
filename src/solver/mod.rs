@@ -3,6 +3,7 @@ pub mod cancel;
 pub mod decomp;
 pub mod goal;
 pub mod pareto;
+pub mod progress;
 pub mod state;
 
 pub use bound::{credits_relaxed, BoundRow};
@@ -19,6 +20,19 @@ pub use pareto::{
 };
 pub(crate) use state::improvement_story_point_cost;
 pub use state::{Action, Balance, State};
+
+/// A coarse phase of a running solve, pushed to an installed
+/// [`progress`] sink for live status display.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SolverPhase {
+    Seeding,
+    ScoringSeeds,
+    Evolving,
+    Polishing,
+    Climbing,
+    Confirming,
+    Replaying,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum FacilityUpgradePlacement {

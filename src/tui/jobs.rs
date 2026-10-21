@@ -14,7 +14,9 @@ use crate::extract::scan::scan_save;
 use crate::parser;
 use crate::rank::{rank_systems, RankRow, RankScorer};
 use crate::solve;
-use crate::solver::{solve_pareto_with_settings, Balance, Goal, Metric, SolverSettings};
+use crate::solver::{
+    solve_pareto_with_settings, Balance, Goal, Metric, SolverPhase, SolverSettings,
+};
 use crate::system::System;
 
 use super::app::{PlanetDetail, SolveMode, SolveParams, SolveResult, SystemDetail};
@@ -73,6 +75,7 @@ impl Job {
 #[derive(Debug, Clone)]
 pub enum JobEvent {
     Progress(String),
+    SolverProgress(SolverPhase),
     RankRow(RankRow),
     Done(JobOutput),
     Failed(String),
@@ -120,8 +123,9 @@ impl JobRunner {
     }
 
     pub fn start(&mut self, job: Job) {
-        // A previous cancel must not leak into this job's solver loops.
+        // A previous cancel or progress sink must not leak into this job.
         crate::solver::cancel::clear();
+        crate::solver::progress::clear();
         let (tx, rx) = mpsc::channel();
         let label = job.label();
         self.receiver = Some(rx);
@@ -406,6 +410,13 @@ fn solve_job(
     let _ = tx.send(JobEvent::Progress(format!(
         "solving {system_name}; time budget is enforced, x cancels"
     )));
+    // Stream solver phase transitions to the UI. The sink is process-global
+    // (mirroring `solver::cancel`); `JobRunner::start` clears it before each
+    // job, so only this solve emits into our channel.
+    let progress_tx = tx.clone();
+    crate::solver::progress::set_sink(Box::new(move |phase| {
+        let _ = progress_tx.send(JobEvent::SolverProgress(phase));
+    }));
     let result = match params.mode {
         SolveMode::Pareto => SolveResult::Pareto(solve_pareto_with_settings(
             &system,

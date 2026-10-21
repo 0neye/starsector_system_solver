@@ -12,6 +12,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Tabs, Wrap};
 use ratatui::Frame;
 
 use super::app::{App, Modal, Screen};
+use crate::solver::SolverPhase;
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
@@ -108,8 +109,12 @@ fn draw_tabs(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let spinner = ["-", "\\", "|", "/"][app.spinner % 4];
     let text = if let Some(label) = app.job.label() {
+        let (spinner, label) = if let Some(phase) = app.job_phase {
+            phase_status(phase, app.spinner)
+        } else {
+            (classic_spinner(app.spinner), label)
+        };
         let elapsed = app
             .elapsed_job()
             .map(super::app::format_duration)
@@ -127,6 +132,23 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Paragraph::new(text).style(Style::default().fg(Color::Yellow)),
         area,
     );
+}
+
+fn classic_spinner(tick: usize) -> &'static str {
+    ["-", "\\", "|", "/"][tick % 4]
+}
+
+fn phase_status(phase: SolverPhase, tick: usize) -> (&'static str, &'static str) {
+    let (frames, label) = match phase {
+        SolverPhase::Seeding => (["⠁  ", "⠂⠁ ", "⠄⠂⠁", " ⠄⠂"], "seeding plans"),
+        SolverPhase::ScoringSeeds => (["░░░", "▒░░", "▓▒░", "█▓▒"], "ranking seeds"),
+        SolverPhase::Evolving => ([" ● ", "● ●", "●●●", "x●x"], "evolving"),
+        SolverPhase::Polishing => (["◇  ", "◆◇ ", "◆◆◇", "◆◆◆"], "polishing"),
+        SolverPhase::Climbing => (["▁  ", "▃▁ ", "▅▃▁", "▇▅▃"], "climbing"),
+        SolverPhase::Confirming => (["◌  ", "◉◌ ", "◉◉◌", "◉◉◉"], "confirming"),
+        SolverPhase::Replaying => (["◁  ", "◁◁ ", "◀◁◁", " ◀◁"], "replaying"),
+    };
+    (frames[tick % frames.len()], label)
 }
 
 fn draw_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {

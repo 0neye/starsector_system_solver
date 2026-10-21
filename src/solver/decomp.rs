@@ -45,7 +45,7 @@ use crate::constants::{FacilityType, Resource, FACILITY_DATA, FACILITY_REQUIREME
 use crate::planet::{upgrade_predecessors, Planet};
 use crate::solver::goal::{AStarSearchResult, Goal, Metric};
 use crate::solver::state::{Action, State};
-use crate::solver::{FacilityUpgradePlacement, PlanSearch, SolverSettings};
+use crate::solver::{progress, FacilityUpgradePlacement, PlanSearch, SolverPhase, SolverSettings};
 
 /// What the search optimizes.
 ///
@@ -2860,10 +2860,7 @@ fn incremental_sum_enabled() -> bool {
 }
 
 fn env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
+    env_usize_opt(key).unwrap_or(default)
 }
 
 fn env_usize_at_least(key: &str, default: usize, min: usize) -> usize {
@@ -3090,30 +3087,35 @@ fn sort_plans_by_score(pop: &mut [(SystemPlan, PlanScore)], objective: &Objectiv
 /// scorer — each parallel task gets its own clone; the clone is done only for
 /// genuine misses (resolved against the memo up front), since the EA's elites
 /// and recombinations frequently reproduce already-scored genomes.
-fn ea_score(
+fn score_plans(
     state: &State,
     objective: &Objective,
     settings: SolverSettings,
     cache: &PlanCache,
     plans: &[SystemPlan],
 ) -> Vec<PlanScore> {
-    // Hash outside the lock (each `plan_key` allocs + sorts) so the parallel
-    // `run_plan_cached` workers aren't blocked on the cache mutex while we key.
+    // Hash outside the lock (each `plan_key` allocs + sorts), then reuse these
+    // keys when inserting misses so each plan is keyed only once per batch.
     let placement = settings.facility_upgrade_placement;
     let keys: Vec<CacheKey> = plans.iter().map(|p| (plan_key(p), placement)).collect();
     let mut results: Vec<Option<PlanScore>> = {
         let guard = cache.lock().unwrap();
         keys.iter().map(|k| guard.get(k).cloned()).collect()
     };
-    let misses: Vec<(usize, State, &SystemPlan)> = plans
+    let misses: Vec<_> = plans
         .iter()
+        .zip(keys)
         .enumerate()
         .filter(|(i, _)| results[*i].is_none())
-        .map(|(i, p)| (i, state.clone(), p))
+        .map(|(i, (p, key))| (i, state.clone(), p, key))
         .collect();
     let scored: Vec<(usize, PlanScore)> = misses
         .into_par_iter()
-        .map(|(i, st, p)| (i, run_plan_cached(&st, objective, p, settings, cache)))
+        .map(|(i, st, p, key)| {
+            let score = run_plan(&st, objective, p, settings);
+            cache.lock().unwrap().insert(key, score.clone());
+            (i, score)
+        })
         .collect();
     for (i, s) in scored {
         results[i] = Some(s);
@@ -3222,6 +3224,8 @@ fn ea_search(
         return None;
     }
 
+    progress::emit(SolverPhase::Evolving);
+
     // Initial population: the seeds first (diverse basins), then mutated seed
     // variants and random plans to fill, deduped by canonical plan key so no
     // slot is spent on a known genome.
@@ -3250,7 +3254,7 @@ fn ea_search(
         }
     }
 
-    let scores = ea_score(state, objective, cheap_settings, cache, &pop_plans);
+    let scores = score_plans(state, objective, cheap_settings, cache, &pop_plans);
     nodes += pop_plans.len() as u32;
     let mut pop: Vec<(SystemPlan, PlanScore)> = pop_plans.into_iter().zip(scores).collect();
     sort_plans_by_score(&mut pop, objective);
@@ -3305,13 +3309,9 @@ fn ea_search(
             let child = if children.len() < immigrants {
                 ea_random_plan(state, ctx, &mut rng)
             } else {
-                let pa = ea_tournament(&pop, objective, &mut rng, params.tournament)
-                    .0
-                    .clone();
-                let pb = ea_tournament(&pop, objective, &mut rng, params.tournament)
-                    .0
-                    .clone();
-                let mut c = ea_crossover(&pa, &pb, &mut rng);
+                let pa = &ea_tournament(&pop, objective, &mut rng, params.tournament).0;
+                let pb = &ea_tournament(&pop, objective, &mut rng, params.tournament).0;
+                let mut c = ea_crossover(pa, pb, &mut rng);
                 if rng.frac() < params.mutation_rate {
                     c = ea_mutate(state, ctx, c, &mut rng, params.mutation_moves);
                 }
@@ -3335,7 +3335,7 @@ fn ea_search(
             break;
         }
 
-        let child_scores = ea_score(state, objective, cheap_settings, cache, &children);
+        let child_scores = score_plans(state, objective, cheap_settings, cache, &children);
         nodes += children.len() as u32;
 
         let prev_best_key = plan_key(&pop[0].0);
@@ -3358,6 +3358,8 @@ fn ea_search(
         );
     }
 
+    progress::emit(SolverPhase::Polishing);
+
     // Memetic polish: deep-climb the GA's best evolved individuals *and* the
     // best original seeds (the latter guarantees at least the default path's
     // ranked-seed climbs — the precise builds the tightest floors need). Each
@@ -3374,9 +3376,9 @@ fn ea_search(
         }
     }
     if seed_climbs > 0 {
-        let scores = ea_score(state, objective, settings, cache, &seed_pool);
+        let scores = score_plans(state, objective, settings, cache, &seed_pool);
         let mut ranked_seeds: Vec<(SystemPlan, PlanScore)> =
-            seed_pool.iter().cloned().zip(scores).collect();
+            seed_pool.into_iter().zip(scores).collect();
         sort_plans_by_score(&mut ranked_seeds, objective);
         for (plan, _) in ranked_seeds.into_iter().take(seed_climbs) {
             if polish_keys.insert(plan_key(&plan)) {
@@ -3386,7 +3388,7 @@ fn ea_search(
     }
     // Re-score the polish set with the accurate placement so each climb starts
     // from a true incumbent (a no-op cache hit when not surrogate-evaluating).
-    let polish_scores = ea_score(state, objective, settings, cache, &polish_plans);
+    let polish_scores = score_plans(state, objective, settings, cache, &polish_plans);
     let polish_set: Vec<(SystemPlan, PlanScore)> =
         polish_plans.into_iter().zip(polish_scores).collect();
 
@@ -3409,13 +3411,14 @@ fn ea_search(
         finalists.extend(polish_set);
     }
 
+    progress::emit(SolverPhase::Confirming);
+
     // Confirm the strongest GA individuals under the accurate placement too, so a
     // genuinely-best surrogate-found plan that was not selected for a climb can
     // still win. Cache hits when not surrogate-evaluating, so this is free there.
     let confirm_n = params.elite.max(params.polish_elites);
-    let confirm_plans: Vec<SystemPlan> =
-        pop.iter().take(confirm_n).map(|(p, _)| p.clone()).collect();
-    let confirm_scores = ea_score(state, objective, settings, cache, &confirm_plans);
+    let confirm_plans: Vec<SystemPlan> = pop.into_iter().take(confirm_n).map(|(p, _)| p).collect();
+    let confirm_scores = score_plans(state, objective, settings, cache, &confirm_plans);
     finalists.extend(confirm_plans.into_iter().zip(confirm_scores));
 
     sort_plans_by_score(&mut finalists, objective);
@@ -3450,6 +3453,8 @@ fn decomp_search_objective(
     let start = Instant::now();
     let deadline = Duration::from_millis(time_limit as u64);
 
+    progress::emit(SolverPhase::Seeding);
+
     let ctx = SearchContext::new(initial_state);
     let mut seed_plans = if profile.warm_seeds_only && !extra_seeds.is_empty() {
         Vec::new()
@@ -3468,7 +3473,7 @@ fn decomp_search_objective(
     // Evolutionary driver: evolve a population from the seeds instead of
     // climbing the top-ranked few independently. Same fitness, ordering,
     // mutation operators and memetic polish (`lazy_hill_climb`) as the default
-    // path. Engages for the full-profile maximize search when the settings
+    // path. Engages only for full-profile maximize search when the settings
     // request it (the production `--solve`/`--maximize`/Pareto path) or when the
     // `SYSTEM_SOLVER_EA` env override opts in; reach mode and the reduced
     // ranking profiles always climb (determinism / ranking speed).
@@ -3493,17 +3498,7 @@ fn decomp_search_objective(
             None => return (None, None),
         };
         let cutoff_occurred = should_stop(start, deadline);
-        if !best.feasible {
-            return (None, Some(best_plan));
-        }
-        let result = AStarSearchResult {
-            solution: Some(best.log),
-            cost: best.months,
-            cutoff_occurred,
-            nodes_searched: nodes,
-            nodes_pruned_by_bound: 0,
-        };
-        return (Some(result), Some(best_plan));
+        return search_result(best_plan, best, nodes, cutoff_occurred);
     }
 
     // Score every seed once (cheap relative to a climb), rank them, and climb
@@ -3512,22 +3507,11 @@ fn decomp_search_objective(
     // climb can still leave a seed's planet subset via Colonize moves, so a
     // mis-ranked seed is recoverable. Stable sort on the deterministic
     // generation order keeps the selection reproducible.
+    progress::emit(SolverPhase::ScoringSeeds);
     let cache: PlanCache = Mutex::new(FxHashMap::default());
-    let base_state = initial_state.clone();
     let warm_keys: HashSet<PlanKey> = extra_seeds.iter().map(plan_key).collect();
-    let mut scored: Vec<(SystemPlan, PlanScore)> = {
-        let seeds: Vec<_> = seed_plans
-            .into_iter()
-            .map(|seed| (base_state.clone(), seed))
-            .collect();
-        seeds
-            .into_par_iter()
-            .map(|(state, seed)| {
-                let score = run_plan_cached(&state, objective, &seed, settings, &cache);
-                (seed, score)
-            })
-            .collect()
-    };
+    let scores = score_plans(initial_state, objective, settings, &cache, &seed_plans);
+    let mut scored: Vec<_> = seed_plans.into_iter().zip(scores).collect();
     let seed_evals = scored.len() as u32;
     sort_plans_by_score(&mut scored, objective);
     let mut ranked = scored;
@@ -3554,6 +3538,7 @@ fn decomp_search_objective(
     // the old drop-only trap (Mia Bravos income 277797 → 303737) and that swaps
     // add nothing from that optimum, so they are not worth the quadratic
     // neighbourhood. See `MAXIMIZE_LOCAL_MINIMA.md`.
+    progress::emit(SolverPhase::Climbing);
     let starts: Vec<_> = scored
         .into_iter()
         .map(|(seed, _)| (initial_state.clone(), seed))
@@ -3595,9 +3580,16 @@ fn decomp_search_objective(
         None => return (None, None),
     };
 
-    // The climb may have started from an infeasible seed and failed to repair it
-    // (the goal is genuinely unreachable for any plan it reached). Only report a
-    // solution that actually satisfies the goal.
+    search_result(best_plan, best, nodes_searched, cutoff_occurred)
+}
+
+/// Retain the best plan for warm starts, but only report a feasible solution.
+fn search_result(
+    best_plan: SystemPlan,
+    best: PlanScore,
+    nodes_searched: u32,
+    cutoff_occurred: bool,
+) -> (Option<AStarSearchResult>, Option<SystemPlan>) {
     if !best.feasible {
         return (None, Some(best_plan));
     }

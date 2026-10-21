@@ -4,7 +4,7 @@ use crate::constants::{ColonyItem, Resource};
 use crate::solver::decomp::{search_system_maximize_seeded, SearchProfile, SystemPlan};
 use crate::solver::goal::{Goal, Metric};
 use crate::solver::state::{Action, Balance, State};
-use crate::solver::SolverSettings;
+use crate::solver::{progress, SolverPhase, SolverSettings};
 use crate::system::System;
 use rayon::prelude::*;
 
@@ -1548,6 +1548,7 @@ pub(crate) fn measure_point_seeded(
     let result = results.into_iter().next()?;
     let actions = result.solution.unwrap_or_default();
 
+    progress::emit(SolverPhase::Replaying);
     let mut replay = base;
     for action in &actions {
         replay.apply_action_raw(action, false);

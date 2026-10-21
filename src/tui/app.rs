@@ -7,7 +7,7 @@ use crate::extract::model::SaveInfo;
 use crate::rank::{peak_income, sort_rows_best_first, RankRow, RankScorer, RankSortMode};
 use crate::solve::SolveOutcome;
 use crate::solver::pareto::{FrontierKind, ParetoPoint, ParetoSolve};
-use crate::solver::{Action, Metric};
+use crate::solver::{Action, Metric, SolverPhase};
 use crate::system::System;
 
 use super::config::{default_rank_scorer, BalanceSignature, DiscoveryDefinition, TuiConfig};
@@ -188,6 +188,7 @@ pub struct App {
     pub status: String,
     pub error: Option<String>,
     pub job: JobRunner,
+    pub job_phase: Option<SolverPhase>,
     pub should_quit: bool,
     pub spinner: usize,
     pub settings_selection: usize,
@@ -237,6 +238,7 @@ impl App {
             status: status.unwrap_or_else(|| "ready".to_string()),
             error: None,
             job: JobRunner::new(),
+            job_phase: None,
             should_quit: false,
             spinner: 0,
             settings_selection: 0,
@@ -278,6 +280,7 @@ impl App {
             return;
         }
         self.status = job.label().to_string();
+        self.job_phase = None;
         self.job.start(job);
     }
 
@@ -327,12 +330,16 @@ impl App {
     fn apply_event(&mut self, event: JobEvent) {
         match event {
             JobEvent::Progress(text) => self.status = text,
+            JobEvent::SolverProgress(phase) => {
+                self.job_phase = Some(phase);
+            }
             JobEvent::RankRow(row) => {
                 self.push_rank_row(row);
             }
             JobEvent::Done(output) => {
                 let cancelled = self.job.is_cancelling();
                 self.job.clear();
+                self.job_phase = None;
                 if cancelled {
                     // Partial result from a cancelled solve/rank: discard so
                     // caches never hold truncated results.
@@ -344,6 +351,7 @@ impl App {
             JobEvent::Failed(err) => {
                 let cancelled = self.job.is_cancelling();
                 self.job.clear();
+                self.job_phase = None;
                 if cancelled {
                     self.status = "cancelled".to_string();
                 } else {
