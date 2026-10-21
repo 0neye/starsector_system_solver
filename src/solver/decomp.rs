@@ -2872,7 +2872,10 @@ fn env_usize_opt(key: &str) -> Option<usize> {
 }
 
 fn env_f64_opt(key: &str) -> Option<f64> {
-    std::env::var(key).ok().and_then(|v| v.parse().ok())
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
 }
 
 /// Deterministic SplitMix64 — small, fast, no external `rand` dependency. The
@@ -3083,17 +3086,18 @@ fn sort_plans_by_score(pop: &mut [(SystemPlan, PlanScore)], objective: &Objectiv
 }
 
 /// Score a batch of plans through the shared memo, evaluating cache misses in
-/// parallel. `State` is `!Sync` (interior mutability caches), so — like the seed
-/// scorer — each parallel task gets its own clone; the clone is done only for
-/// genuine misses (resolved against the memo up front), since the EA's elites
-/// and recombinations frequently reproduce already-scored genomes.
+/// parallel. Each worker checks the shared deadline/cancel flag before starting
+/// a simulation. Return only completed scores, including cache hits after cutoff.
+/// `State` is `!Sync`, so each cache miss gets its own clone before dispatch.
 fn score_plans(
     state: &State,
     objective: &Objective,
     settings: SolverSettings,
     cache: &PlanCache,
-    plans: &[SystemPlan],
-) -> Vec<PlanScore> {
+    plans: Vec<SystemPlan>,
+    start: Instant,
+    deadline: Duration,
+) -> Vec<(SystemPlan, PlanScore)> {
     // Hash outside the lock (each `plan_key` allocs + sorts), then reuse these
     // keys when inserting misses so each plan is keyed only once per batch.
     let placement = settings.facility_upgrade_placement;
@@ -3106,23 +3110,27 @@ fn score_plans(
         .iter()
         .zip(keys)
         .enumerate()
-        .filter(|(i, _)| results[*i].is_none())
+        .filter(|(i, _)| results[*i].is_none() && !should_stop(start, deadline))
         .map(|(i, (p, key))| (i, state.clone(), p, key))
         .collect();
     let scored: Vec<(usize, PlanScore)> = misses
         .into_par_iter()
-        .map(|(i, st, p, key)| {
+        .filter_map(|(i, st, p, key)| {
+            if should_stop(start, deadline) {
+                return None;
+            }
             let score = run_plan(&st, objective, p, settings);
             cache.lock().unwrap().insert(key, score.clone());
-            (i, score)
+            Some((i, score))
         })
         .collect();
     for (i, s) in scored {
         results[i] = Some(s);
     }
-    results
+    plans
         .into_iter()
-        .map(|s| s.expect("every plan scored"))
+        .zip(results)
+        .filter_map(|(plan, score)| score.map(|score| (plan, score)))
         .collect()
 }
 
@@ -3224,6 +3232,16 @@ fn ea_search(
         return None;
     }
 
+    // Keep a fully evaluated accurate incumbent before spending time on the GA,
+    // including when offspring use the surrogate. Never return a surrogate score
+    // merely because the deadline/cancel flag prevents final confirmation.
+    if should_stop(start, deadline) {
+        return None;
+    }
+    let seed_score = run_plan_cached(state, objective, &seed_pool[0], settings, cache);
+    nodes += 1;
+    let mut finalists = vec![(seed_pool[0].clone(), seed_score)];
+
     progress::emit(SolverPhase::Evolving);
 
     // Initial population: the seeds first (diverse basins), then mutated seed
@@ -3241,7 +3259,7 @@ fn ea_search(
     }
     let mut guard = 0usize;
     let fill_cap = params.population.saturating_mul(8).max(8);
-    while pop_plans.len() < params.population && guard < fill_cap {
+    while pop_plans.len() < params.population && guard < fill_cap && !should_stop(start, deadline) {
         guard += 1;
         let plan = if !pop_plans.is_empty() && rng.flip() {
             let base = pop_plans[rng.below(pop_plans.len())].clone();
@@ -3254,9 +3272,16 @@ fn ea_search(
         }
     }
 
-    let scores = score_plans(state, objective, cheap_settings, cache, &pop_plans);
-    nodes += pop_plans.len() as u32;
-    let mut pop: Vec<(SystemPlan, PlanScore)> = pop_plans.into_iter().zip(scores).collect();
+    let mut pop = score_plans(
+        state,
+        objective,
+        cheap_settings,
+        cache,
+        pop_plans,
+        start,
+        deadline,
+    );
+    nodes += pop.len() as u32;
     sort_plans_by_score(&mut pop, objective);
 
     // Reserve ~40% of the wall-clock for the polish. This is the knee of the
@@ -3281,7 +3306,7 @@ fn ea_search(
 
     let mut generations = 0u32;
     let mut stagnation = 0u32;
-    while !should_stop(start, ga_deadline) {
+    while !pop.is_empty() && !should_stop(start, ga_deadline) {
         generations += 1;
         let target = params.population.saturating_sub(params.elite).max(1);
         // Elites carried forward; track their keys so offspring don't duplicate
@@ -3304,7 +3329,8 @@ fn ea_search(
 
         let mut attempts = 0usize;
         let attempt_cap = target.saturating_mul(6).max(6);
-        while children.len() < target && attempts < attempt_cap {
+        while children.len() < target && attempts < attempt_cap && !should_stop(start, ga_deadline)
+        {
             attempts += 1;
             let child = if children.len() < immigrants {
                 ea_random_plan(state, ctx, &mut rng)
@@ -3324,7 +3350,10 @@ fn ea_search(
         // If dedup starved the brood (small / converged populations), inject
         // fresh random blood rather than shrinking the generation.
         let mut random_guard = 0usize;
-        while children.len() < target && random_guard < attempt_cap {
+        while children.len() < target
+            && random_guard < attempt_cap
+            && !should_stop(start, ga_deadline)
+        {
             random_guard += 1;
             let child = ea_random_plan(state, ctx, &mut rng);
             if child_seen.insert(plan_key(&child)) {
@@ -3335,12 +3364,20 @@ fn ea_search(
             break;
         }
 
-        let child_scores = score_plans(state, objective, cheap_settings, cache, &children);
-        nodes += children.len() as u32;
+        let scored_children = score_plans(
+            state,
+            objective,
+            cheap_settings,
+            cache,
+            children,
+            start,
+            ga_deadline,
+        );
+        nodes += scored_children.len() as u32;
 
         let prev_best_key = plan_key(&pop[0].0);
         let mut next: Vec<(SystemPlan, PlanScore)> = pop.into_iter().take(params.elite).collect();
-        next.extend(children.into_iter().zip(child_scores));
+        next.extend(scored_children);
         sort_plans_by_score(&mut next, objective);
         next.truncate(params.population);
         pop = next;
@@ -3376,9 +3413,9 @@ fn ea_search(
         }
     }
     if seed_climbs > 0 {
-        let scores = score_plans(state, objective, settings, cache, &seed_pool);
-        let mut ranked_seeds: Vec<(SystemPlan, PlanScore)> =
-            seed_pool.into_iter().zip(scores).collect();
+        let mut ranked_seeds = score_plans(
+            state, objective, settings, cache, seed_pool, start, deadline,
+        );
         sort_plans_by_score(&mut ranked_seeds, objective);
         for (plan, _) in ranked_seeds.into_iter().take(seed_climbs) {
             if polish_keys.insert(plan_key(&plan)) {
@@ -3388,11 +3425,16 @@ fn ea_search(
     }
     // Re-score the polish set with the accurate placement so each climb starts
     // from a true incumbent (a no-op cache hit when not surrogate-evaluating).
-    let polish_scores = score_plans(state, objective, settings, cache, &polish_plans);
-    let polish_set: Vec<(SystemPlan, PlanScore)> =
-        polish_plans.into_iter().zip(polish_scores).collect();
+    let polish_set = score_plans(
+        state,
+        objective,
+        settings,
+        cache,
+        polish_plans,
+        start,
+        deadline,
+    );
 
-    let mut finalists: Vec<(SystemPlan, PlanScore)> = Vec::new();
     if !polish_set.is_empty() && !should_stop(start, deadline) {
         let (climbed, used) = ea_climb_set(
             state,
@@ -3418,8 +3460,15 @@ fn ea_search(
     // still win. Cache hits when not surrogate-evaluating, so this is free there.
     let confirm_n = params.elite.max(params.polish_elites);
     let confirm_plans: Vec<SystemPlan> = pop.into_iter().take(confirm_n).map(|(p, _)| p).collect();
-    let confirm_scores = score_plans(state, objective, settings, cache, &confirm_plans);
-    finalists.extend(confirm_plans.into_iter().zip(confirm_scores));
+    finalists.extend(score_plans(
+        state,
+        objective,
+        settings,
+        cache,
+        confirm_plans,
+        start,
+        deadline,
+    ));
 
     sort_plans_by_score(&mut finalists, objective);
     let best = finalists.into_iter().next()?;
@@ -3510,8 +3559,15 @@ fn decomp_search_objective(
     progress::emit(SolverPhase::ScoringSeeds);
     let cache: PlanCache = Mutex::new(FxHashMap::default());
     let warm_keys: HashSet<PlanKey> = extra_seeds.iter().map(plan_key).collect();
-    let scores = score_plans(initial_state, objective, settings, &cache, &seed_plans);
-    let mut scored: Vec<_> = seed_plans.into_iter().zip(scores).collect();
+    let mut scored = score_plans(
+        initial_state,
+        objective,
+        settings,
+        &cache,
+        seed_plans,
+        start,
+        deadline,
+    );
     let seed_evals = scored.len() as u32;
     sort_plans_by_score(&mut scored, objective);
     let mut ranked = scored;
@@ -3902,3 +3958,7 @@ pub fn diagnose_maximize_gap(
         full_score.months,
     )
 }
+
+#[cfg(test)]
+#[path = "../tests/decomp.rs"]
+mod tests;
