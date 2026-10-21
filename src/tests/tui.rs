@@ -465,15 +465,25 @@ fn tui_solve_cache_key_includes_mode_params_and_balance() {
 fn solve_wrappers_replay_tiny_fixture_results() {
     let system = single_planet_system(PlanetBuilder::new("Tiny I").build());
     let balance = rich_balance();
+    // Test replay behavior with room for shared worker contention in CI.
+    let time_limit_ms = 300_000;
 
     let goal = Goal::new(0.0, None, None);
-    let goal_outcome =
-        solve_goal(&system, &balance, &goal, 1, true).expect("goal should be reachable");
+    let goal_outcome = solve_goal(&system, &balance, &goal, time_limit_ms, true)
+        .expect("goal should be reachable");
     assert!(goal_outcome.achieved_income >= 0.0);
 
     let floors = Goal::new(f64::NEG_INFINITY, Some(0.0), Some(0));
-    let max_outcome = solve_maximize(&system, &balance, Metric::Income, &floors, 1, 1, true)
-        .expect("maximize should return a tiny result");
+    let max_outcome = solve_maximize(
+        &system,
+        &balance,
+        Metric::Income,
+        &floors,
+        1,
+        time_limit_ms,
+        true,
+    )
+    .expect("maximize should return a tiny result");
     assert!(max_outcome.months >= 0);
 }
 
