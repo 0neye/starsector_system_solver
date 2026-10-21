@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
 use crate::constants::{ColonyItem, FacilityType};
 use crate::extract::db::{SaveRow, SystemDiscovery};
 use crate::rank::{RankRow, RankScorer};
@@ -12,9 +14,10 @@ use crate::solver::{Action, Goal, Metric};
 use crate::system::System;
 use crate::tui::app::{
     estimate_rank_cost, filter_scope, format_system_time, group_plan_actions, solve_cache_key, App,
-    Modal, RankCache, ScopeMode, SolveMode, SolveParams, DEFAULT_TUI_RANK_SCORER,
+    Modal, RankCache, ScopeMode, Screen, SolveMode, SolveParams, DEFAULT_TUI_RANK_SCORER,
 };
 use crate::tui::config::{DiscoveryDefinition, TuiConfig};
+use crate::tui::handle_key;
 
 use super::support::{rich_balance, single_planet_system, PlanetBuilder};
 
@@ -68,6 +71,88 @@ fn temp_config_path(name: &str) -> PathBuf {
             .unwrap()
             .as_nanos()
     ))
+}
+
+#[test]
+fn tui_ctrl_c_quits_from_every_screen_and_modal() {
+    for screen in [
+        Screen::Saves,
+        Screen::Rank,
+        Screen::System,
+        Screen::Solve,
+        Screen::Plan,
+    ] {
+        for modal in [
+            None,
+            Some(Modal::Help),
+            Some(Modal::Settings),
+            Some(Modal::Scorer),
+            Some(Modal::RankSort),
+            Some(Modal::SpoilerConfirm),
+            Some(Modal::QuitConfirm),
+        ] {
+            for (code, modifiers) in [
+                ('c', KeyModifiers::CONTROL),
+                ('C', KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            ] {
+                let mut app = App::new(TuiConfig::default(), None);
+                app.active_screen = screen;
+                app.modal = modal.clone();
+
+                handle_key(&mut app, KeyEvent::new(KeyCode::Char(code), modifiers));
+
+                assert!(
+                    app.should_quit,
+                    "screen={screen:?}, modal={modal:?}, key={code}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn tui_ctrl_c_quits_during_text_editing() {
+    for editor in 0..3 {
+        let mut app = App::new(TuiConfig::default(), None);
+        match editor {
+            0 => {
+                app.active_screen = Screen::Rank;
+                app.editing_filter = true;
+            }
+            1 => {
+                app.active_screen = Screen::Solve;
+                app.editing_solve_param = true;
+            }
+            _ => {
+                app.modal = Some(Modal::Settings);
+                app.settings_editing = true;
+            }
+        }
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        );
+
+        assert!(app.should_quit, "editor={editor}");
+        assert!(app.rank_filter.is_empty());
+        assert!(app.solve_input.is_empty());
+        assert!(app.settings_input.is_empty());
+    }
+}
+
+#[test]
+fn tui_plain_c_opens_the_scorer_picker() {
+    let mut app = App::new(TuiConfig::default(), None);
+    app.active_screen = Screen::Rank;
+
+    handle_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+    );
+
+    assert!(!app.should_quit);
+    assert_eq!(app.modal, Some(Modal::Scorer));
 }
 
 #[test]

@@ -8,7 +8,7 @@ use std::panic;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -36,7 +36,7 @@ pub fn run(starsector_dir: Option<PathBuf>) -> io::Result<()> {
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    handle_key(&mut app, key.code);
+                    handle_key(&mut app, key);
                 }
             }
         }
@@ -59,7 +59,15 @@ pub(crate) fn load_config_for_start(
     (config, status)
 }
 
-fn handle_key(app: &mut App, code: KeyCode) {
+pub(crate) fn handle_key(app: &mut App, key: KeyEvent) {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'C'))
+    {
+        app.cancel_job();
+        app.should_quit = true;
+        return;
+    }
+
+    let code = key.code;
     if let Some(modal) = app.modal.clone() {
         match modal {
             Modal::Help => {
