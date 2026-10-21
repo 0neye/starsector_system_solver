@@ -1204,8 +1204,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
-
         let mut base_balance = Balance::new(credits, sp, alpha);
+        for item in std::env::var("SYSTEM_SOLVER_PARETO_ITEMS")
+            .unwrap_or_default()
+            .split([',', ';', '|'])
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+        {
+            base_balance.add_colony_item(
+                item.parse::<ColonyItem>()
+                    .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?,
+            );
+        }
         if all_items_count > 0 {
             for item in ColonyItem::all() {
                 for _ in 0..all_items_count {
